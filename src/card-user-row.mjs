@@ -65,14 +65,9 @@ function pictureSpacer() {
   };
 }
 
-/** A status pill image at the end of the first line (an embedded data URI, never a remote URL). */
-function pillColumn(pill) {
-  return {
-    type: 'Column',
-    width: 'auto',
-    verticalContentAlignment: 'Center',
-    items: [{ type: 'Image', url: pill.url, altText: text(pill.alt), width: `${pill.width}px`, height: `${pill.height}px` }],
-  };
+/** A status pill image on a line of its own (an embedded data URI, never a remote URL). */
+function pillImage(pill) {
+  return { type: 'Image', url: pill.url, altText: text(pill.alt), width: `${pill.width}px`, height: `${pill.height}px`, horizontalAlignment: 'Left' };
 }
 
 const usablePill = (pill) =>
@@ -83,18 +78,20 @@ const usablePill = (pill) =>
  * @param {Array<{name: string, avatar?: string}>} people
  * @param {object} [opts]
  * @param {string} [opts.headline]  a short lead such as "👍 By" or "🔀 Enabled by", written in front of the first name (same wrapping text, no line of its own)
- * @param {{url: string, alt?: string, width: number, height: number}} [opts.pill]  a status pill image at the end of the first line
+ * @param {{url: string, alt?: string, width: number, height: number}} [opts.pill]  a status pill image on the first line of the value, above the people
  * @param {number} [opts.charBudget]  remaining picture budget for this card
  * @param {string} [opts.labelWidth]  fixed label column width, so the label lines up with the other fact rows
  * @returns {{row: object, usedChars: number}|null}
  *
  * Layout: the label column, then ONE stretch value column (so the value starts
  * where every other fact row's value starts) holding one line per person:
- * [picture] [name] and, on the first line only, an optional pill. The normal
- * case, one person, is one compact line: the lead is part of the name's own
- * text ("👍 By Alice Example"), so it never takes a row or a column of its own.
- * Only the name column stretches, so on a narrow screen only the name wraps, at
- * word boundaries; the label, the picture and the pill never shrink or break.
+ * [picture] [name], below an optional pill on a line of its own (like the
+ * Status row: pill first, then the details), so the pill never squeezes the
+ * names on a narrow screen. The normal case, one person, is one compact line:
+ * the lead is part of the name's own text ("👍 By Alice Example"), so it never
+ * takes a row or a column of its own. Only the name column stretches, so on a
+ * narrow screen only the name wraps, at word boundaries; the label, the picture
+ * and the pill never shrink or break.
  * There is no fixed text column beside the names: it would eat the width they need.
  */
 export function userRow(label, people, { headline = '', pill = null, charBudget = MAX_AVATAR_CHARS_PER_CARD, maxAvatars = MAX_AVATARS_PER_ROW, labelWidth = 'auto' } = {}) {
@@ -122,16 +119,17 @@ export function userRow(label, people, { headline = '', pill = null, charBudget 
   }
   if (shown === 0) return null;
   const lead = text(headline);
+  const hasPill = usablePill(pill);
   const lines = entries.map(({ name, avatar }, index) => {
     const columns = [];
     columns.push(avatar ? avatarColumn(name, avatar, `${AVATAR_PX}px`) : pictureSpacer());
     columns.push(textColumn(index === 0 && lead ? `${lead} ${name}` : name, {}, 'stretch'));
-    if (index === 0 && usablePill(pill)) columns.push(pillColumn(pill));
-    return index === 0 ? { type: 'ColumnSet', columns } : { type: 'ColumnSet', spacing: 'Small', columns };
+    return index === 0 && !hasPill ? { type: 'ColumnSet', columns } : { type: 'ColumnSet', spacing: 'Small', columns };
   });
+  const valueItems = hasPill ? [pillImage(pill), ...lines] : lines;
   const labelColumn = textColumn(text(label), { weight: 'Bolder' }, labelWidth);
   // With several lines stacked, the label stays with the first line.
-  if (entries.length > 1) labelColumn.verticalContentAlignment = 'Top';
-  const valueColumn = { type: 'Column', width: 'stretch', items: lines };
+  if (valueItems.length > 1) labelColumn.verticalContentAlignment = 'Top';
+  const valueColumn = { type: 'Column', width: 'stretch', items: valueItems };
   return { row: { type: 'ColumnSet', spacing: 'Small', columns: [labelColumn, valueColumn] }, usedChars: used };
 }
