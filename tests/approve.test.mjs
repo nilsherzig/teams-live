@@ -242,6 +242,52 @@ test('the confirmation page needs a session, shows the account honestly and neve
   }
 });
 
+test('the pages are styled self-contained: state pills, tones, dark mode, no external resources, escaped text', async () => {
+  const gitlab = makeGitlab();
+  gitlab.mr = { state: 'opened', draft: false, sha: SHA, title: '<img src=x onerror=alert(1)> & "quoted"' };
+  const ctx = await setup({ gitlab });
+  try {
+    const cookie = await ctx.open();
+    const res = await ctx.page(cookie);
+    const html = await res.text();
+    assert.match(html, /<main class="panel tone-neutral">/);
+    assert.match(html, /<span class="pill pill-open"><i aria-hidden="true"><\/i>Open<\/span>/);
+    assert.match(html, /<button class="btn" type="submit">Approve merge request<\/button>/);
+    assert.match(html, /prefers-color-scheme:dark/);
+    assert.match(html, /<title>Approve merge request \u00b7 teams-live<\/title>/);
+    assert.match(html, /Nothing here is GitLab itself/);
+    // The merge request title is escaped, never markup.
+    assert.doesNotMatch(html, /<img/);
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; &amp; &quot;quoted&quot;/);
+    // Nothing external or scripted: the only URL is the form action, the CSP stays closed.
+    assert.doesNotMatch(html, /<script|<[a-z][^>]*\ssrc=|<link|@import|url\(/);
+    assert.deepEqual(html.match(/https?:\/\/[^\s"'<>)]+/g), ['https://approve.example.com/approve/confirm']);
+    const csp = res.headers.get('content-security-policy');
+    assert.match(csp, /default-src 'none'/);
+    assert.doesNotMatch(csp, /script-src/);
+
+    // Drafts, closed and merged merge requests show their own pill (closed and merged burn the
+    // link, so each case has its own); error pages carry a warning tone.
+    for (const [mr, pill] of [[{ draft: true }, 'draft'], [{ state: 'closed' }, 'closed'], [{ state: 'merged' }, 'merged']]) {
+      const g = makeGitlab();
+      g.mr = { state: 'opened', draft: false, sha: SHA, title: 'T', ...mr };
+      const other = await setup({ gitlab: g });
+      try {
+        const blocked = await (await other.page(await other.open())).text();
+        assert.match(blocked, new RegExp(`class="pill pill-${pill}"`), pill);
+        assert.match(blocked, /class="panel tone-warn"/);
+      } finally {
+        await other.server.stop();
+      }
+    }
+    const nothing = await (await fetch(`${ctx.base}/approve/nope`)).text();
+    assert.match(nothing, /<main class="panel tone-warn">/);
+    assert.equal(ctx.gitlab.calls.approve.length, 0);
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
 test('a confirmed POST approves once with the displayed head SHA, uses the link up and refreshes the card', async () => {
   const refreshes = [];
   const ctx = await setup({

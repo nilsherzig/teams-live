@@ -62,6 +62,49 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(sha256(a), sha256(b));
 }
 
+// Page styling: GitLab-inspired (calm neutral surfaces, rounded panels, tinted
+// state pills) but its own thing, branded teams-live. The state colors match the
+// badges on the Teams card.
+const PAGE_CSS = [
+  ':root{color-scheme:light dark;--bg:#f4f5f8;--panel:#fff;--text:#1f2430;--muted:#5d6475;--line:#dcdfe6;--accent:#3b4fd8;--code:#eef0f6;',
+  '--ok:#1f7a4a;--ok-bg:#e3f4ea;--merged:#6b46c1;--merged-bg:#ece6f9;--closed:#b3261e;--closed-bg:#fbe6e3;--draft:#555a66;--draft-bg:#e9eaee;--warn:#8a5a00;--warn-bg:#fdf1d8;--btn:#1f7a4a;--btn-h:#18643b}',
+  '@media (prefers-color-scheme:dark){:root{--bg:#14161c;--panel:#1d2029;--text:#e7e9ef;--muted:#a3a9b8;--line:#343845;--accent:#8c9bff;--code:#2a2e3a;',
+  '--ok:#6fd49b;--ok-bg:#16352a;--merged:#b9a0f5;--merged-bg:#2c2347;--closed:#ff9b92;--closed-bg:#40201e;--draft:#b8bdc9;--draft-bg:#2b2f3a;--warn:#f0c46b;--warn-bg:#3a2e12;--btn:#2da160;--btn-h:#37b671}}',
+  '*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}',
+  '.shell{max-width:36rem;margin:0 auto;padding:2rem 1rem 3rem}',
+  '.brand{display:flex;align-items:center;gap:.5rem;margin:0 0 1rem;color:var(--muted);font-size:.9rem}.brand svg{flex:none}.brand .word{color:var(--text);font-weight:650;letter-spacing:.01em}',
+  '.panel{background:var(--panel);border:1px solid var(--line);border-left-width:4px;border-radius:10px;padding:1.25rem 1.5rem 1.5rem;box-shadow:0 1px 2px rgba(0,0,0,.06)}',
+  '.tone-ok{border-left-color:var(--ok)}.tone-warn{border-left-color:#d99a00}.tone-error{border-left-color:var(--closed)}.tone-neutral{border-left-color:var(--accent)}',
+  'h1{font-size:1.35rem;line-height:1.3;margin:0 0 1rem}p{margin:.6rem 0}',
+  'code{background:var(--code);padding:.05rem .35rem;border-radius:4px;font:.88em ui-monospace,SFMono-Regular,Menlo,monospace}',
+  '.note{color:var(--muted);font-size:.9rem}',
+  '.mr{border:1px solid var(--line);border-radius:8px;padding:.75rem 1rem;margin:0 0 1rem;background:var(--bg)}',
+  '.mr-head{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin:0 0 .35rem}.mr-head .ref{color:var(--muted);font:.85rem ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}',
+  '.mr p{margin:.2rem 0}',
+  '.pill{display:inline-flex;align-items:center;gap:.35rem;border-radius:999px;padding:.1rem .6rem;font-size:.8rem;font-weight:600;line-height:1.5;border:1px solid currentColor}',
+  '.pill i{width:.55rem;height:.55rem;border-radius:50%;background:currentColor;display:inline-block}',
+  '.pill-open{color:var(--ok);background:var(--ok-bg)}.pill-merged{color:var(--merged);background:var(--merged-bg)}.pill-closed{color:var(--closed);background:var(--closed-bg)}.pill-draft{color:var(--draft);background:var(--draft-bg)}',
+  '.callout{border-radius:8px;padding:.6rem .85rem;margin:.9rem 0;background:var(--warn-bg);color:var(--text);border:1px solid var(--line);font-size:.9rem}',
+  '.btn{font:inherit;font-weight:600;color:#fff;background:var(--btn);border:0;border-radius:8px;padding:.6rem 1.25rem;cursor:pointer}.btn:hover{background:var(--btn-h)}',
+  '.btn:focus-visible{outline:3px solid var(--accent);outline-offset:2px}',
+  '.foot{margin-top:1rem;color:var(--muted);font-size:.8rem}',
+  '@media (max-width:30rem){.panel{padding:1rem}.btn{width:100%}}',
+].join('');
+
+const BRAND_MARK =
+  '<svg width="22" height="22" viewBox="0 0 22 22" role="img" aria-label="teams-live" focusable="false"><rect width="22" height="22" rx="6" fill="#3b4fd8"/><circle cx="7" cy="6.5" r="2" fill="#fff"/><circle cx="7" cy="15.5" r="2" fill="#fff"/><circle cx="15" cy="9" r="2" fill="#fff"/><path d="M7 8.5v5M15 11c0 2.2-2 3-5.5 3.6" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/></svg>';
+
+/** Pill for the live state of a merge request. Draft wins over open, like the card. */
+function stateBadge(mr) {
+  if (!mr?.state) return '';
+  const draft = Boolean(mr.draft || mr.work_in_progress || mr.detailed_merge_status === 'draft_status');
+  const [cls, label] =
+    mr.state === 'merged' ? ['merged', 'Merged'] : mr.state === 'closed' ? ['closed', 'Closed'] : mr.state === 'opened' ? (draft ? ['draft', 'Draft'] : ['open', 'Open']) : ['draft', escapeHtml(mr.state)];
+  return `<span class="pill pill-${cls}"><i aria-hidden="true"></i>${label}</span>`;
+}
+
+const toneForCode = (code) => (code >= 500 ? 'error' : code >= 400 ? 'warn' : 'ok');
+
 const keyOf = (project, iid) => `${String(project).toLowerCase()}!${iid}`;
 
 /**
@@ -443,7 +486,7 @@ export class ApproveServer {
       const srv = http.createServer((req, res) => {
         this.handle(req, res).catch((err) => {
           log(`Unhandled error: ${err.message}`);
-          if (!res.headersSent) this.send(res, 500, this.page('Error', '<p>Something went wrong. Nothing was approved.</p>'));
+          if (!res.headersSent) this.send(res, 500, this.page('Error', '<p>Something went wrong. Nothing was approved.</p>', { tone: 'error' }));
           else res.end();
         });
       });
@@ -492,8 +535,14 @@ export class ApproveServer {
     res.end(body);
   }
 
-  page(title, body, { script = '' } = {}) {
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)}</title><style>body{font-family:system-ui,sans-serif;max-width:34rem;margin:3rem auto;padding:0 1rem;line-height:1.5}code{background:#8882;padding:0 .25rem;border-radius:3px}button{font:inherit;padding:.5rem 1rem;cursor:pointer}.note{opacity:.75;font-size:.9em}</style></head><body><h1>${escapeHtml(title)}</h1>${body}${script}</body></html>`;
+  /**
+   * One HTML shell for every page. Self-contained on purpose: inline CSS and an
+   * inline SVG only (the CSP allows nothing else), no external fonts or images.
+   * `tone` colors the panel edge: neutral, ok, warn or error.
+   */
+  page(title, body, { script = '', tone = 'neutral' } = {}) {
+    const safeTone = ['neutral', 'ok', 'warn', 'error'].includes(tone) ? tone : 'neutral';
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}</style></head><body><div class="shell"><header class="brand">${BRAND_MARK}<span class="word">teams-live</span><span class="sep" aria-hidden="true">·</span><span class="kicker">GitLab approval</span></header><main class="panel tone-${safeTone}"><h1>${escapeHtml(title)}</h1>${body}${script}</main><footer class="foot">Served by your teams-live instance. Nothing here is GitLab itself; approvals are sent through the configured account.</footer></div></body></html>`;
   }
 
   /** The static script that exchanges the fragment token for a session. */
@@ -614,17 +663,17 @@ export class ApproveServer {
   async handle(req, res) {
     const method = req.method;
     if (method !== 'GET' && method !== 'HEAD' && method !== 'POST') {
-      this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>'), { extra: { Allow: 'GET, HEAD, POST' } });
+      this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: 'GET, HEAD, POST' } });
       return;
     }
     const route = this.route(req);
     if (!route) {
-      this.send(res, 404, this.page('Not found', '<p>Nothing here.</p>'), { head: method === 'HEAD' });
+      this.send(res, 404, this.page('Not found', '<p>Nothing here.</p>', { tone: 'warn' }), { head: method === 'HEAD' });
       return;
     }
     const head = method === 'HEAD';
     if (route === '/') {
-      if (method === 'POST') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>'), { extra: { Allow: 'GET, HEAD' } });
+      if (method === 'POST') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: 'GET, HEAD' } });
       const body = this.page(
         'Approve merge request',
         '<p id="msg">Opening the approval link…</p><noscript><p>JavaScript is required to open an approval link.</p></noscript>',
@@ -633,14 +682,14 @@ export class ApproveServer {
       return this.send(res, 200, body, { head, script: true });
     }
     if (route === '/session') {
-      if (method !== 'POST') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>'), { extra: { Allow: 'POST' } });
+      if (method !== 'POST') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: 'POST' } });
       return this.bootstrap(req, res);
     }
     // /confirm
     if (method === 'HEAD') return this.send(res, 200, '', { head: true });
     const session = this.sessionOf(req);
     if (!session) {
-      return this.send(res, 401, this.page('Link not opened', '<p>Open the approval link from the Teams card again. Nothing was approved.</p>'));
+      return this.send(res, 401, this.page('Link not opened', '<p>Open the approval link from the Teams card again. Nothing was approved.</p>', { tone: 'warn' }));
     }
     if (method === 'GET') return this.showConfirmation(res, session);
     return this.approve(req, res, session);
@@ -707,12 +756,12 @@ export class ApproveServer {
 
   summary(record, mr, user) {
     const lines = [
-      `<p><strong>${escapeHtml(mr?.title || `Merge request !${record.iid}`)}</strong><br>${escapeHtml(record.project)}!${escapeHtml(record.iid)}</p>`,
-      `<p class="note">Head commit <code>${escapeHtml(record.sha.slice(0, 12))}</code></p>`,
+      `<div class="mr"><div class="mr-head">${stateBadge(mr)}<span class="ref">${escapeHtml(record.project)}!${escapeHtml(record.iid)}</span></div><p><strong>${escapeHtml(mr?.title || `Merge request !${record.iid}`)}</strong></p>`,
+      `<p class="note">Head commit <code>${escapeHtml(record.sha.slice(0, 12))}</code></p></div>`,
     ];
     if (user) {
       lines.push(
-        `<p class="note">The approval is made with the configured GitLab account <code>${escapeHtml(user.username || user.name || user.id)}</code>, not as you personally. Anyone with this link can approve.</p>`,
+        `<p class="callout">The approval is made with the configured GitLab account <code>${escapeHtml(user.username || user.name || user.id)}</code>, not as you personally. Anyone with this link can approve.</p>`,
       );
     }
     return lines.join('');
@@ -743,17 +792,17 @@ export class ApproveServer {
     const result = await this.evaluateCached(record);
     if (result.status === 'used') {
       const u = this.usedPage(record);
-      return this.send(res, u.code, this.page(u.title, u.body));
+      return this.send(res, u.code, this.page(u.title, u.body, { tone: toneForCode(u.code) }));
     }
     if (result.status === 'blocked') {
-      return this.send(res, 409, this.page('Cannot approve', `${this.summary(record, result.mr, result.user)}<p>${escapeHtml(result.reason)}</p>`));
+      return this.send(res, 409, this.page('Cannot approve', `${this.summary(record, result.mr, result.user)}<p>${escapeHtml(result.reason)}</p>`, { tone: 'warn' }));
     }
     if (result.status === 'already') {
-      return this.send(res, 200, this.page('Already approved', `${this.summary(record, result.mr, result.user)}<p>This merge request is already approved by the configured account in GitLab. Nothing to do.</p>`));
+      return this.send(res, 200, this.page('Already approved', `${this.summary(record, result.mr, result.user)}<p>This merge request is already approved by the configured account in GitLab. Nothing to do.</p>`, { tone: 'ok' }));
     }
     const token = this.csrf.issue(sid, record.id);
-    const form = `<form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><p>Approve this merge request?</p><button type="submit">Approve merge request</button></form>`;
-    return this.send(res, 200, this.page('Approve merge request', `${this.summary(record, result.mr, result.user)}${form}`));
+    const form = `<form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><p>Approve this merge request?</p><button class="btn" type="submit">Approve merge request</button></form>`;
+    return this.send(res, 200, this.page('Approve merge request', `${this.summary(record, result.mr, result.user)}${form}`, { tone: 'neutral' }));
   }
 
   async withLock(key, fn) {
@@ -775,17 +824,17 @@ export class ApproveServer {
 
   async approve(req, res, { sid, record }) {
     if (!this.originAllowed(req)) {
-      this.send(res, 403, this.page('Not allowed', '<p>The request did not come from the approval page. Nothing was approved.</p>'));
+      this.send(res, 403, this.page('Not allowed', '<p>The request did not come from the approval page. Nothing was approved.</p>', { tone: 'warn' }));
       return;
     }
     const parsed = await this.postForm(req);
     if (!parsed.form) {
       const msg = parsed.status === 415 ? 'Unsupported request.' : 'The request was rejected.';
-      this.send(res, parsed.status, this.page('Not allowed', `<p>${msg} Nothing was approved.</p>`));
+      this.send(res, parsed.status, this.page('Not allowed', `<p>${msg} Nothing was approved.</p>`, { tone: 'warn' }));
       return;
     }
     if (!this.csrf.verify(parsed.form.get('csrf'), sid, record.id)) {
-      this.send(res, 403, this.page('Page expired', '<p>This page expired. Open the link again and confirm. Nothing was approved.</p>'));
+      this.send(res, 403, this.page('Page expired', '<p>This page expired. Open the link again and confirm. Nothing was approved.</p>', { tone: 'warn' }));
       return;
     }
 
@@ -804,7 +853,7 @@ export class ApproveServer {
       }
       return this.sendApproval(current, result);
     });
-    this.send(res, outcome.code, this.page(outcome.title, outcome.body));
+    this.send(res, outcome.code, this.page(outcome.title, outcome.body, { tone: outcome.tone || toneForCode(outcome.code) }));
   }
 
   async sendApproval(record, result) {
