@@ -60,6 +60,7 @@
               nodejs
               just
               nixfmt
+              shellcheck
             ];
           };
         }
