@@ -178,6 +178,8 @@ export function loadConfig(configPath) {
     enable: Boolean(rawApprove.enable ?? envBool(process.env.TEAMS_GITLAB_APPROVE_ENABLE) ?? false),
     host: getString(rawApprove.host) || process.env.TEAMS_GITLAB_APPROVE_HOST || '127.0.0.1',
     port: Number(rawApprove.port ?? process.env.TEAMS_GITLAB_APPROVE_PORT ?? 3006),
+    // The Merge button is a separate opt-in on top of `enable` (default off).
+    merge_enabled: Boolean(rawApprove.merge_enabled ?? envBool(process.env.TEAMS_GITLAB_APPROVE_MERGE_ENABLED) ?? false),
     base_url: (getString(rawApprove.base_url) || process.env.TEAMS_GITLAB_APPROVE_BASE_URL || '').trim(),
     // Lifetime of a link in seconds (default 24 h); the server bounds it to 60 s .. 7 d.
     link_ttl_seconds: Number(rawApprove.link_ttl_seconds ?? process.env.TEAMS_GITLAB_APPROVE_LINK_TTL_SECONDS ?? 86400),

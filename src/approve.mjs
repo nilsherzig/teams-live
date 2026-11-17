@@ -70,8 +70,8 @@ const REFRESH_TIMEOUT_MS = 15_000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const COOKIE_NAME = 'tl_approve';
 const ACTIONS = ['approve', 'reopen', 'merge'];
-const MERGE_POLL_MS = 1500;
-const MERGE_POLL_ATTEMPTS = 4;
+const MERGE_POLL_MS = 2000;
+const MERGE_POLL_ATTEMPTS = 8;
 
 // Page copy per kind of link. `generic` is the entry page, which does not know
 // the action yet (the token that says so is still in the fragment).
@@ -183,33 +183,39 @@ export class ApprovalStore {
     this.approvedHeads = new Map();
   }
 
+  /** Validates one persisted record and keeps it; `action` forces the kind (the key it was stored under). */
+  adopt(r, action) {
+    if (
+      typeof r?.id === 'string' &&
+      ID_PATTERN.test(r.id) &&
+      typeof r.project === 'string' &&
+      r.iid !== undefined &&
+      typeof r.sha === 'string' &&
+      Number.isFinite(r.createdAt) &&
+      Number.isFinite(r.expiresAt) &&
+      ['open', 'approved', 'used', 'stale'].includes(r.status)
+    ) {
+      this.records.set(r.id, {
+        id: r.id,
+        project: r.project,
+        iid: String(r.iid),
+        sha: r.sha,
+        createdAt: r.createdAt,
+        expiresAt: r.expiresAt,
+        status: r.status,
+        action: action || (ACTIONS.includes(r.action) ? r.action : 'approve'),
+      });
+    }
+  }
+
   load() {
     if (!this.file || !fs.existsSync(this.file)) return;
     try {
       const data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      for (const r of Array.isArray(data?.records) ? data.records : []) {
-        if (
-          typeof r?.id === 'string' &&
-          ID_PATTERN.test(r.id) &&
-          typeof r.project === 'string' &&
-          r.iid !== undefined &&
-          typeof r.sha === 'string' &&
-          Number.isFinite(r.createdAt) &&
-          Number.isFinite(r.expiresAt) &&
-          ['open', 'approved', 'used', 'stale'].includes(r.status)
-        ) {
-          this.records.set(r.id, {
-            id: r.id,
-            project: r.project,
-            iid: String(r.iid),
-            sha: r.sha,
-            createdAt: r.createdAt,
-            expiresAt: r.expiresAt,
-            status: r.status,
-            action: ACTIONS.includes(r.action) ? r.action : 'approve',
-          });
-        }
-      }
+      for (const r of Array.isArray(data?.records) ? data.records : []) this.adopt(r, null);
+      // Merge links live under their own key: a build that predates the Merge
+      // action does not read it, so a rollback cannot turn one into an approval.
+      for (const r of Array.isArray(data?.mergeRecords) ? data.mergeRecords : []) this.adopt(r, 'merge');
       for (const a of Array.isArray(data?.approvedHeads) ? data.approvedHeads : []) {
         if (typeof a?.key === 'string' && Number.isFinite(a.at)) this.approvedHeads.set(a.key, a.at);
       }
@@ -262,7 +268,16 @@ export class ApprovalStore {
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
       const tmp = `${this.file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ version: 4, records: [...this.records.values()], approvedHeads: [...this.approvedHeads].map(([key, at]) => ({ key, at })) }), { mode: 0o600 });
+      const all = [...this.records.values()];
+      // Merge records are kept apart from `records`: older builds read only that
+      // key and would otherwise load a merge link as an approval link.
+      const state = {
+        version: 5,
+        records: all.filter((r) => r.action !== 'merge'),
+        mergeRecords: all.filter((r) => r.action === 'merge'),
+        approvedHeads: [...this.approvedHeads].map(([key, at]) => ({ key, at })),
+      };
+      fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
       fs.renameSync(tmp, this.file);
     } catch (err) {
       log(`Could not write ${this.file}: ${err.message}`);
@@ -525,6 +540,7 @@ export class ApproveServer {
     stateFile = null,
     refreshCards = null,
     now = Date.now,
+    mergeEnabled = false,
     mergePollMs = MERGE_POLL_MS,
     mergePollAttempts = MERGE_POLL_ATTEMPTS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -551,6 +567,8 @@ export class ApproveServer {
     this.basePath = base.pathname.replace(/\/+$/, '');
     this.refreshCards = refreshCards;
     this.now = now;
+    // Off unless asked for: merging from a card is a deliberate, separate opt-in.
+    this.mergeEnabled = mergeEnabled === true;
     this.mergePollMs = mergePollMs;
     this.mergePollAttempts = Math.max(1, Number(mergePollAttempts) || 1);
     this.sleep = sleep;
@@ -574,6 +592,8 @@ export class ApproveServer {
    * (`action: 'reopen'`) for reopening a closed one.
    */
   linkFor({ project, iid, sha, action = 'approve' }) {
+    // No merge link is minted (so no button is shown) while merging is switched off.
+    if (action === 'merge' && !this.mergeEnabled) return null;
     try {
       if (action === 'approve' && this.store.hasApprovedHead(project, iid, sha)) this.revalidateApproved(project, iid, sha);
       const link = this.store.linkFor({ project, iid, sha, action });
@@ -856,7 +876,11 @@ export class ApproveServer {
    */
   async evaluate(record) {
     if (record.action === 'reopen') return this.evaluateReopen(record);
-    if (record.action === 'merge') return this.evaluateMerge(record);
+    if (record.action === 'merge') {
+      // A link minted while merging was on stops working when it is switched off.
+      if (!this.mergeEnabled) return { status: 'blocked', reason: 'Merging from cards is turned off. Nothing was merged.' };
+      return this.evaluateMerge(record);
+    }
     if (record.status === 'approved') return { status: 'used' };
     if (record.status === 'stale') return { status: 'blocked', reason: 'This link was superseded because the merge request changed. Use the button on the current Teams card.' };
     let mr;
@@ -985,6 +1009,8 @@ export class ApproveServer {
 
   /** Short-lived, coalesced read for the confirmation page (never used to approve). */
   evaluateCached(record) {
+    // The off switch is never served from the cache.
+    if (record.action === 'merge' && !this.mergeEnabled) return this.evaluate(record);
     const now = this.now();
     for (const [id, c] of this.readCache) {
       if (now - c.at > READ_CACHE_MS || !this.store.records.has(id)) this.readCache.delete(id);
@@ -1147,9 +1173,9 @@ export class ApproveServer {
   /**
    * Merges the merge request: ONE request guarded by the head commit, never
    * resent. GitLab enforces its own rules and answers with a rejection when they
-   * are not met; that is reported as is and nothing is used up. Only an answer
-   * that says "merged" at the expected head, or a fresh read that says so,
-   * counts as success.
+   * are not met. Nothing is claimed from the answer alone: every answer that is
+   * not a plain "merged" at the expected head, a rejection included, is checked
+   * by reading the merge request back before the page says what happened.
    */
   async sendMerge(record, result) {
     const summary = this.summary(record, result.mr, result.user);
@@ -1159,30 +1185,28 @@ export class ApproveServer {
     } catch (err) {
       const status = gitlabStatus(err);
       log(`Merge of ${record.project}!${record.iid} failed${status ? ` (HTTP ${status})` : ' (no response)'}`);
-      if (status === null || status >= 500) return this.confirmMerge(record, summary);
-      if (status === 401 || status === 403) {
-        return { code: 403, title: 'Merge refused', body: `${summary}<p>GitLab refused the request (the configured account may not be allowed to merge this merge request). Nothing was merged.</p>` };
-      }
-      if (status === 404) {
-        return { code: 404, title: 'Merge failed', body: `${summary}<p>GitLab could not find the merge request. Nothing was merged.</p>` };
-      }
-      return { code: 409, title: 'Merge failed', body: `${summary}<p>GitLab did not merge (HTTP ${status}): its rules for this merge request are not met right now (for example approvals, the pipeline, branch protection or conflicts), or the merge request changed. Nothing was merged. Reload the page to review it again.</p>` };
+      return this.confirmMerge(record, summary, { status });
     }
     const head = response?.sha || response?.diff_refs?.head_sha || null;
     if (response?.state === 'merged' && head === record.sha) return this.merged(record, summary);
     log(`Merge of ${record.project}!${record.iid} answered with state ${JSON.stringify(response?.state ?? null)}`);
-    return this.confirmMerge(record, summary);
+    return this.confirmMerge(record, summary, { accepted: true });
   }
 
   /**
-   * Reads the merge request back after a failed, unanswered or inconclusive
-   * merge (the merge can be queued and finish a moment later, so a few reads are
-   * made, but the merge itself is never sent again). Only a confirmed "merged" at
-   * the expected head uses the link up and refreshes the card.
+   * Reads the merge request back after a rejected, failed, unanswered or
+   * inconclusive merge. A merge may be queued and finish a moment later, so an
+   * unclear outcome (timeout, 5xx, an answer that is not "merged") is read a few
+   * times, spaced out; a plain 4xx rejection is read once. The merge itself is
+   * never sent again. Only a confirmed "merged" at the expected head uses the
+   * link up and refreshes the card, and "not merged" is only said where a read
+   * shows the merge request open (or closed).
    */
-  async confirmMerge(record, summary) {
+  async confirmMerge(record, summary, { status = null, accepted = false } = {}) {
+    const rejected = !accepted && status !== null && status < 500;
+    const attempts = rejected ? 1 : this.mergePollAttempts;
     let mr = null;
-    for (let i = 0; i < this.mergePollAttempts; i++) {
+    for (let i = 0; i < attempts; i++) {
       if (i > 0) await this.sleep(this.mergePollMs);
       mr = await this.gitlab.getMr(record.project, record.iid).catch(() => null);
       if (mr?.state === 'merged') break;
@@ -1196,18 +1220,33 @@ export class ApproveServer {
     }
     if (mr?.state === 'closed') {
       this.store.invalidate(record.project, record.iid, 'merge');
-      return { code: 409, title: 'Merge failed', body: `${summary}<p>The merge request is closed. Nothing was merged.</p>` };
+      return { code: 409, title: 'Merge failed', body: `${summary}<p>The merge request is closed, so it was not merged.</p>` };
     }
     if (mr?.state === 'locked') {
       return { code: 502, title: 'Merge in progress', body: `${summary}<p>GitLab is still merging this merge request and has not confirmed the result yet. It was not recorded as merged. Check it in GitLab, then reload the page.</p>` };
     }
+    const answer = rejected ? `GitLab rejected the merge (HTTP ${status})` : status !== null ? `GitLab answered with an error (HTTP ${status})` : accepted ? 'GitLab accepted the request but did not report the merge request as merged' : 'GitLab did not answer the merge request';
     if (mr?.state === 'opened') {
-      return { code: 502, title: 'Merge not confirmed', body: `${summary}<p>GitLab did not confirm the merge and the merge request is still open. It was not recorded as merged. Reload the page to review it before trying again.</p>` };
+      if (rejected) {
+        const why = this.mergeRejectionHint(status);
+        return { code: status === 401 || status === 403 ? 403 : status === 404 ? 404 : 409, title: status === 401 || status === 403 ? 'Merge refused' : 'Merge failed', body: `${summary}<p>${answer}${why}. The merge request is still open in GitLab, so it was not merged. Reload the page to review it again.</p>` };
+      }
+      const waited = Math.round(((attempts - 1) * this.mergePollMs) / 1000);
+      return { code: 502, title: 'Merge not confirmed', body: `${summary}<p>${answer}${waited > 0 ? `. It still shows as open after ${waited} seconds` : '. It still shows as open'}, but a merge that GitLab queued can finish later. It was not recorded as merged. Check it in GitLab before trying again.</p>` };
     }
     if (mr) {
-      return { code: 502, title: 'Outcome unknown', body: `${summary}<p>GitLab reported an unexpected state for the merge request. It may or may not be merged: check it in GitLab before retrying.</p>` };
+      return { code: 502, title: 'Outcome unknown', body: `${summary}<p>${answer}, and the merge request is in an unexpected state. It may or may not be merged: check it in GitLab before retrying.</p>` };
     }
-    return { code: 502, title: 'Outcome unknown', body: `${summary}<p>GitLab did not give a clear answer and the result could not be checked. The merge request may or may not be merged: check it in GitLab before retrying.</p>` };
+    return { code: 502, title: 'Outcome unknown', body: `${summary}<p>${answer}, and the merge request could not be read back. It may or may not be merged: check it in GitLab before retrying.</p>` };
+  }
+
+  /** A short reason for a GitLab rejection of the merge, as a clause (leading text included) or empty. */
+  mergeRejectionHint(status) {
+    if (status === 401 || status === 403) return ' (the configured account may not be allowed to merge this merge request)';
+    if (status === 404) return ' (it could not find the merge request or the merge endpoint)';
+    if (status === 405 || status === 406) return ' (the merge request cannot be merged right now, for example because of conflicts or a failed rule)';
+    if (status === 409) return ' (the head commit changed or a rule is not met)';
+    return ' (its rules for this merge request are not met right now, or the merge request changed)';
   }
 
   async merged(record, summary) {

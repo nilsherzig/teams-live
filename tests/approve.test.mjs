@@ -66,6 +66,7 @@ async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, no
     refreshCards,
     now,
     linkTtlSeconds,
+    mergeEnabled: true,
     mergePollMs: 0,
     mergePollAttempts: 3,
     sleep: async () => {},
@@ -1664,10 +1665,27 @@ test('a GitLab read failure blocks the merge page without leaking GitLab text', 
   }
 });
 
-test('GitLab rejections of the merge are reported as is, never retried and never consume the link', async () => {
-  const run = async (error) => {
+test('GitLab rejections of the merge are read back, never retried and never consume the link', async () => {
+  const run = async (error, { after, unreadable } = {}) => {
     const gitlab = mergeableGitlab();
     gitlab.mergeError = error;
+    if (after) {
+      const send = gitlab.mergeMrOnce;
+      gitlab.mergeMrOnce = async (...args) => {
+        try {
+          return await send(...args);
+        } catch (err) {
+          gitlab.mr = { ...gitlab.mr, ...after };
+          throw err;
+        }
+      };
+    }
+    if (unreadable) {
+      gitlab.getMr = async () => {
+        if (gitlab.calls.merge.length > 0) throw new Error('GitLab request failed (network)');
+        return gitlab.mr;
+      };
+    }
     const ctx = await setup({ gitlab, action: 'merge' });
     try {
       const res = await ctx.confirm();
@@ -1677,20 +1695,53 @@ test('GitLab rejections of the merge are reported as is, never retried and never
     }
   };
   for (const [code, status, pattern] of [
-    [401, 403, /Nothing was merged/],
-    [403, 403, /Nothing was merged/],
-    [404, 404, /could not find/],
+    [401, 403, /may not be allowed/],
+    [403, 403, /may not be allowed/],
+    [404, 404, /HTTP 404/],
     [405, 409, /HTTP 405/],
     [406, 409, /HTTP 406/],
     [409, 409, /HTTP 409/],
     [422, 409, /HTTP 422/],
   ]) {
+    // The read shows the merge request still open: only then is "not merged" said.
     const r = await run(new Error(`GitLab error (${code}): rejected`));
     assert.equal(r.status, status, String(code));
     assert.match(r.html, pattern, String(code));
-    assert.match(r.html, /Nothing was merged/, String(code));
+    assert.match(r.html, /still open in GitLab, so it was not merged/, String(code));
     assert.equal(r.sends, 1, `${code}: sent once`);
     assert.equal(r.link, 'open', `${code}: link kept`);
+  }
+
+  // A rejection whose readback says merged at our head (a double click, a merge that
+  // landed another way) is a success and must not say "nothing was merged".
+  const landed = await run(new Error('GitLab error (405): Method Not Allowed'), { after: { state: 'merged' } });
+  assert.equal(landed.status, 200);
+  assert.match(landed.html, /Merged in GitLab/);
+  assert.doesNotMatch(landed.html, /not merged|Nothing was merged/);
+  assert.equal(landed.link, 'used');
+  assert.equal(landed.sends, 1);
+
+  // Merged at another head: not ours, and not "nothing was merged" either.
+  const other = await run(new Error('GitLab error (409): sha'), { after: { state: 'merged', sha: 'b'.repeat(40) } });
+  assert.equal(other.status, 409);
+  assert.match(other.html, /not at the head commit/);
+  assert.doesNotMatch(other.html, /Nothing was merged/);
+
+  // Being merged right now: no claim either way.
+  const locked = await run(new Error('GitLab error (422): busy'), { after: { state: 'locked' } });
+  assert.equal(locked.status, 502);
+  assert.match(locked.html, /still merging/);
+  assert.doesNotMatch(locked.html, /Nothing was merged|so it was not merged/);
+
+  // Cannot be read back: unknown, never "nothing was merged".
+  for (const code of [403, 404, 405, 409, 422]) {
+    const unknown = await run(new Error(`GitLab error (${code}): rejected`), { unreadable: true });
+    assert.equal(unknown.status, 502, String(code));
+    assert.match(unknown.html, /may or may not be merged/, String(code));
+    assert.match(unknown.html, new RegExp(`HTTP ${code}`), String(code));
+    assert.doesNotMatch(unknown.html, /Nothing was merged|so it was not merged/, String(code));
+    assert.equal(unknown.link, 'open');
+    assert.equal(unknown.sends, 1);
   }
 });
 
@@ -1747,7 +1798,9 @@ test('a lost or 5xx merge answer is read back: only a merge confirmed at the exp
   // Not applied: still open. Nothing consumed, nothing refreshed, never resent.
   const open = await run({ error: lost });
   assert.equal(open.status, 502);
-  assert.match(open.html, /still open/);
+  assert.match(open.html, /still shows as open|still open/);
+  assert.doesNotMatch(open.html, /Nothing was merged|so it was not merged/, 'an unclear outcome claims nothing');
+  assert.match(open.html, /queued/);
   assert.doesNotMatch(open.html, /Merged in GitLab/);
   assert.equal(open.link, 'open');
   assert.equal(open.refreshes, 0);
@@ -1931,7 +1984,7 @@ test('the card has the Merge button only for a live, non-draft merge request wit
 });
 
 test('the watcher offers Merge only on live, non-draft cards with the flow enabled in rich mode', () => {
-  const flow = new ApproveServer({ gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve` });
+  const flow = new ApproveServer({ gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve`, mergeEnabled: true });
   const mr = { project: PROJECT, iid: IID, title: 'Example' };
   const details = { sha: SHA, draft: false, title: 'Example' };
   const text = (w, opts, d = details) => JSON.stringify(w.buildMrCard(mr, d, opts));
@@ -1953,4 +2006,183 @@ test('the watcher offers Merge only on live, non-draft cards with the flow enabl
   assert.equal(merges.length, 1, 'one merge link, reused across refreshes');
   assert.equal(merges[0].sha, SHA);
   assert.ok(url(rich));
+});
+
+test('merge records are persisted under their own key and an older build reads no merge link as an approval', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-merge-split-'));
+  const file = path.join(dir, 'approve.json');
+  // The loader of the build before the Merge action: it reads `records` only and
+  // treats any action it does not know as an approval.
+  const oldLoader = (data) =>
+    (Array.isArray(data?.records) ? data.records : []).map((r) => ({ ...r, action: ['approve', 'reopen'].includes(r.action) ? r.action : 'approve' }));
+  try {
+    const store = new ApprovalStore({ file });
+    const approve = store.linkFor({ project: PROJECT, iid: IID, sha: SHA });
+    const reopen = store.linkFor({ project: PROJECT, iid: 9, action: 'reopen' });
+    const merge = store.linkFor({ project: PROJECT, iid: IID, sha: SHA, action: 'merge' });
+    const usedMerge = store.linkFor({ project: PROJECT, iid: 8, sha: SHA, action: 'merge' });
+    store.markMerged(PROJECT, 8);
+
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.deepEqual(raw.records.map((r) => r.id).sort(), [approve.record.id, reopen.record.id].sort());
+    assert.deepEqual(raw.mergeRecords.map((r) => r.id).sort(), [merge.record.id, usedMerge.record.id].sort());
+    assert.ok(raw.records.every((r) => r.action !== 'merge'), 'no merge record under `records`');
+
+    // Rollback: the old build keeps its approve and reopen links and sees no merge link at all.
+    const seen = oldLoader(raw);
+    assert.deepEqual(seen.map((r) => [r.id, r.action]).sort(), [[approve.record.id, 'approve'], [reopen.record.id, 'reopen']].sort());
+    assert.equal(
+      seen.some((r) => r.id === merge.record.id || r.id === usedMerge.record.id),
+      false,
+      'a merge link must never become an approval link',
+    );
+
+    // Roll forward again: the current build restores everything, merge links still merge.
+    const loaded = new ApprovalStore({ file });
+    loaded.load();
+    assert.equal(loaded.byId(approve.record.id).action, 'approve');
+    assert.equal(loaded.byId(reopen.record.id).action, 'reopen');
+    assert.equal(loaded.byId(merge.record.id).action, 'merge');
+    assert.equal(loaded.byId(merge.record.id).status, 'open');
+    assert.equal(loaded.byId(usedMerge.record.id).status, 'used');
+
+    // The older build rewrote the file without merge records (it never saw them): loads cleanly.
+    fs.writeFileSync(file, JSON.stringify({ version: 4, records: seen, approvedHeads: [] }));
+    const back = new ApprovalStore({ file });
+    back.load();
+    assert.equal(back.byId(merge.record.id), null);
+    assert.equal(back.byId(approve.record.id).action, 'approve');
+
+    // A file from before the Merge action has no `mergeRecords`: fine.
+    assert.doesNotThrow(() => new ApprovalStore({ file }).load());
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a merge record can not smuggle itself in as an approval through the persisted file', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-merge-smuggle-'));
+  const file = path.join(dir, 'approve.json');
+  try {
+    const store = new ApprovalStore({ file });
+    const merge = store.linkFor({ project: PROJECT, iid: IID, sha: SHA, action: 'merge' });
+    // Whatever `action` a record under `mergeRecords` claims, it is a merge link; and one
+    // under `records` with an unknown action is an approval (the older, safe default).
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.mergeRecords[0].action = 'approve';
+    fs.writeFileSync(file, JSON.stringify(raw));
+    const loaded = new ApprovalStore({ file });
+    loaded.load();
+    assert.equal(loaded.byId(merge.record.id).action, 'merge');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('merging is off by default: no merge link, no button, and an existing link stops working', async () => {
+  // Default: the server mints no merge link, the watcher shows no button.
+  const off = new ApproveServer({ gitlab: mergeableGitlab(), baseUrl: `${ORIGIN}/approve` });
+  assert.equal(off.mergeEnabled, false);
+  assert.equal(off.linkFor({ project: PROJECT, iid: IID, sha: SHA, action: 'merge' }), null);
+  assert.ok(off.linkFor({ project: PROJECT, iid: IID, sha: SHA }), 'approve links are unaffected');
+  const mr = { project: PROJECT, iid: IID, title: 'Example' };
+  const details = { sha: SHA, draft: false, title: 'Example' };
+  const card = (flow) => JSON.stringify(watcherWith({ rich_messages: true }, flow).buildMrCard(mr, details, { state: 'open' }));
+  assert.doesNotMatch(card(off), /🔀 Merge/);
+  assert.match(card(off), /Approve/);
+  for (const v of ['true', 1, 'yes', undefined, null]) {
+    assert.equal(new ApproveServer({ gitlab: mergeableGitlab(), baseUrl: `${ORIGIN}/approve`, mergeEnabled: v }).mergeEnabled, false, String(v));
+  }
+
+  // On: the button appears.
+  const on = new ApproveServer({ gitlab: mergeableGitlab(), baseUrl: `${ORIGIN}/approve`, mergeEnabled: true });
+  assert.match(card(on), /🔀 Merge/);
+
+  // A merge link that exists (minted while it was on) does nothing while it is off:
+  // no confirmation button, no PUT, even with a valid session and CSRF token.
+  const gitlab = mergeableGitlab();
+  const ctx = await setup({ gitlab, action: 'merge' });
+  try {
+    const cookie = await ctx.open();
+    const csrf = await ctx.csrfFrom(await ctx.page(cookie));
+    ctx.server.mergeEnabled = false;
+    const page = await ctx.page(cookie);
+    const html = await page.text();
+    assert.doesNotMatch(html, /name="csrf"/, 'no confirm form');
+    assert.match(html, /turned off/);
+    const res = await ctx.post(cookie, { csrf });
+    assert.equal(res.status, 409);
+    assert.match(await res.text(), /turned off/);
+    assert.equal(gitlab.calls.merge.length, 0, 'nothing was sent');
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open', 'the link is kept for when it is switched on');
+
+    // Switched on again: the same link works.
+    ctx.server.mergeEnabled = true;
+    ctx.server.readCache.clear();
+    const ok = await ctx.post(cookie, { csrf: await ctx.csrfFrom(await ctx.page(cookie)) });
+    assert.ok([200, 502].includes(ok.status), 'the merge was attempted');
+    assert.equal(gitlab.calls.merge.length, 1);
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('a plain rejection is read back once; an unclear outcome is read back several times, spaced out', async () => {
+  const run = async ({ error, answer }) => {
+    const gitlab = mergeableGitlab();
+    gitlab.mergeError = error || null;
+    if (answer !== undefined) {
+      gitlab.mergeMrOnce = async (project, iid, opts) => {
+        gitlab.calls.merge.push({ project, iid, opts });
+        return answer;
+      };
+    }
+    const sleeps = [];
+    let reads = 0;
+    const get = gitlab.getMr;
+    gitlab.getMr = async (...a) => {
+      if (gitlab.calls.merge.length > 0) reads++;
+      return get(...a);
+    };
+    const ctx = await setup({ gitlab, action: 'merge', serverOpts: { mergePollAttempts: 5, mergePollMs: 2000, sleep: async (ms) => sleeps.push(ms) } });
+    try {
+      const res = await ctx.confirm();
+      return { status: res.status, html: await res.text(), reads, sleeps, sends: gitlab.calls.merge.length };
+    } finally {
+      await ctx.server.stop();
+    }
+  };
+  const rejected = await run({ error: new Error('GitLab error (422): no') });
+  assert.equal(rejected.reads, 1);
+  assert.deepEqual(rejected.sleeps, []);
+  assert.equal(rejected.sends, 1);
+
+  for (const input of [{ error: new Error('GitLab request failed (network)') }, { error: new Error('GitLab error (503): busy') }, { answer: { state: 'opened' } }]) {
+    const r = await run(input);
+    assert.equal(r.reads, 5, JSON.stringify(Object.keys(input)));
+    assert.deepEqual(r.sleeps, [2000, 2000, 2000, 2000]);
+    assert.equal(r.status, 502);
+    assert.match(r.html, /8 seconds/);
+    assert.match(r.html, /queued/);
+    assert.doesNotMatch(r.html, /Nothing was merged|so it was not merged/);
+    assert.equal(r.sends, 1, 'never resent');
+  }
+});
+
+test('the merge switch is read from gitlab.approve.merge_enabled and defaults to off', async () => {
+  const { loadConfig } = await import('../src/config.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-merge-cfg-'));
+  try {
+    const write = (approve) => {
+      const configPath = path.join(dir, `config-${Math.random().toString(36).slice(2)}.json`);
+      fs.writeFileSync(configPath, JSON.stringify({ conversations: [{ id: '48:notes', name: 'Notes' }], ...(approve ? { gitlab: { approve } } : {}) }));
+      return loadConfig(configPath).gitlab.approve;
+    };
+    assert.equal(write().merge_enabled, false);
+    assert.equal(write({ enable: true }).merge_enabled, false, 'enabling approvals does not enable merging');
+    assert.equal(write({ enable: true, merge_enabled: true }).merge_enabled, true);
+    assert.equal(write({ enable: true, merge_enabled: false }).merge_enabled, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

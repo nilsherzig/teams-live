@@ -134,7 +134,7 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `teams.history_poll_interval_seconds` | Poll of the watched chats for missed pushes (120, 0 disables). |
 | `teams.rich_messages` | Post the watcher messages as Adaptive Cards (false). See [Rich messages](#rich-messages). |
 | `teams.service_alerts.*` | Dampens the admin alerts about expired connector credentials (see below). Keys, in seconds: `stable_recovery_seconds` (120), `flap_window_seconds` (600), `flap_recovery_seconds` (300), `reminder_seconds` (43200), and `flap_transitions` (4). |
-| `gitlab.approve.*` | Approve button of merge request cards: capability link (off). See [Approving from a card](#approving-from-a-card). |
+| `gitlab.approve.*` | Approve button of merge request cards: capability link (off). `gitlab.approve.merge_enabled` (off) separately enables the Merge button. See [Approving from a card](#approving-from-a-card). |
 | `teams.troll_user` | User MRI whose `/exec` gets a joke reply instead of the fake shell output. |
 | `browser_daemon.url`, `.profile`, `.secret_file` | browser-daemon used to sign in to Teams again. |
 | `gitlab.host`, `.group`, `.token_file` | GitLab instance, group for `/mrs`, API token. |
@@ -465,21 +465,33 @@ are not affected by, approve or reopen links.
   says `mergeable`. A merge request with new commits supersedes the link.
 - The POST evaluates again under the lock and sends **one** `PUT .../merge` with
   only `sha` (the head guard). Nothing is overridden: approvals, pipelines,
-  protected branches and conflicts are enforced by GitLab, and a rejection
-  (401, 403, 404, 405, 406, 409, 422) is shown as is and consumes nothing. The
-  request is never resent automatically, not even after a network error.
-- After an unclear outcome (timeout, 5xx, an answer that is not "merged" at the
-  expected head) the merge request is read back a few times, because GitLab may
-  still be merging. Only a confirmed `merged` at the expected head uses the link
-  up, retires approve links and refreshes the card. Merged at another head,
-  still open, still merging or unreadable are reported as such (no false
-  success) and keep the link, apart from "merged elsewhere" and "closed".
+  protected branches and conflicts are enforced by GitLab. The request is never
+  resent automatically, not even after a network error.
+- No answer is taken at its word. After a rejection (401, 403, 404, 405, 406,
+  409, 422) the merge request is read back once; only when that read shows it
+  still open does the page say it was not merged. After an unclear outcome
+  (timeout, 5xx, an answer that is not "merged" at the expected head) it is read
+  back up to eight times, two seconds apart, because GitLab may still be merging
+  or have queued the merge; if it still shows as open the page says so and that
+  a queued merge can finish later, rather than claiming nothing happened. Only a
+  confirmed `merged` at the expected head (also after a rejection, for example a
+  double click) uses the link up, retires approve links and refreshes the card.
+  Merged at another head, still merging or unreadable are reported as such (no
+  false success, no false "nothing was merged") and keep the link, apart from
+  "merged elsewhere" and "closed".
 - Source-branch removal and squash follow the merge request's own settings. Auto
   merge ("when pipeline succeeds") is not used.
 - The merge is made with the configured GitLab account, not as the person
   clicking. The page says so, and anyone holding the link can merge. Treat the
   chat the card is posted in accordingly.
-- Rolling back to a build without this feature leaves persisted merge links in
-  the store; an older build would treat them as approval links, so a "Merge"
-  card button would approve instead of merge. Clear the state file when rolling
-  back.
+- Merge links are stored under their own key (`mergeRecords`) in the state
+  file. A build without this feature reads only `records`, so after a rollback
+  it simply does not know the merge links (and keeps its approve and reopen
+  links); a merge link can never turn into an approval. Rolling forward again
+  starts with fresh merge links.
+- Off by default. `gitlab.approve.merge_enabled` (or
+  `TEAMS_GITLAB_APPROVE_MERGE_ENABLED=true`) turns it on, in addition to
+  `gitlab.approve.enable` and `teams.rich_messages`; enabling approvals alone
+  never enables merging. While it is off no merge link is minted, no Merge
+  button is shown, and a merge link that is still around answers "Merging from
+  cards is turned off" without sending anything.
