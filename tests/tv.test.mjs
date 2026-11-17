@@ -766,11 +766,11 @@ test('TvSwitch: state read is sent to the explicit base URL only, with the daemo
 test('TvSwitch.mute: always an explicit mute-on request, never a toggle, repeatable', async () => {
   const { ha, impl } = fakeHa();
   const sw = new TvSwitch(readbackConfig().switch, { fetchImpl: impl });
-  assert.deepEqual(await sw.mute(), { ok: true });
-  assert.deepEqual(await sw.mute(), { ok: true });
+  assert.deepEqual(await sw.mute(), { ok: true, requested: true, channel: 'ard' });
+  assert.deepEqual(await sw.mute(), { ok: true, requested: true, channel: 'ard' });
   assert.deepEqual(ha.posts, [{ action: 'mute', muted: true }, { action: 'mute', muted: true }]);
   assert.equal(sw.lastKnown, undefined, 'muting is not a channel change');
-  const failing = fakeHa({ fail: () => true });
+  const failing = fakeHa({ fail: (url) => url.includes('/api/webhook/') });
   assert.deepEqual(await new TvSwitch(readbackConfig().switch, { fetchImpl: failing.impl }).mute(), { ok: false, error: 'HTTP 503' });
 });
 
@@ -778,12 +778,12 @@ test('TvSwitch.volumeStep: with a volume entity the level is read, stepped by 5 
   const cfg = readbackConfig().switch;
   const { ha, impl } = fakeHa({ volume: 0.5 });
   const sw = new TvSwitch(cfg, { fetchImpl: impl });
-  assert.deepEqual(await sw.volumeStep('up'), { ok: true, level: 0.55 });
-  assert.deepEqual(await sw.volumeStep('down'), { ok: true, level: 0.5 });
+  assert.deepEqual(await sw.volumeStep('up'), { ok: true, requested: true, channel: 'ard', level: 0.55 });
+  assert.deepEqual(await sw.volumeStep('down'), { ok: true, requested: true, channel: 'ard', level: 0.5 });
   for (const [start, dir, level] of [[0.98, 'up', 1], [1, 'up', 1], [0.03, 'down', 0], [0, 'down', 0]]) {
     const edge = fakeHa({ volume: start });
     const out = await new TvSwitch(cfg, { fetchImpl: edge.impl }).volumeStep(dir);
-    assert.deepEqual(out, { ok: true, level }, `${start} ${dir}`);
+    assert.deepEqual(out, { ok: true, requested: true, channel: 'ard', level }, `${start} ${dir}`);
     assert.deepEqual(edge.ha.posts, [{ action: 'volume', level }]);
   }
   assert.equal(ha.posts.length, 2);
@@ -815,7 +815,7 @@ test('TvSwitch.volumeStep: a failed read or write changes nothing; without an en
 
   const relative = readbackConfig({ volume: {} }).switch;
   const rel = fakeHa();
-  assert.deepEqual(await new TvSwitch(relative, { fetchImpl: rel.impl }).volumeStep('down'), { ok: true });
+  assert.deepEqual(await new TvSwitch(relative, { fetchImpl: rel.impl }).volumeStep('down'), { ok: true, requested: true, channel: 'ard' });
   assert.deepEqual(rel.ha.posts, [{ action: 'volume_down', step: 0.05 }]);
   assert.equal(rel.ha.posts.some((p) => 'muted' in p), false, 'no automatic unmute');
 });
@@ -854,17 +854,122 @@ test('/tv mute and /tv vol up|down: the owner controls the audio, replies and re
   const mute = fakeHa();
   const m = await runSwitch(['mute'], { tv: readbackConfig(), handler: mute.handler });
   assert.deepEqual(mute.ha.posts, [{ action: 'mute', muted: true }]);
-  assert.match(m.replies, /Muted\./);
+  assert.match(m.replies, /Mute requested\./);
+  assert.doesNotMatch(m.replies, /Muted/);
+  assert.match(m.replies, /not verified/);
   assert.match(m.reactions[0], /whiteheavycheckmark/);
 
   const up = fakeHa({ volume: 0.5 });
   const u = await runSwitch(['vol', 'up'], { tv: readbackConfig(), handler: up.handler });
   assert.deepEqual(up.ha.posts, [{ action: 'volume', level: 0.55 }]);
-  assert.match(u.replies, /Volume up\./);
+  assert.match(u.replies, /Volume increase requested\./);
+  assert.match(u.replies, /not verified/);
   const down = fakeHa({ volume: 0.5 });
   const d = await runSwitch(['vol', 'down'], { tv: readbackConfig(), handler: down.handler });
   assert.deepEqual(down.ha.posts, [{ action: 'volume', level: 0.45 }]);
-  assert.match(d.replies, /Volume down\./);
+  assert.match(d.replies, /Volume decrease requested\./);
+  assert.doesNotMatch(`${m.replies}${u.replies}${d.replies}`, /Muted\.|Volume up\.|Volume down\./);
+});
+
+test('TvSwitch mute and volume: the brb scene is a no-op, nothing is posted', async () => {
+  for (const scene of ['brb', 'idle-off']) {
+    const cfg = readbackConfig({
+      state: { entity_id: 'select.scene_x', token: TOKEN, map: { off: ['brb', 'idle-off'] } },
+    }).switch;
+    const { ha, impl } = fakeHa({ scene });
+    const sw = new TvSwitch(cfg, { fetchImpl: impl });
+    for (const out of [await sw.mute(), await sw.volumeStep('up'), await sw.volumeStep('down')]) {
+      assert.equal(out.ok, false);
+      assert.equal(out.noop, true);
+      assert.match(out.error, /TV is off/);
+    }
+    assert.deepEqual(ha.posts, [], `nothing posted on ${scene}`);
+  }
+});
+
+test('TvSwitch mute and volume: an unknown, unreadable or unconfigured scene fails closed', async () => {
+  const cases = [
+    ['an unrecognized scene', fakeHa({ scene: 'something-else' }), /unrecognized state/],
+    ['an unavailable state', fakeHa({ scene: 'unavailable' }), /state unavailable/],
+    ['a failing readback', fakeHa({ fail: (url) => url.includes('/api/states/') }), /HTTP 503/],
+  ];
+  for (const [label, fake, pattern] of cases) {
+    const sw = new TvSwitch(readbackConfig().switch, { fetchImpl: fake.impl });
+    for (const out of [await sw.mute(), await sw.volumeStep('up')]) {
+      assert.equal(out.ok, false, label);
+      assert.equal(out.noop, undefined, label);
+      assert.match(out.error, /could not read the current channel/, label);
+      assert.match(out.error, pattern, label);
+    }
+    assert.deepEqual(fake.ha.posts, [], label);
+  }
+  // No readback at all: the scene cannot be checked, so nothing is sent.
+  const bare = config({ switch: { base_url: 'https://ha.example', webhooks: { mute: SECRET_ID + '-mute', volume_up: SECRET_ID + '-vu' } } }).switch;
+  const none = fakeHa();
+  const sw = new TvSwitch(bare, { fetchImpl: none.impl });
+  for (const out of [await sw.mute(), await sw.volumeStep('up')]) {
+    assert.equal(out.ok, false);
+    assert.match(out.error, /cannot be checked/);
+  }
+  assert.deepEqual(none.ha.posts, []);
+  assert.equal(none.requests.length, 0, 'not even a state read');
+});
+
+test('TvSwitch mute: a switch that just succeeded outranks a readback that still shows the brb scene', async () => {
+  const { ha, impl } = fakeHa({ scene: 'brb' });
+  let now = 1000;
+  const sw = new TvSwitch(readbackConfig().switch, { fetchImpl: impl, now: () => now });
+  assert.equal((await sw.mute()).noop, true);
+  ha.scene = 'brb';
+  const posted = await sw.switchTo('zdf');
+  assert.equal(posted.ok, true);
+  ha.scene = 'brb'; // Home Assistant lags
+  now += 1000;
+  assert.deepEqual(await sw.mute(), { ok: true, requested: true, channel: 'zdf' });
+  now += 10000;
+  ha.scene = 'zdf';
+  assert.equal((await sw.mute()).ok, true, 'the readback now says zdf');
+  ha.scene = 'brb';
+  assert.equal((await sw.mute()).noop, true, 'the lag allowance has expired');
+});
+
+test('/tv mute and /tv vol on the brb scene: a no-action reply, a warning reaction and no webhook', async () => {
+  for (const args of [['mute'], ['vol', 'up'], ['vol', 'down']]) {
+    const { ha, handler } = fakeHa({ scene: 'brb' });
+    const r = await runSwitch(args, { tv: readbackConfig(), handler });
+    assert.deepEqual(ha.posts, [], args.join(' '));
+    assert.match(r.replies, /did nothing/);
+    assert.match(r.replies, /TV is off/);
+    assert.doesNotMatch(r.replies, /requested|Muted/);
+    assert.match(r.reactions[0], /warning/i);
+    assert.doesNotMatch(r.reactions.join(), /whiteheavycheckmark/);
+  }
+});
+
+test('/tv mute and /tv vol with an unknown scene: fails closed with a failure reaction and no webhook', async () => {
+  for (const [scene, args] of [['mystery', ['mute']], ['mystery', ['vol', 'up']], ['unavailable', ['vol', 'down']]]) {
+    const { ha, handler } = fakeHa({ scene });
+    const r = await runSwitch(args, { tv: readbackConfig(), handler });
+    assert.deepEqual(ha.posts, [], `${scene} ${args.join(' ')}`);
+    assert.match(r.replies, /failed: could not read the current channel/);
+    assert.doesNotMatch(r.replies, /requested|Muted/);
+    assert.match(r.reactions[0], /crossmark/);
+    for (const secret of [SECRET_ID, TOKEN, 'ha.example', 'select.scene_x']) {
+      assert.equal(`${r.replies}${r.logged}`.includes(secret), false, `leaked ${secret}`);
+    }
+  }
+});
+
+test('/tv mute: HA accepts the webhook but nothing is verified, so the reply says requested, not done', async () => {
+  // The webhook answers 200 while OBS may do nothing: the daemon cannot tell, and must not claim it.
+  const accepted = fakeHa({ scene: 'tagesschau' });
+  const r = await runSwitch(['mute'], { tv: readbackConfig(), handler: accepted.handler });
+  assert.deepEqual(accepted.ha.posts, [{ action: 'mute', muted: true }]);
+  assert.match(r.replies, /Mute requested\. Home Assistant accepted the request; the result is not verified\./);
+  assert.doesNotMatch(r.replies, /\bMuted\b|\bmuted\b|done|completed/i);
+  const reads = r.requests.filter((req) => req.url.includes('/api/states/'));
+  assert.equal(reads.length, 1, 'the scene is read once before the webhook');
+  assert.ok(r.requests.findIndex((req) => req.url.includes('/api/states/')) < r.requests.findIndex((req) => req.url.includes('/api/webhook/')));
 });
 
 test('/tv next|mute|vol: not configured is explained and not attempted', async () => {

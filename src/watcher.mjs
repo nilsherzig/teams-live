@@ -58,6 +58,7 @@ import {
 import { SnakeGame } from './snake.mjs';
 import {
   TV_AUDIO_LABELS,
+  TV_AUDIO_UNVERIFIED,
   TV_CONTROL_ACTIONS,
   TV_SWITCH_LABELS,
   TV_USAGE,
@@ -4804,14 +4805,26 @@ export class MergeRequestWatcher {
       doing = `Switching to ${TV_SWITCH_LABELS[action]}`;
       result = await this.tvSwitch.switchTo(action);
     }
+    if (result.noop) {
+      // The scene gate refused: nothing was sent, which is not a failure of the daemon.
+      log(`/tv ${name}: nothing to do (${result.error})`);
+      await sendReply(event.conversationId, event, `\u26A0\uFE0F \`/tv ${name}\` did nothing: ${result.error}.`);
+      react('warning');
+      return;
+    }
     if (!result.ok) {
       log(`/tv ${name} failed: ${result.error}`);
       await sendReply(event.conversationId, event, `\u274C ${doing} failed: ${result.error}`);
       react('failure');
       return;
     }
-    const text = TV_AUDIO_LABELS[action] || `Switched to ${TV_SWITCH_LABELS[result.target || action]}.`;
-    await sendReply(event.conversationId, event, `\uD83D\uDCFA ${text}`);
+    if (TV_AUDIO_LABELS[action]) {
+      // A webhook cannot prove OBS acted: say "requested", never "done".
+      await sendReply(event.conversationId, event, `\uD83D\uDCFA ${TV_AUDIO_LABELS[action]} ${TV_AUDIO_UNVERIFIED}`);
+      react('success');
+      return;
+    }
+    await sendReply(event.conversationId, event, `\uD83D\uDCFA Switched to ${TV_SWITCH_LABELS[result.target || action]}.`);
     react('success');
   }
 

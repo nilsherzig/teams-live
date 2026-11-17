@@ -492,7 +492,14 @@ export const TV_USAGE =
 
 // ---------------------------------------------------------------- switching
 
-export const TV_AUDIO_LABELS = { mute: 'Muted.', volume_up: 'Volume up.', volume_down: 'Volume down.' };
+// Home Assistant webhooks are fire and forget: a 2xx proves the request was
+// queued, not that OBS did anything. The wording must not claim more.
+export const TV_AUDIO_LABELS = {
+  mute: 'Mute requested.',
+  volume_up: 'Volume increase requested.',
+  volume_down: 'Volume decrease requested.',
+};
+export const TV_AUDIO_UNVERIFIED = 'Home Assistant accepted the request; the result is not verified.';
 export const TV_SWITCH_LABELS = { ard: 'ARD', zdf: 'ZDF', tagesschau: 'Tagesschau', off: 'off (brb)' };
 
 /** How long a successful switch outranks a readback that still shows the previous channel. */
@@ -672,9 +679,39 @@ export class TvSwitch {
     });
   }
 
-  /** `/tv mute`: mute on, never a toggle, so repeating it is harmless. */
+  /**
+   * The channel to act on for an audio control, or a refusal. The OBS helper
+   * only acts while an ARD/ZDF/Tagesschau scene is on air and silently does
+   * nothing otherwise, so the scene is read first and the control fails closed:
+   * off (the brb scene) is a no-op (`noop: true`, nothing is posted), an
+   * unreadable, unknown or unconfigured scene is an error.
+   */
+  async audioGate() {
+    if (!this.hasReadback()) {
+      return { ok: false, error: 'the TV scene cannot be checked (no state readback configured), so nothing was sent' };
+    }
+    const read = await this.readChannel();
+    if (!read.ok) return { ok: false, error: `could not read the current channel (${read.error}), so nothing was sent` };
+    let channel = read.channel;
+    // Home Assistant can lag a switch that just succeeded; trust that switch for a few seconds.
+    const recent = this.recentSwitch;
+    if (recent && this.now() - recent.at < RECENT_SWITCH_MS && recent.channel !== channel) channel = recent.channel;
+    if (!channel) return { ok: false, noop: true, error: 'the TV is off (brb scene), so there is nothing to change' };
+    return { ok: true, channel };
+  }
+
+  /**
+   * `/tv mute`: mute on, never a toggle, so repeating it is harmless. Only
+   * while a channel scene is on air. `{ ok: true, requested: true, channel }`
+   * means the webhook was accepted, not that the source got muted.
+   */
   mute() {
-    return this.serialize(() => this.post('mute', { muted: true }));
+    return this.serialize(async () => {
+      const gate = await this.audioGate();
+      if (!gate.ok) return gate;
+      const result = await this.post('mute', { muted: true });
+      return result.ok ? { ok: true, requested: true, channel: gate.channel } : result;
+    });
   }
 
   /**
@@ -682,20 +719,26 @@ export class TvSwitch {
    * level is read, moved by one step, clamped to 0..1 and set absolutely (the
    * `volume` webhook), which keeps repeated steps exact; without it the
    * receiver gets `volume_up`/`volume_down` with the step and does the maths.
-   * It never unmutes by itself.
+   * It never unmutes by itself, and like `mute` it only runs while a channel
+   * scene is on air (`audioGate`).
    */
   volumeStep(direction) {
     return this.serialize(async () => {
       const action = direction === 'down' ? 'volume_down' : 'volume_up';
+      const gate = await this.audioGate();
+      if (!gate.ok) return gate;
       const { step, entity_id: entity } = this.config.volume;
-      if (!(entity && this.hasReadback() && this.isConfigured('volume'))) return this.post(action, { step });
+      if (!(entity && this.hasReadback() && this.isConfigured('volume'))) {
+        const sent = await this.post(action, { step });
+        return sent.ok ? { ok: true, requested: true, channel: gate.channel } : sent;
+      }
       const read = await this.readEntity(entity);
       if (!read.ok) return { ok: false, error: `could not read the volume (${read.error})` };
       const level = Number(read.body.attributes?.volume_level);
       if (!Number.isFinite(level)) return { ok: false, error: 'could not read the volume (state unavailable)' };
       const next = Math.min(1, Math.max(0, Math.round((level + (action === 'volume_up' ? step : -step)) * 1000) / 1000));
       const result = await this.post('volume', { level: next });
-      return result.ok ? { ok: true, level: next } : result;
+      return result.ok ? { ok: true, requested: true, channel: gate.channel, level: next } : result;
     });
   }
 }
