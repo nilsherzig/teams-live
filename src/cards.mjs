@@ -545,9 +545,10 @@ const tri = (value) => (value === true ? true : value === false ? false : null);
  * appears only while a rebase is required. Merged and closed merge requests
  * keep the details that are known. `draft` marks an open merge request as a
  * draft (neutral); it never masks a merged or closed one. `approveUrl` adds an "👍 Approve" button
- * to a live merge request and `reopenUrl` a "🔄 Reopen" button to a closed one
- * (never a merged one); each opens a confirmation page (see src/approve.mjs)
- * and never acts by itself. `author` (a display name) adds an "Author" fact;
+ * to a live merge request, `mergeUrl` a "🔀 Merge" button next to it (open and
+ * non-draft only) and `reopenUrl` a "🔄 Reopen" button to a closed one (never a
+ * merged one); each opens a confirmation page (see src/approve.mjs) and never
+ * acts by itself. `author` (a display name) adds an "Author" fact;
  * with a profile picture in `avatars` it is a picture row, otherwise plain text.
  */
 export function buildMergeRequestCard(mr) {
@@ -629,9 +630,11 @@ export function buildMergeRequestCard(mr) {
       logoFact('Ticket', mdLink(jiraLabel, mr.jira?.url), 'jira'),
     ].filter(Boolean),
     actions: live
-      ? mr.approveUrl
-        ? [{ title: '👍 Approve', url: mr.approveUrl }]
-        : []
+      ? [
+          mr.approveUrl ? { title: '👍 Approve', url: mr.approveUrl } : null,
+          // Never on a draft, and only while the merge request is open (not "rebase required").
+          mr.mergeUrl && !draft && state !== 'rebase' ? { title: '🔀 Merge', url: mr.mergeUrl } : null,
+        ].filter(Boolean)
       : state === 'closed' && mr.reopenUrl
         ? [{ title: '🔄 Reopen', url: mr.reopenUrl }]
         : [],

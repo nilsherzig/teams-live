@@ -1907,3 +1907,50 @@ test('mergeMrOnce sends one PUT with only the sha and never resends on a thrown 
     globalThis.setTimeout = realTimeout;
   }
 });
+
+test('the card has the Merge button only for a live, non-draft merge request with a link', () => {
+  const base = { iid: 7, project: PROJECT, title: 'Example', url: 'https://gitlab.example.com/x', approved: false };
+  const card = (extra) => JSON.stringify(buildMergeRequestCard({ ...base, ...extra }).card ?? buildMergeRequestCard({ ...base, ...extra }));
+  const mergeUrl = `${ORIGIN}/approve/#${'M'.repeat(43)}`;
+  const approveUrl = `${ORIGIN}/approve/#${'A'.repeat(43)}`;
+
+  const live = card({ state: 'open', mergeUrl, approveUrl });
+  assert.match(live, /"title":"🔀 Merge"/);
+  assert.ok(live.includes(mergeUrl));
+  assert.match(live, /Approve/, 'approve stays next to it');
+  assert.match(card({ state: 'open', mergeUrl }), /🔀 Merge/);
+  assert.match(card({ state: 'rebased', mergeUrl }), /🔀 Merge/);
+  assert.doesNotMatch(card({ state: 'open' }), /Merge"/);
+  assert.doesNotMatch(card({ state: 'open', mergeUrl: 'javascript:alert(1)' }), /alert/);
+  for (const state of ['merged', 'closed', 'rebase']) {
+    assert.doesNotMatch(card({ state, mergeUrl }), /🔀 Merge/, state);
+  }
+  assert.doesNotMatch(card({ state: 'open', draft: true, mergeUrl }), /🔀 Merge/, 'drafts have none');
+  // The Reopen button on closed cards is untouched.
+  assert.match(card({ state: 'closed', reopenUrl: approveUrl }), /🔄 Reopen/);
+});
+
+test('the watcher offers Merge only on live, non-draft cards with the flow enabled in rich mode', () => {
+  const flow = new ApproveServer({ gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve` });
+  const mr = { project: PROJECT, iid: IID, title: 'Example' };
+  const details = { sha: SHA, draft: false, title: 'Example' };
+  const text = (w, opts, d = details) => JSON.stringify(w.buildMrCard(mr, d, opts));
+  const rich = watcherWith({ rich_messages: true }, flow);
+
+  assert.match(text(rich, { state: 'open' }), /🔀 Merge/);
+  assert.match(text(rich, { state: 'rebased' }), /🔀 Merge/);
+  for (const state of ['merged', 'closed', 'rebase']) {
+    assert.doesNotMatch(text(rich, { state }), /🔀 Merge/, state);
+  }
+  assert.doesNotMatch(text(rich, { state: 'open' }, { ...details, draft: true }), /🔀 Merge/, 'draft');
+  assert.doesNotMatch(text(rich, { state: 'open' }, { ...details, sha: null }), /🔀 Merge/, 'no head');
+  assert.doesNotMatch(text(watcherWith({ rich_messages: false }, flow), { state: 'open' }), /🔀 Merge/, 'rich mode off');
+  assert.doesNotMatch(text(watcherWith({ rich_messages: true }, null), { state: 'open' }), /🔀 Merge/, 'flow disabled');
+
+  const url = (w) => /https:\/\/approve\.example\.com\/approve\/#[A-Za-z0-9_-]{43}/g;
+  const records = [...flow.store.records.values()];
+  const merges = records.filter((r) => r.action === 'merge');
+  assert.equal(merges.length, 1, 'one merge link, reused across refreshes');
+  assert.equal(merges[0].sha, SHA);
+  assert.ok(url(rich));
+});

@@ -1898,6 +1898,26 @@ export class MergeRequestWatcher {
   }
 
   /**
+   * Link to the merge confirmation page, or null when the button must not be
+   * shown: flow disabled, rich mode off, not an open merge request (a merge
+   * request that needs a rebase cannot be merged yet), draft, or head commit
+   * unknown. The link is pinned to that head commit.
+   */
+  mrMergeUrl(mr, mrDetails, { state }) {
+    if (!this.approveFlow || !this.richMessages) return null;
+    if (!['open', 'rebased'].includes(state)) return null;
+    if (mrDetails?.draft === true) return null;
+    const sha = typeof mrDetails?.sha === 'string' && mrDetails.sha ? mrDetails.sha : null;
+    if (!sha || !mr?.project || mr.iid === undefined || mr.iid === null) return null;
+    try {
+      return this.approveFlow.linkFor({ project: mr.project, iid: mr.iid, sha, action: 'merge' });
+    } catch (err) {
+      log(`Merge link failed for ${mr.project}!${mr.iid}: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Link to the reopen confirmation page, or null when the button must not be
    * shown: flow disabled, rich mode off, or not a closed merge request (a
    * merged or open one cannot be reopened).
@@ -2637,6 +2657,7 @@ export class MergeRequestWatcher {
       state,
       diffStats,
       approveUrl: this.mrApproveUrl(mr, mrDetails, { state, approved }),
+      mergeUrl: this.mrMergeUrl(mr, mrDetails, { state }),
       reopenUrl: this.mrReopenUrl(mr, { state }),
       iid: mr.iid,
       project: mr.project,

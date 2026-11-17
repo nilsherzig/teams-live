@@ -447,3 +447,39 @@ merged one is refused), and a confirmed POST reopens it with the configured
 GitLab account. After an unclear answer the state is read back before anything
 is reported or used up. The card is re-checked afterwards like after an
 approval. Approval and reopen links of one merge request do not affect each other.
+
+#### Merging from a card
+
+A third button, "🔀 Merge", sits on the card of an **open, non-draft** merge
+request (next to Approve; never on merged, closed, draft or "needs rebase"
+cards). It reuses the approval machinery unchanged: the 256-bit token lives in
+the URL fragment and is exchanged for an HttpOnly session cookie, the mutating
+POST needs the CSRF token and a matching Origin, every action on one merge
+request runs under the same per-MR lock, and links live for `link_ttl_seconds`
+(24 hours by default). Merge links are separate records: they do not affect, and
+are not affected by, approve or reopen links.
+
+- The link is bound to the head commit of the card. A GET never changes
+  anything; it re-reads the merge request and shows the button only when it is
+  open, not a draft, still at that head and GitLab's `detailed_merge_status`
+  says `mergeable`. A merge request with new commits supersedes the link.
+- The POST evaluates again under the lock and sends **one** `PUT .../merge` with
+  only `sha` (the head guard). Nothing is overridden: approvals, pipelines,
+  protected branches and conflicts are enforced by GitLab, and a rejection
+  (401, 403, 404, 405, 406, 409, 422) is shown as is and consumes nothing. The
+  request is never resent automatically, not even after a network error.
+- After an unclear outcome (timeout, 5xx, an answer that is not "merged" at the
+  expected head) the merge request is read back a few times, because GitLab may
+  still be merging. Only a confirmed `merged` at the expected head uses the link
+  up, retires approve links and refreshes the card. Merged at another head,
+  still open, still merging or unreadable are reported as such (no false
+  success) and keep the link, apart from "merged elsewhere" and "closed".
+- Source-branch removal and squash follow the merge request's own settings. Auto
+  merge ("when pipeline succeeds") is not used.
+- The merge is made with the configured GitLab account, not as the person
+  clicking. The page says so, and anyone holding the link can merge. Treat the
+  chat the card is posted in accordingly.
+- Rolling back to a build without this feature leaves persisted merge links in
+  the store; an older build would treat them as approval links, so a "Merge"
+  card button would approve instead of merge. Clear the state file when rolling
+  back.
