@@ -119,9 +119,9 @@ const CARD_LABELS = Object.freeze({
   'Precompute Cache': 'Cache',
 });
 
-// Fixed label column: just wide enough for "Home Assistant" in bold (about 96px), so
-// the value gets the rest of a 308px phone card (130px starved it: mid-word breaks).
-const LABEL_COLUMN = '104px';
+// Fixed label column: just wide enough for "Home Assistant" in bold (about 108px), so
+// the value gets the rest of a 308px phone card (130px starved it: mid-word breaks, 104px wrapped it).
+const LABEL_COLUMN = '112px';
 
 /**
  * One fact as a row of three columns: a fixed 16px icon slot, a fixed-width bold
