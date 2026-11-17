@@ -8,7 +8,9 @@
 //
 // Layout of every card: a compact header with the logo of the service and a
 // label for the kind of entity (for example "GitLab - Merge request"), then the
-// title, an optional one-line subtitle, a few facts and the link actions.
+// title, an optional one-line subtitle and a few facts. Navigation uses inline
+// links (the title and the cross references), not buttons, so a card has no
+// bottom actions.
 
 import { SERVICE_ICONS } from './card-icons.mjs';
 
@@ -62,15 +64,6 @@ export function mdLink(text, url) {
   return `[${escapeLinkLabel(label)}](${target})`;
 }
 
-/** Link button; `service` picks the logo shown next to the label. */
-function openUrl(title, url, service) {
-  const target = str(url);
-  if (!target) return null;
-  const action = { type: 'Action.OpenUrl', title, url: target };
-  if (SERVICE_ICONS[service]) action.iconUrl = SERVICE_ICONS[service];
-  return action;
-}
-
 const SERVICES = {
   gitlab: 'GitLab',
   jira: 'Jira',
@@ -114,7 +107,6 @@ function assembleCard({
   titleUrl,
   subtitle,
   facts = [],
-  actions = [],
   fallbackText,
 }) {
   const items = [
@@ -131,8 +123,6 @@ function assembleCard({
     msteams: { width: 'Full' },
     body: [{ type: 'Container', style, bleed: false, items }],
   };
-  const cardActions = actions.filter(Boolean);
-  if (cardActions.length > 0) card.actions = cardActions;
   if (fallbackText) card.fallbackText = str(fallbackText);
   return card;
 }
@@ -235,11 +225,6 @@ export function buildMergeRequestCard(mr) {
       ['Target', mr.targetBranch],
       ['Jira', mdLink(mr.jira?.key, mr.jira?.url)],
     ].filter(Boolean),
-    actions: [
-      openUrl('Open merge request', mr.url, 'gitlab'),
-      openUrl('Open pipeline', mr.pipeline?.url, 'gitlab'),
-      openUrl(mr.jira?.key ? `Open ${mr.jira.key}` : 'Open Jira issue', mr.jira?.url, 'jira'),
-    ],
     fallbackText: mr.fallbackText,
   });
 }
@@ -263,11 +248,6 @@ export function buildJobCard(job) {
       pipelineFact(job.pipeline),
       ['Merge request', mrReference(job.mr)],
     ].filter(Boolean),
-    actions: [
-      openUrl('Open job', job.url, 'gitlab'),
-      openUrl('Open pipeline', job.pipeline?.url, 'gitlab'),
-      openUrl('Open merge request', job.mr?.url, 'gitlab'),
-    ],
     fallbackText: job.fallbackText,
   });
 }
@@ -289,7 +269,6 @@ export function buildPipelineCard(pipeline) {
       ['YAML errors', pipeline.yamlErrors],
       ['Merge request', mrReference(pipeline.mr)],
     ].filter(Boolean),
-    actions: [openUrl('Open pipeline', pipeline.url, 'gitlab'), openUrl('Open merge request', pipeline.mr?.url, 'gitlab')],
     fallbackText: pipeline.fallbackText,
   });
 }
@@ -317,7 +296,6 @@ export function buildJiraIssueCard(issue) {
       ['Priority', issue.priority || 'None'],
       ['Assignee', issue.assignee || 'Unassigned'],
     ],
-    actions: [openUrl(`Open ${issue.key}`, issue.url, 'jira')],
     fallbackText: issue.fallbackText,
   });
 }
@@ -343,7 +321,6 @@ export function buildOpsGenieAlertCard(alert) {
       ['Status', `${alert.status || 'open'}, ${alert.acknowledged ? 'acknowledged' : 'unacknowledged'}`],
       ['Owner', alert.owner || 'Unassigned'],
     ],
-    actions: [openUrl('Open alert', alert.url, 'opsgenie')],
     fallbackText: alert.fallbackText,
   });
 }
@@ -361,7 +338,6 @@ export function buildConfluencePageCard(page) {
       ['Space', space],
       ['Last edited by', page.author],
     ],
-    actions: [openUrl('Open page', page.url, 'confluence')],
     fallbackText: page.fallbackText,
   });
 }

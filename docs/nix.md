@@ -167,14 +167,13 @@ out for what the entity is:
 Every card starts with a compact header: the logo of the service (GitLab, Jira,
 OpsGenie or Confluence, embedded as a small PNG, no image fetch) and a label
 such as "GitLab · Merge request" or "Jira · Bug". Below it come the title, a
-one-line subtitle, a few facts and the link buttons. The title links to the
-entity, and cross references inside the card are linked too: the pipeline and
-Jira key of a merge request, and the pipeline and merge request of a job or
-pipeline. A link is only added for a valid http(s) URL; without one the text
-stays plain, and brackets in titles are escaped so they cannot break the link.
-
-Each button carries the logo of the service it opens (for example the GitLab
-logo on "Open merge request" and the Jira logo on the Jira cross-link).
+one-line subtitle and a few facts. Navigation is done with inline links, not
+buttons: the title links to the entity, and cross references inside the card are
+linked too (the pipeline and Jira key of a merge request, and the pipeline and
+merge request of a job or pipeline). A link is only added for a valid http(s)
+URL; without one the text stays plain, and brackets in titles are escaped so
+they cannot break the link. Cards carry no bottom buttons; they are reserved
+for real actions.
 
 Replies, in-place updates and edits of the author's message behave as with
 regular messages: channel replies stay in the thread, chat replies quote the

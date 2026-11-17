@@ -18,7 +18,6 @@ const plain = (text) => text.replace(/\[((?:\\.|[^\]\\])*)\]\([^)]*\)/g, '$1').r
 const rawFacts = (card) => Object.fromEntries(items(card).find((i) => i.type === 'FactSet').facts.map((f) => [f.title, f.value]));
 const facts = (card) => Object.fromEntries(Object.entries(rawFacts(card)).map(([k, v]) => [k, plain(v)]));
 const style = (card) => card.body[0].style;
-const actionUrls = (card) => (card.actions || []).map((a) => a.url);
 const header = (card) => items(card)[0];
 const headerLabel = (card) => header(card).columns[1].items[0].text;
 const headerIcon = (card) => header(card).columns[0].items[0];
@@ -73,11 +72,9 @@ test('merge request card: open, approved, green pipeline, auto-merge', () => {
   assert.equal(f.Target, 'main');
   assert.equal(f.Jira, 'EX-123');
   assert.equal(f.Rebase, undefined);
-  assert.deepEqual(actionUrls(card), [
-    baseMr.url,
-    'https://gitlab.example.com/group/project/-/pipelines/7',
-    'https://jira.example.com/browse/EX-123',
-  ]);
+  assert.equal(rawTitle(card), `[Add example feature](${baseMr.url})`);
+  assert.equal(rawFacts(card).Pipeline, '[Passed (#7)](https://gitlab.example.com/group/project/-/pipelines/7)');
+  assert.equal(rawFacts(card).Jira, '[EX-123](https://jira.example.com/browse/EX-123)');
 });
 
 test('merge request card: failed pipeline wins over everything else for open MRs', () => {
@@ -141,12 +138,10 @@ test('job card shows stage, ref, duration, failure reason, pipeline and MR', () 
   assert.equal(f['Failure reason'], 'script_failure');
   assert.equal(f.Pipeline, 'Failed (#7)');
   assert.equal(f['Merge request'], '!42 Add example feature');
-  assert.equal(actionUrls(card).length, 3);
 
   const ok = buildJobCard({ id: 100, name: 'lint', status: 'success', failureReason: 'ignored' });
   assert.equal(style(ok), 'good');
   assert.equal(facts(ok)['Failure reason'], undefined);
-  assert.equal(ok.actions, undefined);
 });
 
 test('pipeline card', () => {
@@ -164,7 +159,8 @@ test('pipeline card', () => {
   assert.equal(mainTitle(card), 'Pipeline #7');
   assert.equal(style(card), 'accent');
   assert.equal(facts(card)['YAML errors'], 'jobs:build config should be a hash');
-  assert.deepEqual(actionUrls(card), ['https://gitlab.example.com/group/project/-/pipelines/7', baseMr.url]);
+  assert.equal(rawTitle(card), '[Pipeline #7](https://gitlab.example.com/group/project/-/pipelines/7)');
+  assert.equal(rawFacts(card)['Merge request'], `[!42 Add example feature](${baseMr.url})`);
 });
 
 test('jira issue card styles by status and shows assignee/priority', () => {
@@ -185,7 +181,7 @@ test('jira issue card styles by status and shows assignee/priority', () => {
   assert.equal(subtitle(card), 'EX-1');
   assert.equal(style(card), 'accent');
   assert.deepEqual(facts(card), { Status: 'In Progress', Priority: 'High', Assignee: 'Alice Example' });
-  assert.deepEqual(actionUrls(card), [issue.url]);
+  assert.equal(rawTitle(card), `[Something is broken](${issue.url})`);
 
   assert.equal(style(buildJiraIssueCard({ ...issue, status: 'Done', statusCategory: 'done' })), 'good');
   assert.equal(style(buildJiraIssueCard({ ...issue, status: 'Open', statusCategory: 'new' })), 'emphasis');
@@ -230,13 +226,13 @@ test('confluence page card', () => {
   assertValidCard(card);
   assert.equal(mainTitle(card), 'Runbook');
   assert.deepEqual(facts(card), { Space: 'Operations (OPS)', 'Last edited by': 'Alice Example' });
-  assert.deepEqual(actionUrls(card), ['https://confluence.example.com/pages/1']);
+  assert.equal(rawTitle(card), '[Runbook](https://confluence.example.com/pages/1)');
 
   const noSpaceName = buildConfluencePageCard({ title: 'Page', spaceKey: 'OPS', url: 'https://confluence.example.com/pages/2' });
   assert.equal(facts(noSpaceName).Space, 'OPS');
 });
 
-test('cards never contain empty facts or empty actions', () => {
+test('cards never contain empty facts', () => {
   const card = buildMergeRequestCard({ iid: 1, title: '' });
   assertValidCard(card);
   for (const fact of card.body[0].items.find((i) => i.type === 'FactSet').facts) {
@@ -283,59 +279,40 @@ test('every card has a compact branded header: logo plus "Service - kind"', () =
   assert.equal(new Set([...byService.values()].map((set) => [...set][0])).size, 4);
 });
 
-test('link buttons carry the logo of the service they open', () => {
-  const iconOf = (card) => Object.fromEntries((card.actions || []).map((a) => [a.title, a.iconUrl]));
-
-  const mr = buildMergeRequestCard({
-    ...baseMr,
-    state: 'open',
-    pipeline: { id: 7, status: 'success', url: 'https://gitlab.example.com/group/project/-/pipelines/7' },
-    jira: { key: 'EX-123', url: 'https://jira.example.com/browse/EX-123' },
-  });
-  assert.deepEqual(iconOf(mr), {
-    'Open merge request': SERVICE_ICONS.gitlab,
-    'Open pipeline': SERVICE_ICONS.gitlab,
-    'Open EX-123': SERVICE_ICONS.jira,
-  });
-
-  const job = buildJobCard({
-    id: 5,
-    name: 'build',
-    status: 'failed',
-    url: 'https://gitlab.example.com/-/jobs/5',
-    pipeline: { id: 9, url: 'https://gitlab.example.com/-/pipelines/9' },
-    mr: { iid: 42, url: baseMr.url },
-  });
-  assert.deepEqual(iconOf(job), {
-    'Open job': SERVICE_ICONS.gitlab,
-    'Open pipeline': SERVICE_ICONS.gitlab,
-    'Open merge request': SERVICE_ICONS.gitlab,
-  });
-
-  const pipeline = buildPipelineCard({
-    id: 9,
-    status: 'success',
-    url: 'https://gitlab.example.com/-/pipelines/9',
-    mr: { iid: 42, url: baseMr.url },
-  });
-  assert.deepEqual(iconOf(pipeline), {
-    'Open pipeline': SERVICE_ICONS.gitlab,
-    'Open merge request': SERVICE_ICONS.gitlab,
-  });
-
-  assert.deepEqual(iconOf(buildJiraIssueCard({ key: 'EX-1', status: 'Open', url: 'https://jira.example.com/browse/EX-1' })), {
-    'Open EX-1': SERVICE_ICONS.jira,
-  });
-  assert.deepEqual(iconOf(buildOpsGenieAlertCard({ message: 'M', url: 'https://opsgenie.example.com/alert/1' })), {
-    'Open alert': SERVICE_ICONS.opsgenie,
-  });
-  assert.deepEqual(iconOf(buildConfluencePageCard({ title: 'T', url: 'https://confluence.example.com/pages/1' })), {
-    'Open page': SERVICE_ICONS.confluence,
-  });
-
-  // A Jira cross-link without a key keeps a clear label and the Jira logo.
-  const noKey = buildMergeRequestCard({ ...baseMr, state: 'open', jira: { url: 'https://jira.example.com/browse/EX-9' } });
-  assert.deepEqual(iconOf(noKey), { 'Open merge request': SERVICE_ICONS.gitlab, 'Open Jira issue': SERVICE_ICONS.jira });
+test('cards have no navigation buttons: links are inline, logos stay in the header', () => {
+  const pipelineUrl = 'https://gitlab.example.com/-/pipelines/9';
+  const cards = [
+    buildMergeRequestCard({
+      ...baseMr,
+      state: 'open',
+      pipeline: { id: 7, status: 'success', url: pipelineUrl },
+      jira: { key: 'EX-123', url: 'https://jira.example.com/browse/EX-123' },
+    }),
+    buildMergeRequestCard({ iid: 1, title: '' }),
+    buildJobCard({
+      id: 5,
+      name: 'build',
+      status: 'failed',
+      url: 'https://gitlab.example.com/-/jobs/5',
+      pipeline: { id: 9, url: pipelineUrl },
+      mr: { iid: 42, url: baseMr.url },
+    }),
+    buildPipelineCard({ id: 9, status: 'success', url: pipelineUrl, mr: { iid: 42, url: baseMr.url } }),
+    buildJiraIssueCard({ key: 'EX-1', status: 'Open', url: 'https://jira.example.com/browse/EX-1' }),
+    buildOpsGenieAlertCard({ message: 'M', url: 'https://opsgenie.example.com/alert/1' }),
+    buildConfluencePageCard({ title: 'T', url: 'https://confluence.example.com/pages/1' }),
+  ];
+  for (const card of cards) {
+    assertValidCard(card);
+    assert.equal(card.actions, undefined);
+    assert.ok(!JSON.stringify(card).includes('Action.'));
+    assert.ok(headerIcon(card).url.startsWith('data:image/png;base64,'));
+  }
+  // The header logo is the service the card is about.
+  assert.equal(headerIcon(cards[0]).url, SERVICE_ICONS.gitlab);
+  assert.equal(headerIcon(cards[4]).url, SERVICE_ICONS.jira);
+  assert.equal(headerIcon(cards[5]).url, SERVICE_ICONS.opsgenie);
+  assert.equal(headerIcon(cards[6]).url, SERVICE_ICONS.confluence);
 });
 
 test('mdLink builds safe markdown links and keeps plain text without a valid http(s) URL', () => {
