@@ -106,7 +106,7 @@ test('/mrs card: projects are headings and their merge requests sit in an indent
 
 test('/mrs card: GitLab state glyph images with readable labels (open, draft), no external image URLs', () => {
   const message = rich(newWatcher(), humanMrs);
-  const imgs = images(message).filter((i) => i.altText !== 'GitLab');
+  const imgs = images(message).filter((i) => i.altText !== 'GitLab' && i.style !== 'Person');
   assert.deepEqual(imgs.map((i) => i.altText), ['Open', 'Open', 'Draft', 'Open', 'Open']);
   const open = GITLAB_ICONS_SMALL['merge-request-open'];
   const draft = GITLAB_ICONS_SMALL['merge-request'];
