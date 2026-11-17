@@ -32,6 +32,7 @@ import {
   buildJiraIssueCard,
   buildOpsGenieAlertCard,
   buildConfluencePageCard,
+  ciStatusEmoji as getCiStatusEmoji,
 } from './cards.mjs';
 import {
   UserDirectory,
@@ -844,31 +845,6 @@ function formatDuration(seconds) {
   const s = Math.floor(seconds % 60);
   if (m === 0) return `${s}s`;
   return `${m}m ${s}s`;
-}
-
-function getCiStatusEmoji(status) {
-  switch (status) {
-    case 'success':
-    case 'passed':
-      return '✅';
-    case 'failed':
-      return '❌';
-    case 'running':
-      return '⏳';
-    case 'pending':
-    case 'waiting_for_resource':
-    case 'preparing':
-    case 'created':
-      return '⏱️';
-    case 'canceled':
-      return '⚠️';
-    case 'skipped':
-      return '⏭️';
-    case 'manual':
-      return '⚙️';
-    default:
-      return '🔹';
-  }
 }
 
 function isTerminalCiStatus(status) {

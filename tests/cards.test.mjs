@@ -7,6 +7,7 @@ import {
   buildJiraIssueCard,
   buildOpsGenieAlertCard,
   buildConfluencePageCard,
+  ciStatusEmoji,
   ciStatusInfo,
   mdLink,
 } from '../src/cards.mjs';
@@ -66,14 +67,14 @@ test('merge request card: open, approved, green pipeline, auto-merge', () => {
   assert.equal(style(card), 'good');
   const f = facts(card);
   assert.equal(f.Status, 'Open');
-  assert.equal(f.Approval, 'Approved by Alice Example, Bob Example');
-  assert.equal(f.Pipeline, 'Passed (#7)');
-  assert.equal(f['Auto-merge'], 'Enabled by Alice Example');
+  assert.equal(f.Approval, '\u{1F44D} Approved by Alice Example, Bob Example');
+  assert.equal(f.Pipeline, '\u2705 Passed (#7)');
+  assert.equal(f['Auto-merge'], '\u{1F500} Enabled by Alice Example');
   assert.equal(f.Target, 'main');
   assert.equal(f.Jira, 'EX-123');
   assert.equal(f.Rebase, undefined);
   assert.equal(rawTitle(card), `[Add example feature](${baseMr.url})`);
-  assert.equal(rawFacts(card).Pipeline, '[Passed (#7)](https://gitlab.example.com/group/project/-/pipelines/7)');
+  assert.equal(rawFacts(card).Pipeline, '\u2705 [Passed (#7)](https://gitlab.example.com/group/project/-/pipelines/7)');
   assert.equal(rawFacts(card).Jira, '[EX-123](https://jira.example.com/browse/EX-123)');
 });
 
@@ -84,34 +85,34 @@ test('merge request card: failed pipeline wins over everything else for open MRs
     pipeline: { id: 8, status: 'failed' },
   });
   assert.equal(style(card), 'attention');
-  assert.equal(facts(card).Pipeline, 'Failed (#8)');
+  assert.equal(facts(card).Pipeline, '\u274c Failed (#8)');
 });
 
 test('merge request card: needs rebase and not approved', () => {
   const card = buildMergeRequestCard({ ...baseMr, needsRebase: true, hasConflicts: true });
   assert.equal(style(card), 'warning');
   const f = facts(card);
-  assert.equal(f.Approval, 'Not approved yet');
-  assert.equal(f.Rebase, 'Required (merge conflicts)');
+  assert.equal(f.Approval, '\u23f3 Not approved yet');
+  assert.equal(f.Rebase, '\u26a0\ufe0f Required (merge conflicts)');
 });
 
 test('merge request card: merged, closed, rebase and rebased states', () => {
   const merged = buildMergeRequestCard({ ...baseMr, state: 'merged', targetBranch: 'main', approved: false });
   assert.equal(style(merged), 'good');
-  assert.equal(facts(merged).Status, 'Merged');
+  assert.equal(facts(merged).Status, '\u{1F389} Merged');
   assert.equal(facts(merged).Approval, undefined);
 
   const closed = buildMergeRequestCard({ ...baseMr, state: 'closed' });
   assert.equal(style(closed), 'attention');
-  assert.equal(facts(closed).Status, 'Closed (unmerged)');
+  assert.equal(facts(closed).Status, '\u{1F6AB} Closed (unmerged)');
 
   const rebase = buildMergeRequestCard({ ...baseMr, state: 'rebase', hasConflicts: false });
   assert.equal(style(rebase), 'warning');
-  assert.equal(facts(rebase).Status, 'Rebase required');
+  assert.equal(facts(rebase).Status, '\u26a0\ufe0f Rebase required');
 
   const rebased = buildMergeRequestCard({ ...baseMr, state: 'rebased' });
   assert.equal(style(rebased), 'good');
-  assert.equal(facts(rebased).Status, 'Rebased, up to date');
+  assert.equal(facts(rebased).Status, '\u2705 Rebased, up to date');
   for (const c of [merged, closed, rebase, rebased]) assertValidCard(c);
 });
 
@@ -133,10 +134,10 @@ test('job card shows stage, ref, duration, failure reason, pipeline and MR', () 
   assert.equal(mainTitle(card), 'unit-tests');
   assert.equal(style(card), 'attention');
   const f = facts(card);
-  assert.equal(f.Status, 'Failed');
+  assert.equal(f.Status, '\u274c Failed');
   assert.equal(f.Stage, 'test');
   assert.equal(f['Failure reason'], 'script_failure');
-  assert.equal(f.Pipeline, 'Failed (#7)');
+  assert.equal(f.Pipeline, '\u274c Failed (#7)');
   assert.equal(f['Merge request'], '!42 Add example feature');
 
   const ok = buildJobCard({ id: 100, name: 'lint', status: 'success', failureReason: 'ignored' });
@@ -158,6 +159,7 @@ test('pipeline card', () => {
   assertValidCard(card);
   assert.equal(mainTitle(card), 'Pipeline #7');
   assert.equal(style(card), 'accent');
+  assert.equal(facts(card).Status, '\u23f3 Running');
   assert.equal(facts(card)['YAML errors'], 'jobs:build config should be a hash');
   assert.equal(rawTitle(card), '[Pipeline #7](https://gitlab.example.com/group/project/-/pipelines/7)');
   assert.equal(rawFacts(card)['Merge request'], `[!42 Add example feature](${baseMr.url})`);
@@ -364,7 +366,7 @@ test('cross references inside the card are linked when their URL is known', () =
     pipeline: { id: 7, status: 'success', url: pipelineUrl },
     jira: { key: 'EX-123', url: jiraUrl },
   });
-  assert.equal(rawFacts(mr).Pipeline, `[Passed (#7)](${pipelineUrl})`);
+  assert.equal(rawFacts(mr).Pipeline, `\u2705 [Passed (#7)](${pipelineUrl})`);
   assert.equal(rawFacts(mr).Jira, `[EX-123](${jiraUrl})`);
   // Status-like facts without a link stay plain.
   assert.equal(rawFacts(mr).Status, 'Open');
@@ -377,7 +379,7 @@ test('cross references inside the card are linked when their URL is known', () =
     pipeline: { id: 9, status: 'failed', url: 'https://gitlab.example.com/-/pipelines/9' },
     mr: { iid: 42, title: 'Fix [x]', url: baseMr.url },
   });
-  assert.equal(rawFacts(job).Pipeline, '[Failed (#9)](https://gitlab.example.com/-/pipelines/9)');
+  assert.equal(rawFacts(job).Pipeline, '\u274c [Failed (#9)](https://gitlab.example.com/-/pipelines/9)');
   assert.equal(rawFacts(job)['Merge request'], `[!42 Fix \\[x\\]](${baseMr.url})`);
 
   const pipeline = buildPipelineCard({ id: 9, status: 'success', mr: { iid: 42, title: 'Title', url: baseMr.url } });
@@ -392,11 +394,56 @@ test('cross references stay plain text when their URL is missing or invalid', ()
     pipeline: { id: 7, status: 'success' },
     jira: { key: 'EX-123', url: 'not a url' },
   });
-  assert.equal(rawFacts(mr).Pipeline, 'Passed (#7)');
+  assert.equal(rawFacts(mr).Pipeline, '\u2705 Passed (#7)');
   assert.equal(rawFacts(mr).Jira, 'EX-123');
 
   const job = buildJobCard({ id: 5, status: 'failed', pipeline: { id: 9, status: 'failed' }, mr: { iid: 42, title: 'T' } });
-  assert.equal(rawFacts(job).Pipeline, 'Failed (#9)');
+  assert.equal(rawFacts(job).Pipeline, '\u274c Failed (#9)');
   assert.equal(rawFacts(job)['Merge request'], '!42 T');
   for (const card of [mr, job]) assert.ok(!JSON.stringify(card).includes(']('));
+});
+
+test('status emojis match the ones of the regular messages', () => {
+  const expected = {
+    success: '\u2705',
+    passed: '\u2705',
+    failed: '\u274c',
+    running: '\u23f3',
+    pending: '\u23f1\ufe0f',
+    waiting_for_resource: '\u23f1\ufe0f',
+    preparing: '\u23f1\ufe0f',
+    created: '\u23f1\ufe0f',
+    canceled: '\u26a0\ufe0f',
+    skipped: '\u23ed\ufe0f',
+    manual: '\u2699\ufe0f',
+    something_else: '\u{1F539}',
+  };
+  for (const [status, emoji] of Object.entries(expected)) assert.equal(ciStatusEmoji(status), emoji, status);
+
+  // Merge request card: every status line carries its emoji, compactly.
+  const open = buildMergeRequestCard({
+    ...baseMr,
+    state: 'open',
+    approved: false,
+    needsRebase: true,
+    autoMerge: true,
+    pipeline: { id: 3, status: 'running' },
+  });
+  assert.deepEqual(facts(open), {
+    Status: 'Open',
+    Approval: '\u23f3 Not approved yet',
+    Pipeline: '\u23f3 Running (#3)',
+    Rebase: '\u26a0\ufe0f Required',
+    'Auto-merge': '\u{1F500} Enabled',
+  });
+  assert.equal(facts(buildMergeRequestCard({ ...baseMr, pipeline: { id: 4, status: 'canceled' } })).Pipeline, '\u26a0\ufe0f Canceled (#4)');
+  assert.equal(facts(buildMergeRequestCard({ ...baseMr, pipeline: { id: 4, status: 'pending' } })).Pipeline, '\u23f1\ufe0f pending (#4)');
+
+  // Job and pipeline cards: status and pipeline reference.
+  for (const [status, label] of [['success', 'Passed'], ['failed', 'Failed'], ['running', 'Running'], ['manual', 'manual']]) {
+    assert.equal(facts(buildJobCard({ id: 1, status }))['Status'], `${ciStatusEmoji(status)} ${label}`);
+    assert.equal(facts(buildPipelineCard({ id: 1, status })).Status, `${ciStatusEmoji(status)} ${label}`);
+  }
+  // A pipeline without a known status keeps the neutral emoji of the regular messages.
+  assert.equal(facts(buildJobCard({ id: 1, status: 'failed', pipeline: { id: 9 } })).Pipeline, '\u{1F3D7}\ufe0f #9');
 });

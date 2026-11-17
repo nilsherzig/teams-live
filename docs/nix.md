@@ -175,6 +175,10 @@ URL; without one the text stays plain, and brackets in titles are escaped so
 they cannot break the link. Cards carry no bottom buttons; they are reserved
 for real actions.
 
+Status lines keep the emojis of the regular messages: approval, pipeline,
+rebase, auto-merge, merged and closed on merge requests, and the CI status on
+job and pipeline cards. The CI emojis come from one shared mapping.
+
 Replies, in-place updates and edits of the author's message behave as with
 regular messages: channel replies stay in the thread, chat replies quote the
 original, and the card replaces the previous message content. The regular text

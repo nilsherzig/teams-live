@@ -6,6 +6,10 @@
 // status, priority and assignee, and so on. The watcher always keeps the
 // regular markdown text next to the card as the fallback.
 //
+// The merge request card keeps the status emojis of the regular messages (see
+// the watcher): approval, CI, rebase, auto-merge, merged and closed. Job and
+// pipeline cards use the same CI status emojis.
+//
 // Layout of every card: a compact header with the logo of the service and a
 // label for the kind of entity (for example "GitLab - Merge request"), then the
 // title, an optional one-line subtitle and a few facts. Navigation uses inline
@@ -127,6 +131,35 @@ function assembleCard({
   return card;
 }
 
+/**
+ * Status emoji of a GitLab pipeline/job. This is the one mapping shared with
+ * the regular (markdown) messages of the watcher.
+ */
+export function ciStatusEmoji(status) {
+  switch (status) {
+    case 'success':
+    case 'passed':
+      return '\u2705';
+    case 'failed':
+      return '\u274c';
+    case 'running':
+      return '\u23f3';
+    case 'pending':
+    case 'waiting_for_resource':
+    case 'preparing':
+    case 'created':
+      return '\u23f1\ufe0f';
+    case 'canceled':
+      return '\u26a0\ufe0f';
+    case 'skipped':
+      return '\u23ed\ufe0f';
+    case 'manual':
+      return '\u2699\ufe0f';
+    default:
+      return '\ud83d\udd39';
+  }
+}
+
 /** Maps a GitLab pipeline/job status to a label and a container style. */
 export function ciStatusInfo(status) {
   switch (str(status).toLowerCase()) {
@@ -154,11 +187,15 @@ export function ciStatusInfo(status) {
   }
 }
 
+/** "Status (#id)" fact for a pipeline, with the same emoji as the regular messages. */
 function pipelineFact(pipeline) {
   if (!pipeline) return null;
-  const { label } = ciStatusInfo(pipeline.status);
-  const id = pipeline.id ? ` (#${pipeline.id})` : '';
-  return ['Pipeline', mdLink(`${label}${id}`, pipeline.url)];
+  const status = str(pipeline.status);
+  const label = status ? ciStatusInfo(status).label : '';
+  const id = pipeline.id ? `#${pipeline.id}` : '';
+  const text = mdLink(label && id ? `${label} (${id})` : label || id || 'Pipeline', pipeline.url);
+  // 🏗️ when the status is not known yet, as in the regular messages.
+  return ['Pipeline', `${status ? ciStatusEmoji(status) : '\ud83c\udfd7\ufe0f'} ${text}`];
 }
 
 /** "!42 Title" reference to a merge request, linked when its URL is known. */
@@ -179,16 +216,16 @@ export function buildMergeRequestCard(mr) {
   let statusLabel = 'Open';
   let style = 'accent';
   if (state === 'merged') {
-    statusLabel = 'Merged';
+    statusLabel = '\ud83c\udf89 Merged';
     style = 'good';
   } else if (state === 'closed') {
-    statusLabel = 'Closed (unmerged)';
+    statusLabel = '\ud83d\udeab Closed (unmerged)';
     style = 'attention';
   } else if (state === 'rebase') {
-    statusLabel = mr.hasConflicts ? 'Rebase required (merge conflicts)' : 'Rebase required';
+    statusLabel = mr.hasConflicts ? '\u26a0\ufe0f Rebase required (merge conflicts)' : '\u26a0\ufe0f Rebase required';
     style = 'warning';
   } else if (state === 'rebased') {
-    statusLabel = 'Rebased, up to date';
+    statusLabel = '\u2705 Rebased, up to date';
     style = 'good';
   } else if (ci?.style === 'attention') {
     style = 'attention';
@@ -202,11 +239,11 @@ export function buildMergeRequestCard(mr) {
   const approvers = (mr.approvedBy || []).filter(Boolean);
   const approval = open
     ? mr.approved
-      ? `Approved${approvers.length > 0 ? ` by ${approvers.join(', ')}` : ''}`
-      : 'Not approved yet'
+      ? `\ud83d\udc4d Approved${approvers.length > 0 ? ` by ${approvers.join(', ')}` : ''}`
+      : '\u23f3 Not approved yet'
     : '';
-  const rebase = open && mr.needsRebase ? (mr.hasConflicts ? 'Required (merge conflicts)' : 'Required') : '';
-  const autoMerge = open && mr.autoMerge ? `Enabled${mr.autoMergeUser ? ` by ${mr.autoMergeUser}` : ''}` : '';
+  const rebase = open && mr.needsRebase ? `\u26a0\ufe0f Required${mr.hasConflicts ? ' (merge conflicts)' : ''}` : '';
+  const autoMerge = open && mr.autoMerge ? `\ud83d\udd00 Enabled${mr.autoMergeUser ? ` by ${mr.autoMergeUser}` : ''}` : '';
   const pipelineLabel = pipelineFact(mr.pipeline);
 
   return assembleCard({
@@ -240,7 +277,7 @@ export function buildJobCard(job) {
     titleUrl: job.url,
     subtitle: `#${job.id}${job.project ? ` in ${job.project}` : ''}`,
     facts: [
-      ['Status', info.label],
+      ['Status', `${ciStatusEmoji(job.status)} ${info.label}`],
       ['Stage', job.stage],
       ['Ref', job.ref],
       ['Duration', job.duration],
@@ -263,7 +300,7 @@ export function buildPipelineCard(pipeline) {
     titleUrl: pipeline.url,
     subtitle: pipeline.project,
     facts: [
-      ['Status', info.label],
+      ['Status', `${ciStatusEmoji(pipeline.status)} ${info.label}`],
       ['Ref', pipeline.ref],
       ['Duration', pipeline.duration],
       ['YAML errors', pipeline.yamlErrors],
