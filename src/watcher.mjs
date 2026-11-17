@@ -43,6 +43,7 @@ import {
   opsGeniePriorityBadge,
   ciStatusEmoji as getCiStatusEmoji,
 } from './cards.mjs';
+import { buildHelpCard, helpEntries, splitHelpCategories } from './card-help.mjs';
 import { LEADERBOARD_MAX_ENTRIES, PODIUM_SIZE, buildLeaderboardCard, rankLeaderboard } from './card-leaderboard.mjs';
 import { buildLifecycleCard, lifecycleMarkdown } from './lifecycle-card.mjs';
 import {
@@ -451,7 +452,7 @@ export function isMessageOnlyUrl(text, rawHtml = '') {
   return stripped.length === 0;
 }
 
-const COMMAND_CATEGORIES = [
+export const COMMAND_CATEGORIES = [
   {
     id: 'gitlab',
     title: '🦊 **GitLab**',
@@ -531,33 +532,49 @@ const COMMAND_CATEGORIES = [
   },
 ];
 
-function buildHelpText(category = null) {
-  if (category) {
-    const q = category.toLowerCase().trim();
-    if (q !== 'all') {
-      const match = COMMAND_CATEGORIES.find((c) => c.id === q || c.aliases.includes(q));
-      if (match) {
-        const lines = [`🤖 **teams-live slash commands** — ${match.title}:\n`];
-        lines.push(...match.commands);
-        if (match.footer) {
-          lines.push(`\n${match.footer}`);
-        }
-        return lines.join('\n');
-      }
-      const available = COMMAND_CATEGORIES.map((c) => `\`${c.id}\``).join(', ');
-      return `❓ Unknown category \`${category}\`. Available categories: ${available}, or use \`/help\` for all.`;
+/** The note lines under the full help (also the footer of one domain). */
+const HELP_NOTES = [
+  '_Target an MR by replying to its message or sending the command immediately after._',
+  '_Tip: Use `/help <category>` (e.g. `/help gitlab`, `/help jira`, `/help fun`) to filter._',
+];
+
+/** The domain a /help argument asks for: a category, null for "everything", or undefined when unknown. */
+function findHelpCategory(category) {
+  const q = String(category ?? '').toLowerCase().trim();
+  if (!q || q === 'all') return null;
+  return COMMAND_CATEGORIES.find((c) => c.id === q || c.aliases.includes(q));
+}
+
+/** The domains with their available commands only (a command that `requires` a missing feature is left out). */
+function availableHelpCategories(categories, has) {
+  return categories.map((c) => ({ ...c, commands: helpEntries(c, has) })).filter((c) => c.commands.length > 0);
+}
+
+/** The plain markdown of these domains (all of them, or the cards of a split help), with the notes when asked. */
+function helpMarkdown(categories, { notes = false } = {}) {
+  const sections = ['🤖 **teams-live slash commands**:'];
+  for (const cat of categories) sections.push(`${cat.title}:\n${cat.commands.join('\n')}`);
+  if (notes) sections.push(HELP_NOTES.join('\n\n'));
+  return sections.join('\n\n');
+}
+
+export function buildHelpText(category = null, has = () => true) {
+  const match = findHelpCategory(category);
+  if (match === undefined) {
+    const available = COMMAND_CATEGORIES.map((c) => `\`${c.id}\``).join(', ');
+    return `❓ Unknown category \`${category}\`. Available categories: ${available}, or use \`/help\` for all.`;
+  }
+  if (match) {
+    const [shown] = availableHelpCategories([match], has);
+    const lines = [`🤖 **teams-live slash commands** — ${match.title}:\n`];
+    lines.push(...(shown ? shown.commands : []));
+    if (match.footer) {
+      lines.push(`\n${match.footer}`);
     }
+    return lines.join('\n');
   }
 
-  const sections = ['🤖 **teams-live slash commands**:'];
-  for (const cat of COMMAND_CATEGORIES) {
-    sections.push(`${cat.title}:\n${cat.commands.join('\n')}`);
-  }
-  sections.push(
-    '_Target an MR by replying to its message or sending the command immediately after._\n\n' +
-    '_Tip: Use `/help <category>` (e.g. `/help gitlab`, `/help jira`, `/help fun`) to filter._'
-  );
-  return sections.join('\n\n');
+  return helpMarkdown(availableHelpCategories(COMMAND_CATEGORIES, has), { notes: true });
 }
 
 const HELP_TEXT = buildHelpText();
@@ -6497,11 +6514,54 @@ export class MergeRequestWatcher {
     this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
   }
 
+  /** Whether an optional command family (a catalogue entry that `requires` it) is available. */
+  hasHelpFeature(feature) {
+    return Boolean(this.helpFeatures?.has?.(feature));
+  }
+
+  /**
+   * The help as cards: the commands grouped by domain (see card-help.mjs). One
+   * card when it fits the wire limit, else whole domains packed into as few
+   * cards as possible, in order. Returns null when no card can carry it (the
+   * caller then sends the plain markdown, which is split like any text).
+   */
+  helpMessages(category, markdown) {
+    const match = findHelpCategory(category);
+    if (match === undefined) return null;
+    const has = (feature) => this.hasHelpFeature(feature);
+    const shown = availableHelpCategories(match ? [match] : COMMAND_CATEGORIES, has);
+    if (shown.length === 0) return null;
+    const single = Boolean(match);
+    // Each card carries the plain markdown of its own domains as its fallback text; the notes go
+    // under the last one. A group is measured with the notes, so the last card surely fits.
+    const message = (categories, part, withNotes) => {
+      const fallbackText = single ? markdown : helpMarkdown(categories, { notes: withNotes });
+      return makeRichMessage(fallbackText, buildHelpCard(categories, { part, single, notes: single || !withNotes ? [] : HELP_NOTES, fallbackText }));
+    };
+    // The longest part label ("Help 10/10") and the notes are included, so the real cards surely fit.
+    const fits = (categories) => richMessageWireBytes(message(categories, [10, 10], true)) <= MAX_CARD_BYTES;
+    try {
+      const groups = splitHelpCategories(shown, fits);
+      if (!groups) return null;
+      return groups.map((categories, i) => message(categories, [i + 1, groups.length], i === groups.length - 1));
+    } catch (e) {
+      log(`building the help card failed, using plain text: ${e.message}`);
+      return null;
+    }
+  }
+
   async executeHelpCommand(event, args = []) {
     log(`Executing /help in ${event.conversationId}...`);
     const category = args[0] || null;
-    const text = buildHelpText(category);
-    await sendReply(event.conversationId, event, text);
+    const text = buildHelpText(category, (feature) => this.hasHelpFeature(feature));
+    const cards = this.richMessages ? this.helpMessages(category, text) : null;
+    if (cards) {
+      for (const [index, card] of cards.entries()) {
+        await sendReply(event.conversationId, event, card, index === 0 ? {} : { noUpdate: true });
+      }
+    } else {
+      await sendReply(event.conversationId, event, text);
+    }
     this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
   }
 
