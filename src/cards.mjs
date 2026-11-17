@@ -474,10 +474,11 @@ export function buildMergeRequestCard(mr) {
     statusLabel = '🔴 Closed (unmerged)';
     style = 'attention';
   } else if (state === 'rebase') {
-    statusLabel = mr.hasConflicts ? '⚠️ Rebase required (merge conflicts)' : '⚠️ Rebase required';
+    // A draft stays visible as a draft next to the rebase notice.
+    statusLabel = `${draft ? '⚪ Draft · ' : ''}${mr.hasConflicts ? '⚠️ Rebase required (merge conflicts)' : '⚠️ Rebase required'}`;
     style = 'warning';
   } else if (state === 'rebased') {
-    statusLabel = '✅ Rebased, up to date and conflict-free';
+    statusLabel = `${draft ? '⚪ Draft · ' : ''}✅ Rebased, up to date and conflict-free`;
     style = 'good';
   } else if (ci?.style === 'attention') {
     style = 'attention';

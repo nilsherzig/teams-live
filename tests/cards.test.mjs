@@ -738,6 +738,19 @@ test('merge request state badges follow GitLab: open green, merged purple, close
   for (const c of [open, draft, merged, closed]) assertValidCard(c);
 });
 
+test('a draft stays visible as a draft next to the rebase notice', () => {
+  const rebase = buildMergeRequestCard({ ...baseMr, state: 'rebase', draft: true });
+  assert.equal(facts(rebase).Status, '\u26aa Draft \u00b7 \u26a0\ufe0f Rebase required');
+  assert.equal(
+    facts(buildMergeRequestCard({ ...baseMr, state: 'rebase', draft: true, hasConflicts: true })).Status,
+    '\u26aa Draft \u00b7 \u26a0\ufe0f Rebase required (merge conflicts)',
+  );
+  assert.equal(facts(buildMergeRequestCard({ ...baseMr, state: 'rebased', draft: true })).Status, '\u26aa Draft \u00b7 \u2705 Rebased, up to date and conflict-free');
+  // Not a draft: unchanged.
+  assert.equal(facts(buildMergeRequestCard({ ...baseMr, state: 'rebase' })).Status, '\u26a0\ufe0f Rebase required');
+  assertValidCard(rebase);
+});
+
 test('GitLab cards carry a state icon from the GitLab icon set next to the logo; emojis and labels stay', () => {
   const dataPng = /^data:image\/png;base64,iVBOR/;
   const mrCases = [
