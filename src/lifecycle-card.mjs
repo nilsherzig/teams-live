@@ -115,13 +115,15 @@ const FACT_ICONS = Object.freeze({
  */
 const CARD_LABELS = Object.freeze({
   'Watched Conversations': 'Chats',
-  'Home Assistant (HR works)': 'Home Assistant',
+  'Home Assistant (HR works)': 'HA', // the logo names the brand; the alt text says Home Assistant
   'Precompute Cache': 'Cache',
 });
 
-// Fixed label column: just wide enough for "Home Assistant" in bold (about 108px), so
-// the value gets the rest of a 308px phone card (130px starved it: mid-word breaks, 104px wrapped it).
-const LABEL_COLUMN = '112px';
+// Fixed label column: wide enough for the longest card label ("Runtime", "Started",
+// "Memory": about 54px in bold, with room to spare) so every short fact is one line
+// and the value gets the rest of a 308px phone card. An unknown long label wraps at
+// its words. (130px starved the values, 104px to 112px were sized for "Home Assistant".)
+const LABEL_COLUMN = '76px';
 
 /**
  * One fact as a row of three columns: a fixed 16px icon slot, a fixed-width bold

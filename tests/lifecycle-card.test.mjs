@@ -28,7 +28,7 @@ const STARTUP_FACTS = [
   ['Precompute Cache', 'Active (every 5m)'],
 ];
 // The card shows three labels shorter than the regular message; the plain text keeps the full ones.
-const SHORT_LABELS = { 'Watched Conversations': 'Chats', 'Home Assistant (HR works)': 'Home Assistant', 'Precompute Cache': 'Cache' };
+const SHORT_LABELS = { 'Watched Conversations': 'Chats', 'Home Assistant (HR works)': 'HA', 'Precompute Cache': 'Cache' };
 const SHUTDOWN_FACTS = [
   ['Host', '`bot-host`'],
   ['PID', '`4242`'],
@@ -208,7 +208,7 @@ test('fact rows: a 16px icon slot, the bold label, the value; real logos for ser
     // Same three columns in every row, so labels and values line up.
     assert.deepEqual(
       row.columns.map((c) => c.width),
-      [px, '112px', 'stretch'],
+      [px, '76px', 'stretch'],
       label
     );
     assert.equal(row.columns[1].items[0].weight, 'Bolder', label);
@@ -226,7 +226,7 @@ test('fact rows: a 16px icon slot, the bold label, the value; real logos for ser
   assert.equal(iconOf.GitLab, SERVICE_ICONS.gitlab);
   assert.equal(iconOf.Jira, SERVICE_ICONS.jira);
   assert.equal(iconOf.Runtime, LIFECYCLE_ICONS.node.url);
-  assert.equal(iconOf['Home Assistant'], LIFECYCLE_ICONS.homeassistant.url);
+  assert.equal(iconOf.HA, LIFECYCLE_ICONS.homeassistant.url);
   // The glyphs are all different, so the rows are told apart at a glance.
   const glyphs = ['Host', 'PID', 'Memory', 'Started', 'Chats', 'Cache'].map((l) => iconOf[l]);
   assert.equal(new Set(glyphs).size, glyphs.length);
@@ -258,7 +258,7 @@ test('fact rows: an unknown label keeps an empty icon slot, so the labels stay a
   assert.equal(rows[1].icon, null);
   assert.deepEqual(
     rows[1].row.columns.map((c) => c.width),
-    ['16px', '112px', 'stretch']
+    ['16px', '76px', 'stretch']
   );
   assert.equal(rows[1].label, 'Something New');
 });
@@ -348,7 +348,7 @@ test('rich mode: startup is the green lifecycle card with the regular text as fa
   assert.equal(card.body[0].style, 'good');
   assert.deepEqual(
     gridRows(card).map((r) => r.label),
-    ['Host', 'PID', 'Runtime', 'Memory', 'Started', 'Chats', 'GitLab', 'Jira', 'Home Assistant', 'Cache']
+    ['Host', 'PID', 'Runtime', 'Memory', 'Started', 'Chats', 'GitLab', 'Jira', 'HA', 'Cache']
   );
   assert.equal(find(card, (n) => n.style === 'warning').length, 0);
 });
