@@ -188,15 +188,44 @@ function headerRow(spec) {
   };
 }
 
+/** Escapes what a TextBlock would read as markdown, for verbatim (code) text; a code span has no escapes of its own. */
+const verbatim = (value) => str(value).replace(/([\\*_[\]`])/g, '\\$1');
+
+/**
+ * Code-like inset for a path or a command: a subtle `emphasis` container with a
+ * little padding around monospace text. Cards do not render backtick code
+ * spans, so this is a real container. The text wraps instead of overflowing a
+ * narrow card and stays plain text, so it can be selected and copied as is.
+ */
+function codeInset(text) {
+  return {
+    type: 'Container',
+    style: 'emphasis',
+    bleed: false,
+    spacing: 'Small',
+    items: [textBlock(verbatim(text), { size: 'Small', fontType: 'Monospace', spacing: 'None' })],
+  };
+}
+
+const CODE_SPAN = /^`([^`\n]+)`$/;
+
+/** A notice fact: a small bold label, then its value; a value that is one code span becomes a code inset. */
+function noticeFact([label, value]) {
+  const title = cardText(label);
+  const code = CODE_SPAN.exec(str(value));
+  const body = code ? codeInset(code[1]) : textBlock(cardText(value), { spacing: 'None' });
+  return title && str(value)
+    ? [textBlock(title, { size: 'Small', weight: 'Bolder', spacing: 'Small' }), body]
+    : [];
+}
+
 /** The warning block (for example an active token override), in its own warning container. */
 function noticeContainer(notice) {
   const items = [
     textBlock(`⚠️ ${cardText(notice.title)}`, { weight: 'Bolder', color: 'Warning', spacing: 'None' }),
-    factSet(notice.facts || []),
+    ...(notice.facts || []).flatMap(noticeFact),
     notice.body ? textBlock(cardText(notice.body), { size: 'Small', spacing: 'Small' }) : null,
-    notice.command
-      ? textBlock(cardText(notice.command), { size: 'Small', fontType: 'Monospace', spacing: 'None' })
-      : null,
+    notice.command ? codeInset(notice.command) : null,
   ].filter(Boolean);
   return { type: 'Container', style: 'warning', bleed: false, spacing: 'Medium', items };
 }

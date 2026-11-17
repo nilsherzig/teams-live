@@ -154,13 +154,40 @@ test('token override warning becomes a warning container with the same informati
   assert.ok(texts.some((t) => t.includes('WARNING: GitLab Token Override is Active!')));
   assert.ok(texts.includes('/run/override-token'));
   assert.ok(texts.some((t) => t.includes('nixos-config-private')));
-  const command = find(warning, (n) => n.type === 'TextBlock' && n.fontType === 'Monospace')[0];
-  assert.equal(command.text, 'cat /run/override-token');
   assert.equal(find(card, (n) => n.type === 'Container' && n.style === 'warning').length, 1);
   assert.equal(
     find(buildLifecycleCard({ kind: 'startup', facts: STARTUP_FACTS }), (n) => n.style === 'warning').length,
     0
   );
+});
+
+test('the override path and the command are code insets, not backtick text', () => {
+  const card = buildLifecycleCard({
+    kind: 'startup',
+    facts: STARTUP_FACTS,
+    notice: { ...NOTICE, facts: [['Override File', '`/run/a_b*/token`']] },
+  });
+  const [warning] = find(card, (n) => n.type === 'Container' && n.style === 'warning');
+  const insets = (warning.items || []).filter((n) => n.type === 'Container' && n.style === 'emphasis');
+  assert.equal(insets.length, 2);
+  for (const inset of insets) {
+    const [block, ...rest] = inset.items;
+    assert.equal(rest.length, 0);
+    assert.equal(block.type, 'TextBlock');
+    assert.equal(block.fontType, 'Monospace');
+    assert.equal(block.wrap, true);
+  }
+  // Markdown characters of a path are escaped so the monospace text shows verbatim.
+  assert.equal(insets[0].items[0].text, '/run/a\\_b\\*/token');
+  assert.equal(insets[1].items[0].text, 'cat /run/override-token');
+  // The label sits right before its inset; no backticks and no FactSet in the warning.
+  const labelIdx = warning.items.findIndex((n) => n.text === 'Override File');
+  assert.equal(warning.items[labelIdx + 1], insets[0]);
+  assert.ok(!JSON.stringify(warning).includes('`'));
+  assert.equal(find(warning, (n) => n.type === 'FactSet').length, 0);
+  // A non-code value stays plain text.
+  const plain = buildLifecycleCard({ kind: 'startup', facts: [], notice: { ...NOTICE, facts: [['Mode', 'read-only']] } });
+  assert.ok(textsIn(plain).includes('read-only'));
 });
 
 test('the card is a dedicated layout, not the generic markdown wrapper', () => {
