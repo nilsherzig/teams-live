@@ -53,20 +53,6 @@ export function collectCardPeople(data) {
   return [...new Set(names)];
 }
 
-// The lead ("By") sits in a fixed-width, non-wrapping cell so it can never break
-// character by character; its width follows its length like the label column does.
-const LEAD_PX_PER_CHAR = 9;
-const LEAD_PX_PAD = 6;
-
-function leadColumn(lead, width) {
-  return {
-    type: 'Column',
-    width,
-    verticalContentAlignment: 'Center',
-    items: [{ type: 'TextBlock', text: lead || '\u00A0', wrap: false }],
-  };
-}
-
 // Keeps a name aligned with its neighbours' names when it has no picture itself.
 function pictureSpacer() {
   return {
@@ -81,19 +67,19 @@ function pictureSpacer() {
  * @param {string} label  row label (bold)
  * @param {Array<{name: string, avatar?: string}>} people
  * @param {object} [opts]
- * @param {string} [opts.lead]  short text before the first person, e.g. "By"; it keeps its own fixed width
- * @param {string} [opts.headline]  a state line (wrapping text) above the people, e.g. "Enabled", when the state is not in the lead
+ * @param {string} [opts.headline]  a wrapping line above the people, e.g. "👍 By" or "🔀 Enabled by"
  * @param {number} [opts.charBudget]  remaining picture budget for this card
  * @param {string} [opts.labelWidth]  fixed label column width, so the label lines up with the other fact rows
  * @returns {{row: object, usedChars: number}|null}
  *
  * Layout: the label column, then ONE stretch value column (so the value starts
  * where every other fact row's value starts) holding one line per person:
- * [lead] [picture] [name]. Only the name column stretches, so on a narrow
- * screen only the name wraps, at word boundaries; the label, the lead and the
- * picture never shrink or break.
+ * [picture] [name] (after an optional wrapping headline such as "👍 By"). Only
+ * the name column stretches, so on a narrow screen only the name wraps, at word
+ * boundaries; the label and the picture never shrink or break. There is no
+ * fixed text column beside the names: it would eat the width they need.
  */
-export function userRow(label, people, { lead = '', headline = '', charBudget = MAX_AVATAR_CHARS_PER_CARD, maxAvatars = MAX_AVATARS_PER_ROW, labelWidth = 'auto' } = {}) {
+export function userRow(label, people, { headline = '', charBudget = MAX_AVATAR_CHARS_PER_CARD, maxAvatars = MAX_AVATARS_PER_ROW, labelWidth = 'auto' } = {}) {
   let remaining = charBudget;
   let shown = 0;
   let used = 0;
@@ -112,11 +98,8 @@ export function userRow(label, people, { lead = '', headline = '', charBudget = 
     }
   }
   if (shown === 0) return null;
-  const leadText = text(lead);
-  const leadWidth = `${Math.ceil(Array.from(leadText).length * LEAD_PX_PER_CHAR) + LEAD_PX_PAD}px`;
   const lines = entries.map(({ name, avatar }, index) => {
     const columns = [];
-    if (leadText) columns.push(leadColumn(index === 0 ? leadText : '', leadWidth));
     columns.push(avatar ? avatarColumn(name, avatar, `${AVATAR_PX}px`) : pictureSpacer());
     columns.push(textColumn(name, {}, 'stretch'));
     return index === 0 ? { type: 'ColumnSet', columns } : { type: 'ColumnSet', spacing: 'Small', columns };

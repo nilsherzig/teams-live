@@ -7,6 +7,7 @@ import {
   isOrgIdMri,
 } from '../src/avatars.mjs';
 import {
+  AVATAR_PX,
   MAX_AVATAR_CHARS_PER_CARD,
   collectCardPeople,
   isImageDataUri,
@@ -543,10 +544,11 @@ const URI = `data:image/jpeg;base64,${Buffer.from(fakeJpeg()).toString('base64')
 const bigUri = (n) => `data:image/jpeg;base64,${'A'.repeat(n)}`;
 const items = (card) => card.body[0].items;
 const factOf = (card, label) => items(card).find((i) => i.type === 'ColumnSet' && i.columns[0].items[0].text === label);
-// A person row is [label, one stretch value column of person lines]; a person line is [lead?, picture|spacer, name].
+// A person row is [label, one stretch value column of person lines]; a person line is [picture|spacer, name], after an optional wrapping headline.
 const isPersonLine = (line) => line.type === 'ColumnSet' && line.columns.some((c) => c.items[0].type === 'Image' && c.items[0].style === 'Person');
 const rows = (card) => items(card).filter((i) => i.type === 'ColumnSet' && i.columns[1]?.items?.some(isPersonLine));
-const linesOf = (row) => row.columns[1].items;
+const headlineOf = (row) => row.columns[1].items.find((l) => l.type === 'TextBlock');
+const linesOf = (row) => row.columns[1].items.filter((l) => l.type === 'ColumnSet');
 const lineTexts = (line) => line.columns.map((c) => c.items[0].text ?? c.items[0].altText);
 // Profile pictures only: the service icon in the header is an Image too.
 const images = (card) => JSON.stringify(card).match(/"type":"Image"[^}]*"style":"Person"/g)?.length ?? 0;
@@ -630,14 +632,18 @@ test('merge request approvers and the auto-merge user get pictures, in fact orde
   const card = buildMergeRequestCard({ ...MR, avatars: { 'Alice Example': URI, 'Bob Example': URI, 'Carol Example': URI } });
   const [approval, autoMerge] = rows(card);
   assert.equal(approval.columns[0].items[0].text, 'Approval');
-  assert.deepEqual(linesOf(approval).map(lineTexts), [['👍 By', 'Alice Example', 'Alice Example'], ['\u00A0', 'Bob Example', 'Bob Example']]);
+  const approvalHead = headlineOf(approval);
+  const approvers = linesOf(approval);
+  assert.equal(approvalHead.text, '\u{1F44D} By', 'Approval keeps its "By" lead, as a wrapping line');
+  assert.equal(approvalHead.wrap, true);
+  assert.deepEqual(approvers.map(lineTexts), [['Alice Example', 'Alice Example'], ['Bob Example', 'Bob Example']]);
   assert.equal(autoMerge.columns[0].items[0].text, 'Auto-merge');
   // The Enabled state stays explicit: a wrapping state line above the person line.
-  const [state, ...personLines] = linesOf(autoMerge);
-  assert.equal(state.type, 'TextBlock');
-  assert.equal(state.text, '🔀 Enabled');
+  const state = headlineOf(autoMerge);
+  const personLines = linesOf(autoMerge);
+  assert.equal(state.text, '\u{1F500} Enabled by');
   assert.equal(state.wrap, true, 'the state wraps like any value text');
-  assert.deepEqual(personLines.map(lineTexts), [['By', 'Carol Example', 'Carol Example']]);
+  assert.deepEqual(personLines.map(lineTexts), [['Carol Example', 'Carol Example']]);
   assert.equal(autoMerge.columns[0].verticalContentAlignment, 'Top', 'the label stays with the state line');
   const order = items(card).filter((i) => i.type === 'ColumnSet').map((i) => i.columns[0].items[0].text ?? '');
   assert.ok(order.indexOf('Approval') < order.indexOf('Auto-merge'));
@@ -648,7 +654,8 @@ test('a person without a picture next to one with a picture keeps their name', (
   const card = buildMergeRequestCard({ ...MR, avatars: { 'Bob Example': URI } });
   const [approval] = rows(card);
   assert.equal(approval.columns[0].items[0].text, 'Approval');
-  assert.deepEqual(linesOf(approval).map(lineTexts), [['👍 By', '\u00A0', 'Alice Example'], ['\u00A0', 'Bob Example', 'Bob Example']]);
+  assert.equal(headlineOf(approval).text, '\u{1F44D} By');
+  assert.deepEqual(linesOf(approval).map(lineTexts), [['\u00A0', 'Alice Example'], ['Bob Example', 'Bob Example']]);
   assert.equal(images(card), 1);
 });
 
@@ -663,7 +670,7 @@ test('only plain image data URIs are embedded', () => {
   assert.equal(isImageDataUri(URI), true);
 });
 
-test('person rows wrap only their name: one stretch value column, fixed lead and picture cells', () => {
+test('person rows wrap only their name: one stretch value column, a fixed picture cell, no fixed text column', () => {
   const card = buildMergeRequestCard({ ...MR, avatars: { 'Alice Example': URI, 'Bob Example': URI, 'Carol Example': URI } });
   const labelWidth = factOf(card, 'Status').columns[0].width;
   const personRows = rows(card);
@@ -679,33 +686,32 @@ test('person rows wrap only their name: one stretch value column, fixed lead and
       assert.equal(widths.at(-1), 'stretch', 'and it is the name');
       assert.equal(widths.includes('auto'), false, 'no auto-sized column that could be squeezed character by character');
       for (const c of line.columns.slice(0, -1)) assert.match(c.width, /^\d+px$/);
+      assert.equal(line.columns.length, 2, 'picture (or spacer) and name only: no fixed lead eating the name width');
       for (const c of line.columns) {
         const block = c.items[0];
-        if (block.type === 'TextBlock' && c.width !== 'stretch') assert.equal(block.wrap, false, 'lead and spacers never wrap');
+        if (block.type === 'TextBlock' && c.width !== 'stretch') assert.equal(block.wrap, false, 'spacers never wrap');
       }
       assert.equal(line.columns.at(-1).items[0].wrap, true, 'the name wraps');
     }
   }
-  // The lead is the short "By", not "Approved by": nothing to break on a phone.
+  // The approval lead is the short "By", not "Approved by".
   const json = JSON.stringify(card);
   assert.equal(json.includes('Approved by'), false);
-  assert.equal(json.includes('Enabled by'), false);
   assert.ok(json.includes('\u{1F44D} By'));
 });
 
 test('userRow stacks several people into one value column and aligns names without a picture', () => {
-  const { row } = userRow('Approval', [{ name: 'Alice Example', avatar: URI }, { name: 'Bob Example' }, { name: 'Carol Example', avatar: URI }], { lead: '👍 By', labelWidth: '112px' });
+  const { row } = userRow('Approval', [{ name: 'Alice Example', avatar: URI }, { name: 'Bob Example' }, { name: 'Carol Example', avatar: URI }], { headline: '\u{1F44D} By', labelWidth: '112px' });
   assert.deepEqual(row.columns.map((c) => c.width), ['112px', 'stretch']);
-  const lines = row.columns[1].items;
+  const [head, ...lines] = row.columns[1].items;
+  assert.equal(head.text, '\u{1F44D} By');
   assert.equal(lines.length, 3);
-  assert.deepEqual(lines.map((l) => l.columns.length), [3, 3, 3], 'every line has lead, picture-or-spacer, name');
-  assert.deepEqual(lines.map((l) => l.columns[0].width), ['42px', '42px', '42px'], 'one lead width keeps the names aligned');
-  assert.equal(lines[0].columns[0].items[0].text, '👍 By');
-  assert.equal(lines[1].columns[0].items[0].text, '\u00A0');
-  assert.equal(lines[1].columns[1].width, `${20}px`, 'spacer stands in for the missing picture');
+  assert.deepEqual(lines.map((l) => l.columns.length), [2, 2, 2], 'every line has picture-or-spacer and name');
+  assert.deepEqual(lines.map((l) => l.columns[1].items[0].text), ['Alice Example', 'Bob Example', 'Carol Example']);
+  assert.equal(lines[1].columns[0].width, `${AVATAR_PX}px`, 'spacer stands in for the missing picture');
   assert.equal(row.columns[0].verticalContentAlignment, 'Top', 'the label stays with the first line');
   const single = userRow('Author', [{ name: 'Alice Example', avatar: URI }], { labelWidth: '112px' });
-  assert.deepEqual(single.row.columns[1].items[0].columns.map((c) => c.width), ['20px', 'stretch'], 'no lead column without a lead');
+  assert.deepEqual(single.row.columns[1].items[0].columns.map((c) => c.width), [`${AVATAR_PX}px`, 'stretch'], 'no headline, no extra line');
   assert.equal(single.row.columns[0].verticalContentAlignment, 'Center');
 });
 
