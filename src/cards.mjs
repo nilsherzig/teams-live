@@ -50,12 +50,41 @@ function personFact(title, text, names, avatars, lead = '') {
 }
 
 /**
- * Facts as card items: one FactSet, unchanged, unless a fact has pictures; the
- * picture rows then sit in place and split the FactSet around them. The
+ * A fact whose value is prefixed by a service logo (an embedded image, never a
+ * remote URL). The logo replaces the label text: a FactSet value cannot hold an
+ * image, so `factBlocks` renders the fact as a compact logo + value row in
+ * place, with the service name as the image's alt text.
+ */
+function logoFact(title, value, service) {
+  const logo = SERVICE_ICONS[service];
+  if (!logo || !str(value)) return [title, value];
+  return [title, value, { logo, alt: SERVICES[service] || str(title) }];
+}
+
+function logoRow({ logo, alt }, value) {
+  return {
+    type: 'ColumnSet',
+    spacing: 'Small',
+    columns: [
+      {
+        type: 'Column',
+        width: 'auto',
+        verticalContentAlignment: 'Center',
+        items: [{ type: 'Image', url: logo, altText: alt, width: '16px', height: '16px' }],
+      },
+      { type: 'Column', width: 'stretch', verticalContentAlignment: 'Center', items: [textBlock(value)] },
+    ],
+  };
+}
+
+/**
+ * Facts as card items: one FactSet, unchanged, unless a fact has pictures (a
+ * person row, see personFact, or a service logo, see logoFact); the picture
+ * rows then sit in place and split the FactSet around them. The profile
  * pictures of one card share a size budget.
  */
 function factBlocks(facts) {
-  if (!facts.some((f) => f?.[2]?.people)) return [factSet(facts)];
+  if (!facts.some((f) => f?.[2]?.people || f?.[2]?.logo)) return [factSet(facts)];
   const blocks = [];
   let plain = [];
   let budget = MAX_AVATAR_CHARS_PER_CARD;
@@ -64,11 +93,15 @@ function factBlocks(facts) {
     plain = [];
   };
   for (const fact of facts) {
-    const built = fact[2]?.people && str(fact[1]) ? userRow(fact[0], fact[2].people, { lead: fact[2].lead, charBudget: budget }) : null;
+    const extra = fact[2];
+    const built = extra?.people && str(fact[1]) ? userRow(fact[0], extra.people, { lead: extra.lead, charBudget: budget }) : null;
     if (built) {
       flush();
       blocks.push(built.row);
       budget -= built.usedChars;
+    } else if (extra?.logo && str(fact[1])) {
+      flush();
+      blocks.push(logoRow(extra, str(fact[1])));
     } else {
       plain.push(fact);
     }
@@ -490,7 +523,7 @@ export function buildMergeRequestCard(mr) {
         ? personFact('Auto-merge', autoMergeText, [str(mr.autoMergeUser)], mr.avatars, '🔀 Enabled by')
         : ['Auto-merge', autoMergeText],
       ['Target', mr.targetBranch],
-      ['Jira', mdLink(jiraLabel, mr.jira?.url)],
+      logoFact('Jira', mdLink(jiraLabel, mr.jira?.url), 'jira'),
     ].filter(Boolean),
     actions: mr.approveUrl ? [{ title: 'Approve…', url: mr.approveUrl }] : [],
     fallbackText: mr.fallbackText,

@@ -222,7 +222,7 @@ out for what the entity is:
 
 | Entity | Card |
 | --- | --- |
-| GitLab merge request (open, merged, closed, rebase required, rebased) | Title, state colour, approval, auto-merge, pipeline, rebase (only when required), target branch, Jira key, links |
+| GitLab merge request (open, merged, closed, rebase required, rebased) | Title, state colour, approval, auto-merge, pipeline, rebase (only when required), target branch, Jira key (prefixed by the Jira logo), links |
 | GitLab job and pipeline | Status colour, stage, ref, duration, failure reason, linked merge request |
 | Jira issue | Summary, type, status, priority, assignee |
 | OpsGenie alert | Message, priority badge (P1 red to P5 subdued), OPEN / ACK'D / CLOSED badge, owner |

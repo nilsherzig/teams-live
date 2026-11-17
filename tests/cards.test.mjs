@@ -18,7 +18,12 @@ import { SERVICE_ICONS } from '../src/card-icons.mjs';
 const items = (card) => card.body[0].items;
 // Text with markdown links reduced to their labels (and escapes removed).
 const plain = (text) => text.replace(/\[((?:\\.|[^\]\\])*)\]\([^)]*\)/g, '$1').replace(/\\([\\[\]])/g, '$1');
-const rawFacts = (card) => Object.fromEntries(items(card).find((i) => i.type === 'FactSet').facts.map((f) => [f.title, f.value]));
+// The Jira fact is a logo + value row, not a FactSet entry (see logoRows); it reads as the "Jira" fact here.
+const logoRows = (card) => items(card).slice(1).filter((i) => i.type === 'ColumnSet' && i.columns[0]?.items[0]?.type === 'Image' && i.columns.length === 2 && i.columns[1].width === 'stretch');
+const rawFacts = (card) => ({
+  ...Object.fromEntries(items(card).find((i) => i.type === 'FactSet').facts.map((f) => [f.title, f.value])),
+  ...Object.fromEntries(logoRows(card).map((r) => [r.columns[0].items[0].altText, r.columns[1].items[0].text])),
+});
 const facts = (card) => Object.fromEntries(Object.entries(rawFacts(card)).map(([k, v]) => [k, plain(v)]));
 const style = (card) => card.body[0].style;
 const header = (card) => items(card)[0];
@@ -817,4 +822,33 @@ test('jira header key: missing key falls back, the issue URL stays on the title;
   // The key is visible once across the whole card.
   const card = buildJiraIssueCard({ key: 'APP-123', summary: 'Summary', url, status: 'Open' });
   assert.equal(visibleText(card.body[0].items).split('APP-123').length - 1, 1, 'visible once');
+});
+
+test('merge request card: the Jira fact is prefixed by the embedded Jira logo, next to the linked key', () => {
+  const url = 'https://jira.example.com/browse/EX-123';
+  const card = buildMergeRequestCard({ ...baseMr, state: 'open', targetBranch: 'main', jira: { key: 'EX-123', url } });
+  assertValidCard(card);
+  const [row, ...more] = logoRows(card);
+  assert.equal(more.length, 0);
+  const [logoColumn, textColumn] = row.columns;
+  assert.deepEqual(logoColumn.items[0], { type: 'Image', url: SERVICE_ICONS.jira, altText: 'Jira', width: '16px', height: '16px' });
+  assert.equal(logoColumn.width, 'auto');
+  assert.match(logoColumn.items[0].url, /^data:image\//);
+  assert.equal(textColumn.items[0].text, `[EX-123](${url})`);
+  // The row sits in place: the facts before it and after it stay in FactSets, none is lost.
+  const f = facts(card);
+  assert.equal(f.Status, 'Open');
+  assert.equal(f.Target, 'main');
+  // No external image URL anywhere in the card.
+  const urls = [];
+  JSON.stringify(card, (k, v) => (k === 'url' && typeof v === 'string' && /^https?:/.test(v) && urls.push(v), v));
+  assert.ok(!urls.some((u) => /\.(png|jpe?g|svg|gif|ico)(\?|$)/i.test(u)));
+});
+
+test('merge request card: without a Jira reference there is no logo row, the facts stay one FactSet', () => {
+  const card = buildMergeRequestCard({ ...baseMr, state: 'open', jira: null });
+  assert.equal(logoRows(card).length, 0);
+  assert.equal(items(card).filter((i) => i.type === 'FactSet').length, 1);
+  const unusable = buildMergeRequestCard({ ...baseMr, state: 'open', jira: { url: 'nope' } });
+  assert.equal(logoRows(unusable).length, 0);
 });
