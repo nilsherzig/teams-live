@@ -138,6 +138,18 @@ test('/mrs card: merged and closed rows get their own GitLab glyphs', () => {
   ]);
 });
 
+test('/mrs card: the image-free fallback uses a coloured dot per state (red for closed)', () => {
+  const rows = ['open', 'merged', 'closed'].map((state, i) => ({
+    project: 'app', ref: `!${i + 1}`, url: `${GL}/app/-/merge_requests/${i + 1}`, title: state, state, author: 'Alice',
+  }));
+  const card = buildMrListCard({ title: 'Merge requests', sections: [{ rows }], images: false });
+  const nodes = [];
+  walk(card, (n) => nodes.push(n));
+  assert.equal(nodes.filter((n) => n.type === 'Image' && n.altText !== 'GitLab').length, 0);
+  const dots = nodes.filter((n) => n.type === 'TextBlock' && /^[\u{1F7E2}\u{1F7E3}\u{1F534}]$/u.test(n.text)).map((n) => n.text);
+  assert.deepEqual(dots, ['\u{1F7E2}', '\u{1F7E3}', '\u{1F534}']);
+});
+
 test('/mrs card: every fact of the regular list is kept (links, title, author, CI, Jira, badges)', () => {
   const jira = { findAssociatedIssue: (m) => (m.iid === 12 ? { key: 'APP-123', url: 'https://jira.example.com/browse/APP-123' } : null) };
   const message = rich(newWatcher({ rich_messages: true }, jira), humanMrs);

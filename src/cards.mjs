@@ -932,7 +932,7 @@ const MR_LIST_STATES = {
   open: { icon: 'merge-request-open', label: 'Open', emoji: '\u{1F7E2}' },
   draft: { icon: 'merge-request', label: 'Draft', emoji: '\u{1F4DD}' },
   merged: { icon: 'merge', label: 'Merged', emoji: '\u{1F7E3}' },
-  closed: { icon: 'merge-request-close', label: 'Closed', emoji: '\u{1F6AB}' },
+  closed: { icon: 'merge-request-close', label: 'Closed', emoji: '\u{1F534}' },
 };
 
 // Merge readiness that no other element of a row shows (CI has its icon,
