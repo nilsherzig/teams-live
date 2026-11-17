@@ -326,21 +326,25 @@ export function messageMarkdown(message) {
 }
 
 /**
- * Transport for an Adaptive Card in the Teams chat service: the HTML body
- * references the card with an `<attachment id>` tag and the card itself goes
- * into the `cards` message property as a JSON string.
+ * Transport for an Adaptive Card in the Teams chat service (the wire format of
+ * the Teams client): the HTML body references the card with an `InputExtension`
+ * span carrying a `cardClientId`, and the card itself goes into the `cards`
+ * message property as a JSON string of `{cardClientId, content, contentType}`.
+ * The `cardClientId` is a UUID without hyphens, like the ones Teams generates.
  * Best effort: callers fall back to the plain markdown when the send fails.
  */
 export function buildCardAttachment(message) {
-  const id = randomUUID();
+  const id = randomUUID().replaceAll('-', '');
   const content = { ...message.card };
   if (!content.fallbackText && message.markdown) {
     content.fallbackText = message.markdown;
   }
   return {
     id,
-    tag: `<attachment id="${id}"></attachment>`,
-    cards: JSON.stringify([{ id, contentType: ADAPTIVE_CARD_CONTENT_TYPE, content }]),
+    tag:
+      `<span itemid="${id}" itemscope="" itemtype="http://schema.skype.com/InputExtension">` +
+      '<span itemprop="cardId"></span></span>',
+    cards: JSON.stringify([{ cardClientId: id, content, contentType: ADAPTIVE_CARD_CONTENT_TYPE }]),
   };
 }
 
@@ -598,9 +602,8 @@ async function updateReplyOnce(conversationId, serverMessageId, originalMessage,
 
   const properties = {
     mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
+    cards: cards || '[]',
   };
-  // Always set, so an update from a card back to plain text clears the old card.
-  properties.cards = cards || '[]';
 
   if (messageId) {
     properties.hasValidMsgReferences = true;

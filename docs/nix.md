@@ -177,8 +177,12 @@ card.
 services.teams-live.settings.teams.rich_messages = true;
 ```
 
-Card delivery relies on the Teams chat service accepting an `<attachment>` with
-the card in the `cards` message property. Try it in your own notes chat first:
+Cards use the wire format of the Teams client: the message HTML holds an
+`InputExtension` span with a `cardClientId` (a UUID without hyphens) and the
+`cards` message property holds `[{cardClientId, content, contentType}]` with the
+Adaptive Card as `content`. Note that the Teams chat service reports success
+even for a payload it does not render (the message shows as a blank bubble), so
+try it in your own notes chat first:
 
 ```bash
 node src/smoke-rich.mjs <your-notes-conversation-id> --mode both --kind mr,jira   # --mode regular|rich sends only that kind of message and reply

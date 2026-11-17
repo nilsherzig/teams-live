@@ -18,6 +18,7 @@ import { MergeRequestWatcher } from '../src/watcher.mjs';
 
 const CARD = { type: 'AdaptiveCard', version: '1.4', body: [{ type: 'TextBlock', text: 'Example' }] };
 const MARKDOWN = '💬 **Example**\n\n🎫 [EX-1](https://jira.example.com/browse/EX-1)';
+const CARD_TAG = 'itemtype="http://schema.skype.com/InputExtension"';
 const CONV = '19:example@thread.v2';
 const ORIGINAL = { messageId: '1700000000000', from: 'Alice Example', fromMri: '8:orgid:alice', previewText: 'see EX-1' };
 
@@ -52,25 +53,30 @@ test('makeRichMessage returns the plain markdown when there is no card', () => {
   assert.equal(messageMarkdown(MARKDOWN), MARKDOWN);
 });
 
-test('plain messages render exactly as before (no card, no attachment)', () => {
+test('plain messages render exactly as before (no card reference)', () => {
   const { html, mentions, cards } = renderReplyContent('hello **world**');
   assert.equal(cards, undefined);
   assert.deepEqual(mentions, []);
   assert.ok(html.includes('<b>world</b>'));
-  assert.ok(!html.includes('<attachment'));
+  assert.ok(!html.includes(CARD_TAG));
   assert.ok(html.endsWith(`<span style="display:none">${BOT_WATERMARK}</span>`));
 });
 
-test('rich messages render an attachment tag, the watermark and the card property', () => {
+test('rich messages render the native card reference, the watermark and the card property', () => {
   const { html, mentions, cards } = renderReplyContent(makeRichMessage(MARKDOWN, CARD));
   assert.deepEqual(mentions, []);
-  const id = html.match(/^<attachment id="([0-9a-f-]{36})"><\/attachment>/)?.[1];
-  assert.ok(id, html);
+  // Wire format of the Teams client: InputExtension span with a hyphen-less cardClientId.
+  const match = html.match(
+    /^<span itemid="([0-9a-f]{32})" itemscope="" itemtype="http:\/\/schema\.skype\.com\/InputExtension"><span itemprop="cardId"><\/span><\/span>/
+  );
+  assert.ok(match, html);
+  const id = match[1];
   // Own-message detection relies on the watermark.
   assert.ok(html.endsWith(`<span style="display:none">${BOT_WATERMARK}</span>`));
   const parsed = JSON.parse(cards);
   assert.equal(parsed.length, 1);
-  assert.equal(parsed[0].id, id);
+  assert.deepEqual(Object.keys(parsed[0]).sort(), ['cardClientId', 'content', 'contentType']);
+  assert.equal(parsed[0].cardClientId, id);
   assert.equal(parsed[0].contentType, ADAPTIVE_CARD_CONTENT_TYPE);
   assert.equal(parsed[0].content.type, 'AdaptiveCard');
   assert.equal(parsed[0].content.fallbackText, MARKDOWN);
@@ -87,7 +93,7 @@ test('quoted reply keeps the quote block and adds the card for rich messages', (
     replyMarkdown: makeRichMessage(MARKDOWN, CARD),
   });
   assert.ok(html.startsWith('<blockquote itemscope="" itemtype="http://schema.skype.com/Reply"'));
-  assert.ok(html.includes('<attachment id="'));
+  assert.ok(html.includes(CARD_TAG));
   assert.ok(cards);
 });
 
@@ -102,9 +108,9 @@ test('sendDirectMessage: plain message sends no cards, rich message sends the ca
   assert.equal(rec.calls.length, 2);
   const [plain, rich] = rec.calls.map((c) => c.args);
   assert.equal(plain[2].properties.cards, '[]');
-  assert.ok(!plain[1].includes('<attachment'));
+  assert.ok(!plain[1].includes(CARD_TAG));
   assert.equal(JSON.parse(rich[2].properties.cards)[0].contentType, ADAPTIVE_CARD_CONTENT_TYPE);
-  assert.ok(rich[1].includes('<attachment id="'));
+  assert.ok(rich[1].includes(CARD_TAG));
   assert.equal(rich[2].properties.formatVariant, 'TEAMS');
 });
 
@@ -118,7 +124,7 @@ test('sendReply keeps chat quote-reply semantics with a card', async () => {
   }
   const [, html, options] = rec.calls[0].args;
   assert.ok(html.includes('itemtype="http://schema.skype.com/Reply"'));
-  assert.ok(html.includes('<attachment id="'));
+  assert.ok(html.includes(CARD_TAG));
   assert.equal(options.properties.hasValidMsgReferences, true);
   assert.equal(JSON.parse(options.properties.qtdMsgs)[0].messageId, 1700000000000);
   assert.equal(JSON.parse(options.properties.cards).length, 1);
@@ -152,9 +158,9 @@ test('sendReply falls back to the regular message when the card is rejected', as
     rec.restore();
   }
   assert.equal(rec.calls.length, 2);
-  assert.ok(rec.calls[0].args[1].includes('<attachment id="'));
+  assert.ok(rec.calls[0].args[1].includes(CARD_TAG));
   const [, retryHtml, retryOptions] = rec.calls[1].args;
-  assert.ok(!retryHtml.includes('<attachment'));
+  assert.ok(!retryHtml.includes(CARD_TAG));
   assert.ok(retryHtml.includes('EX-1'));
   assert.equal(retryOptions.properties.cards, '[]');
 });
@@ -184,7 +190,7 @@ test('updateReply edits in place with the card, and falls back to plain text', a
   const [, serverId, html, format, options] = rec.calls[0].args;
   assert.equal(serverId, '1700000000005');
   assert.equal(format, 'html');
-  assert.ok(html.includes('<attachment id="'));
+  assert.ok(html.includes(CARD_TAG));
   assert.equal(JSON.parse(options.properties.cards).length, 1);
 
   const rec2 = recordTransport([failure('Bad request')]);
@@ -201,7 +207,7 @@ test('updateReply edits in place with the card, and falls back to plain text', a
     rec2.restore();
   }
   assert.equal(rec2.calls.length, 2);
-  assert.ok(!rec2.calls[1].args[2].includes('<attachment'));
+  assert.ok(!rec2.calls[1].args[2].includes(CARD_TAG));
   assert.equal(rec2.calls[1].args[4].properties.cards, '[]');
 
   // A plain update explicitly clears a card that the message had before.
@@ -233,7 +239,7 @@ test('sendReply restores the pending update id for the plain retry', async () =>
   assert.deepEqual(rec.calls.map((c) => c.kind), ['edit', 'send', 'edit']);
   const retry = rec.calls[2].args;
   assert.equal(retry[1], '1700000000009');
-  assert.ok(!retry[2].includes('<attachment'));
+  assert.ok(!retry[2].includes(CARD_TAG));
 });
 
 const MENTION_MARKDOWN = 'Assigned to @[Alice Example](8:orgid:alice) in [EX-1](https://jira.example.com/browse/EX-1)';
@@ -245,7 +251,7 @@ test('a rich message whose text has mentions is rendered as a regular message', 
   assert.equal(plain.mentions.length, 1);
   assert.deepEqual(rendered.mentions, plain.mentions);
   assert.equal(rendered.cards, undefined);
-  assert.ok(!rendered.html.includes('<attachment'));
+  assert.ok(!rendered.html.includes(CARD_TAG));
   assert.ok(rendered.html.includes('Alice Example'));
 
   const rec = recordTransport();
@@ -260,7 +266,7 @@ test('a rich message whose text has mentions is rendered as a regular message', 
   assert.equal(rec.calls.length, 4);
   for (const { args } of rec.calls) {
     const { html, options } = args.length === 3 ? { html: args[1], options: args[2] } : { html: args[2], options: args[4] };
-    assert.ok(!html.includes('<attachment'));
+    assert.ok(!html.includes(CARD_TAG));
     assert.equal(options.properties.cards, '[]');
     const mentions = JSON.parse(options.properties.mentions);
     assert.equal(mentions.length, 1);
@@ -279,10 +285,10 @@ test('editOriginalMessage keeps the user URL and adds the card', async () => {
   }
   const [rich, plain] = rec.calls.map((c) => ({ html: c.args[2], properties: c.args[4].properties }));
   assert.ok(rich.html.startsWith(`<p><a href="${url}">${url}</a></p>`));
-  assert.ok(rich.html.includes('<attachment id="'));
+  assert.ok(rich.html.includes(CARD_TAG));
   assert.equal(JSON.parse(rich.properties.cards).length, 1);
   assert.ok(plain.html.startsWith(`<p><a href="${url}">${url}</a></p>`));
-  assert.ok(!plain.html.includes('<attachment'));
+  assert.ok(!plain.html.includes(CARD_TAG));
   assert.equal(plain.properties.cards, '[]');
 });
 
@@ -354,7 +360,7 @@ test('Jira handler sends a regular reply by default and a card with rich_message
       rec.restore();
     }
     const [, html, options] = rec.calls[0].args;
-    assert.equal(html.includes('<attachment id="'), expectCard);
+    assert.equal(html.includes(CARD_TAG), expectCard);
     if (expectCard) {
       const card = JSON.parse(options.properties.cards)[0].content;
       assert.equal(card.body[0].items[0].text, 'Something is broken');
