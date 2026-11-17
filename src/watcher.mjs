@@ -53,6 +53,8 @@ import {
   formatWhereisCard,
 } from './users.mjs';
 import { SnakeGame } from './snake.mjs';
+import { AvatarService } from './avatars.mjs';
+import { collectCardPeople } from './card-user-row.mjs';
 import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
 import { formatTokenExpiry } from './gitlab.mjs';
@@ -1089,6 +1091,18 @@ export class MergeRequestWatcher {
       searchFn: searchPeople,
       resolveProfilesFn: resolveProfiles,
     });
+    // Profile pictures for the people on cards: only in rich mode, never in regular messages.
+    this.suppressAvatars = false;
+    this.avatarService = this.richMessages
+      ? new AvatarService({
+          directory: this.userDirectory,
+          searchFn: async (name) => {
+            const res = await searchPeople(name, 5);
+            if (!res?.ok) throw new Error('directory search failed');
+            return res.value?.results || [];
+          },
+        })
+      : null;
     this.pendingSuggestions = new Map();
     this.typoMessageToSuggestion = new Map();
     this.thumbnailEditedMessageIds = new Set();
@@ -2302,7 +2316,19 @@ export class MergeRequestWatcher {
       if (!card) return markdown;
       const message = makeRichMessage(markdown, card);
       // Measure what is actually sent: the card with its fallback copy of the markdown, escaped.
-      const size = richMessageWireBytes(message);
+      let size = richMessageWireBytes(message);
+      if (size > MAX_CARD_BYTES && this.avatarService) {
+        // The pictures are the first thing to give up before the card is split.
+        log(`Adaptive Card too large (${size} bytes), retrying without profile pictures`);
+        this.suppressAvatars = true;
+        try {
+          const plain = makeRichMessage(markdown, buildCard(markdown));
+          size = richMessageWireBytes(plain);
+          if (size <= MAX_CARD_BYTES) return plain;
+        } finally {
+          this.suppressAvatars = false;
+        }
+      }
       if (size > MAX_CARD_BYTES) {
         log(`Adaptive Card too large (${size} bytes), splitting into several cards`);
         return markdown;
@@ -2365,6 +2391,41 @@ export class MergeRequestWatcher {
   }
 
   /**
+   * Looks up the profile pictures of the people a card shows (cached, bounded
+   * and deduplicated, see AvatarService) so the synchronous card builders can
+   * embed them. Missing pictures simply mean names only. No-op outside rich mode.
+   */
+  async prefetchAvatars(data) {
+    if (!this.avatarService) return;
+    try {
+      await this.avatarService.avatarsFor(collectCardPeople(data));
+    } catch (e) {
+      log(`profile picture lookup failed: ${e.message}`);
+    }
+  }
+
+  /** Pictures already fetched for the people in `data` (never starts a request), by name. */
+  cardAvatars(data) {
+    const avatars = {};
+    if (!this.avatarService || this.suppressAvatars) return avatars;
+    for (const name of collectCardPeople(data)) {
+      const uri = this.avatarService.peek(name);
+      if (uri) avatars[name] = uri;
+    }
+    return avatars;
+  }
+
+  /** The names an MR card shows people for: approvers (live or last reported) and the auto-merge user. */
+  mrCardPeopleData(mr, mrDetails) {
+    const approvedBy = Array.isArray(mrDetails?.approvedBy)
+      ? mrDetails.approvedBy
+      : mr?.lastReportedApprovedBy
+        ? String(mr.lastReportedApprovedBy).split(', ')
+        : [];
+    return { approvedBy, autoMergeUser: mrDetails?.autoMergeUser };
+  }
+
+  /**
    * Builds the merge request card. `state` is open, merged, closed, rebase or
    * rebased. Approval and auto-merge are tri-state (true, false, null for
    * unknown) so the card can tell "disabled" from "not retrieved".
@@ -2404,6 +2465,7 @@ export class MergeRequestWatcher {
       detailedMergeStatus: mrDetails?.detailedMergeStatus,
       autoMerge: typeof mrDetails?.autoMerge === 'boolean' ? mrDetails.autoMerge : null,
       autoMergeUser: mrDetails?.autoMergeUser,
+      avatars: this.cardAvatars(this.mrCardPeopleData(mr, mrDetails)),
       pipeline,
       // "none"/"unknown" only when this card's details are the ones that found no pipeline.
       pipelineKnown:
@@ -2459,6 +2521,7 @@ export class MergeRequestWatcher {
       return;
     }
 
+    await this.prefetchAvatars(this.mrCardPeopleData(mr, mrDetails));
     const msg = this.richMessage(this.formatMrStatusMessage(mr, pipeline, mrDetails), () =>
       this.buildMrCard(mr, mrDetails, {
         state: mrDetails?.state === 'closed' || mrDetails?.status === 'closed' ? 'closed' : 'open',
@@ -2528,6 +2591,7 @@ export class MergeRequestWatcher {
       }
       lines.push(`⚠️ **Rebase required** for [${mrRef}](${mrUrl})`);
       lines.push(`Branch has ${reason} (status: \`${mrDetails.detailedMergeStatus}\`).`);
+      await this.prefetchAvatars(this.mrCardPeopleData(mr, mrDetails));
       const msg = this.richMessage(lines.join('\n\n'), () =>
         this.buildMrCard(mr, mrDetails, {
           state: 'rebase',
@@ -2562,6 +2626,7 @@ export class MergeRequestWatcher {
         lines.push(titleLine);
       }
       lines.push(`✅ **Rebased** [${mrRef}](${mrUrl}) is now up to date and conflict-free.`);
+      await this.prefetchAvatars(this.mrCardPeopleData(mr, mrDetails));
       const msg = this.richMessage(lines.join('\n\n'), () =>
         this.buildMrCard(mr, mrDetails, {
           state: 'rebased',
@@ -2635,6 +2700,7 @@ export class MergeRequestWatcher {
       lines.push(`${pipeIcon} [Pipeline #${mr.lastReportedPipelineId}](${pipeUrl})`);
     }
 
+    await this.prefetchAvatars(this.mrCardPeopleData(mr, mrDetails));
     const msg = this.richMessage(lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim(), () =>
       this.buildMrCard(mr, { ...mrDetails, jiraTicket }, {
         state: 'merged',
@@ -2744,6 +2810,7 @@ export class MergeRequestWatcher {
       lines.push(`${pipeIcon} [Pipeline #${mr.lastReportedPipelineId}](${pipeUrl})`);
     }
 
+    await this.prefetchAvatars(this.mrCardPeopleData(mr, mrDetails));
     const msg = this.richMessage(lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim(), () =>
       this.buildMrCard(mr, { ...mrDetails, jiraTicket }, {
         state: 'closed',
@@ -3130,7 +3197,10 @@ export class MergeRequestWatcher {
   }
 
   async handleJiraIssueComment(entry, issue, issueData) {
-    const msg = this.richMessage(this.formatJiraIssueMessage(issueData), () => buildJiraIssueCard(issueData));
+    await this.prefetchAvatars(issueData);
+    const msg = this.richMessage(this.formatJiraIssueMessage(issueData), () =>
+      buildJiraIssueCard({ ...issueData, avatars: this.cardAvatars(issueData) })
+    );
     const issueUrl = issueData?.url || issue?.url;
 
     if (this.shouldEditOriginalMessage(entry, issueUrl)) {
@@ -3164,8 +3234,10 @@ export class MergeRequestWatcher {
   }
 
   async handleOpsGenieAlertComment(entry, alert, alertData) {
+    const alertCard = { ...alertData, owner: this.opsGenieOwnerText(alertData) };
+    await this.prefetchAvatars(alertCard);
     const msg = this.richMessage(this.formatOpsGenieAlertMessage(alertData), () =>
-      buildOpsGenieAlertCard({ ...alertData, owner: this.opsGenieOwnerText(alertData) })
+      buildOpsGenieAlertCard({ ...alertCard, avatars: this.cardAvatars(alertCard) })
     );
     const alertUrl = alertData?.url || alert?.url;
 
@@ -4471,6 +4543,7 @@ export class MergeRequestWatcher {
 
         const statusMarkdown = `📊 [${mrRef}](${mrUrl})\n\n${titleLine}${jiraLine}${statusText}`;
         const statusState = mrState.state === 'merged' ? 'merged' : mrState.state === 'closed' ? 'closed' : 'open';
+        await this.prefetchAvatars(this.mrCardPeopleData(null, mrState));
         const statusMessage = this.richMessage(statusMarkdown, () =>
           this.buildMrCard({ project: mr.project, iid: mr.iid, title: mr.title }, mrState, {
             state: statusState,
@@ -6229,7 +6302,10 @@ export class MergeRequestWatcher {
 
     try {
       const issue = await this.jira.getIssue(key);
-      const text = this.richMessage(this.formatJiraIssueMessage(issue), () => buildJiraIssueCard(issue));
+      await this.prefetchAvatars(issue);
+      const text = this.richMessage(this.formatJiraIssueMessage(issue), () =>
+        buildJiraIssueCard({ ...issue, avatars: this.cardAvatars(issue) })
+      );
       await sendReply(event.conversationId, event, text);
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
     } catch (err) {
