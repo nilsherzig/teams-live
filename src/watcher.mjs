@@ -73,9 +73,11 @@ const SNAKE_FRAME_DELAY_MS = 1800;
 const REBASE_PREFIX = '**Rebase';
 // Author pictures on the /mrs list card: all lookups share one deadline (a list has many
 // rows, so not 1.5 s each), and every picture costs its data URI plus the column markup.
+// They use the smaller 24px server-side resize (shown at 20px): a list has little wire room.
+const MRS_LIST_AVATAR_SIZE = 'HR24x24';
 const MRS_LIST_AVATAR_DEADLINE_MS = 2800;
-const MRS_LIST_AVATAR_MARGIN = 200;
-const MRS_LIST_AVATAR_ROW_OVERHEAD = 420;
+const MRS_LIST_AVATAR_MARGIN = 150;
+const MRS_LIST_AVATAR_ROW_OVERHEAD = 260; // measured: the avatar column adds about 220 bytes beyond the data URI
 
 const GITLAB_EMOJI_TRANSLATIONS = {
   // Common Teams reaction names / slugs
@@ -5082,7 +5084,7 @@ export class MergeRequestWatcher {
     try {
       const unique = new Map();
       for (const person of this.mrListAuthorPersons(mrs).values()) unique.set(person.name, person);
-      await this.avatarService.avatarsFor([...unique.values()], { deadlineMs: MRS_LIST_AVATAR_DEADLINE_MS });
+      await this.avatarService.avatarsFor([...unique.values()], { deadlineMs: MRS_LIST_AVATAR_DEADLINE_MS, size: MRS_LIST_AVATAR_SIZE });
     } catch (e) {
       log(`profile picture lookup failed: ${e.message}`);
     }
@@ -5101,7 +5103,7 @@ export class MergeRequestWatcher {
     let shown = 0;
     for (const section of listing.sections) {
       for (const row of section.rows) {
-        const uri = row.authorPerson ? this.avatarService.peek(row.authorPerson) : null;
+        const uri = row.authorPerson ? this.avatarService.peek(row.authorPerson, { size: MRS_LIST_AVATAR_SIZE }) : null;
         if (!isImageDataUri(uri)) continue;
         const cost = Math.ceil(uri.length * 1.1) + MRS_LIST_AVATAR_ROW_OVERHEAD;
         if (cost > room) continue;

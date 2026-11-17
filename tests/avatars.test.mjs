@@ -236,6 +236,24 @@ test('avatarsFor embeds a data URI and caches it', async () => {
   assert.equal(fetches, 1);
 });
 
+test('pictures are cached per requested size and never mix', async () => {
+  const sizes = [];
+  const svc = new AvatarService({
+    directory: defaultDirectory(),
+    fetchPhoto: async (mri, size) => (sizes.push(size), photo()),
+  });
+  assert.equal(svc.peek('Alice Example', { size: 'HR24x24' }), null);
+  await svc.avatarsFor(['Alice Example'], { size: 'HR24x24' });
+  assert.deepEqual(sizes, ['HR24x24']);
+  assert.ok(svc.peek('Alice Example', { size: 'HR24x24' }));
+  assert.equal(svc.peek('Alice Example'), null, 'a list picture is not served as the default size');
+  await svc.avatarsFor(['Alice Example']);
+  assert.deepEqual(sizes, ['HR24x24', 'HR32x32'], 'the default size is fetched on its own');
+  await svc.avatarsFor(['Alice Example'], { size: 'HR24x24' });
+  await svc.avatarsFor(['Alice Example']);
+  assert.equal(sizes.length, 2, 'both variants are cached');
+});
+
 test('concurrent lookups of one identity share a single request', async () => {
   let fetches = 0;
   let release;
@@ -439,6 +457,18 @@ test('fetcher asks the Teams API for a small picture with the bot credentials', 
   assert.equal(seen[0].init.redirect, 'error', 'credentials never follow a redirect');
   assert.equal(seen[0].init.headers.Accept, 'image/*');
   assert.match(seen[0].init.headers.Authentication, /^skypetoken=/);
+});
+
+test('fetcher can ask for another supported size, and refuses unsupported ones', async () => {
+  const seen = [];
+  const fetchPhoto = createTeamsPhotoFetcher({
+    loadAuth: () => AUTH,
+    fetchFn: async (url) => (seen.push(url), fakeResponse(200, { headers: REAL })),
+  });
+  assert.equal((await fetchPhoto(ALICE, 'HR24x24')).kind, 'photo');
+  assert.ok(seen[0].endsWith('/profilepicturev2?size=HR24x24'));
+  await assert.rejects(() => fetchPhoto(ALICE, 'HR24x24&x=1'), /Unsupported avatar size/);
+  assert.equal(seen.length, 1);
 });
 
 test('fetcher treats missing photo headers, 404 and non-images as no picture', async () => {

@@ -122,7 +122,8 @@ export function createTeamsPhotoFetcher({
   loadAuth = requireSkypeSpacesAuthWithConfig,
 } = {}) {
   if (!SIZE_PARAM.test(size)) throw new Error(`Unsupported avatar size: ${size}`);
-  return async function fetchPhoto(mri) {
+  return async function fetchPhoto(mri, sizeOverride = size) {
+    if (!SIZE_PARAM.test(sizeOverride)) throw new Error(`Unsupported avatar size: ${sizeOverride}`);
     if (!isOrgIdMri(mri)) return { kind: 'none' };
     const auth = loadAuth();
     if (!auth?.ok) throw new Error('status 401');
@@ -131,7 +132,7 @@ export function createTeamsPhotoFetcher({
     const mt = regionConfig.hasPartition
       ? `${base}/api/mt/part/${regionConfig.regionPartition}`
       : `${base}/api/mt/${regionConfig.regionPartition}`;
-    const url = `${mt}/beta/users/${encodeURIComponent(mri)}/profilepicturev2?size=${size}`;
+    const url = `${mt}/beta/users/${encodeURIComponent(mri)}/profilepicturev2?size=${sizeOverride}`;
     let res;
     try {
       res = await fetchFn(url, {
@@ -206,9 +207,9 @@ export class AvatarService {
     this.searchFn = searchFn;
     this.now = now;
     this.opts = { ...DEFAULTS, ...Object.fromEntries(Object.entries(options).filter(([, v]) => v !== undefined)) };
-    this.cache = new Map(); // mri -> { value: dataUri|null, expires }
+    this.cache = new Map(); // `${mri}|${size}` -> { value: dataUri|null, expires }
     this.identities = new Map(); // normalized name -> { mri|null, expires } (search-resolved only)
-    this.inflight = new Map(); // mri -> Promise<dataUri|null>
+    this.inflight = new Map(); // `${mri}|${size}` -> Promise<dataUri|null>
     this.searches = new Map(); // name -> Promise<results>
     this.queue = [];
     this.active = 0;
@@ -284,18 +285,25 @@ export class AvatarService {
     while (map.size > this.opts.maxEntries) map.delete(map.keys().next().value);
   }
 
-  #cached(mri) {
-    const entry = this.cache.get(mri);
+  // Pictures are cached per requested size: a smaller list variant must never
+  // be served for (or poison) the card variant, and the other way round.
+  #key(mri, size) {
+    return `${mri}|${size}`;
+  }
+
+  #cached(mri, size) {
+    const key = this.#key(mri, size);
+    const entry = this.cache.get(key);
     if (!entry) return undefined;
     if (entry.expires <= this.now()) {
-      this.cache.delete(mri);
+      this.cache.delete(key);
       return undefined;
     }
     return entry.value;
   }
 
-  /** Cached picture (data URI) or null; never starts a request. */
-  peek(person) {
+  /** Cached picture (data URI) of the given size or null; never starts a request. */
+  peek(person, { size = this.opts.size } = {}) {
     let mri = this.resolveKnown(person);
     if (!mri) {
       // A name an earlier lookup resolved through the directory search.
@@ -303,7 +311,7 @@ export class AvatarService {
       const found = this.identities.get(name);
       if (found && found.expires > this.now()) mri = found.mri;
     }
-    return (mri && this.#cached(mri)) || null;
+    return (mri && this.#cached(mri, size)) || null;
   }
 
   get breakerOpen() {
@@ -330,18 +338,19 @@ export class AvatarService {
     }
   }
 
-  async #load(mri) {
-    const cached = this.#cached(mri);
+  async #load(mri, size) {
+    const cached = this.#cached(mri, size);
     if (cached !== undefined) return cached;
     if (this.breakerOpen) return null;
-    const existing = this.inflight.get(mri);
+    const key = this.#key(mri, size);
+    const existing = this.inflight.get(key);
     if (existing) return existing;
     const promise = this.#schedule(async () => {
       this.stats.fetches += 1;
       let value = null;
       let ttl = this.opts.negativeTtlMs;
       try {
-        const result = await this.fetchPhoto(mri);
+        const result = await this.fetchPhoto(mri, size);
         const image = result?.kind === 'photo' ? inspectImage(result.bytes, this.opts) : null;
         if (image) {
           value = toDataUri(result.bytes, image.mime);
@@ -356,10 +365,10 @@ export class AvatarService {
         this.stats.errors += 1;
         this.#recordFailure(err);
       }
-      this.#remember(this.cache, mri, { value, expires: this.now() + ttl });
+      this.#remember(this.cache, key, { value, expires: this.now() + ttl });
       return value;
-    }).finally(() => this.inflight.delete(mri));
-    this.inflight.set(mri, promise);
+    }).finally(() => this.inflight.delete(key));
+    this.inflight.set(key, promise);
     return promise;
   }
 
@@ -368,8 +377,11 @@ export class AvatarService {
    * People without one (no match, ambiguous, no photo, denied, slow, failing)
    * are simply absent. Slow requests keep running and fill the cache for the
    * next card. Never throws.
+   *
+   * `size` is the server-side resize (e.g. `HR24x24` for dense lists); it is
+   * part of the cache key and the default is the service's own size.
    */
-  async avatarsFor(people, { deadlineMs = this.opts.deadlineMs } = {}) {
+  async avatarsFor(people, { deadlineMs = this.opts.deadlineMs, size = this.opts.size } = {}) {
     const result = {};
     const seen = new Set();
     const jobs = [];
@@ -379,7 +391,7 @@ export class AvatarService {
       seen.add(name);
       jobs.push(
         this.#resolve(person)
-          .then((mri) => (mri ? this.#load(mri) : null))
+          .then((mri) => (mri ? this.#load(mri, size) : null))
           .then((uri) => {
             if (uri) result[name] = uri;
           })

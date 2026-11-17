@@ -27,7 +27,7 @@ const directory = {
   ]),
 };
 
-function newWatcher({ teams = { rich_messages: true }, extra = 0, fetched = [], photo = true } = {}) {
+function newWatcher({ teams = { rich_messages: true }, extra = 0, fetched = [], photo = true, sizes = [] } = {}) {
   const watcher = new MergeRequestWatcher({
     config: { conversations: [], gitlab: { group: 'example-group', notify: {} }, teams },
     gitlab: { findMrLinks: () => [], mrLink: () => '', pipelineLink: () => '', getMr: async () => null },
@@ -40,8 +40,9 @@ function newWatcher({ teams = { rich_messages: true }, extra = 0, fetched = [], 
   if (watcher.avatarService) {
     watcher.avatarService = new AvatarService({
       directory,
-      fetchPhoto: async (mri) => {
+      fetchPhoto: async (mri, size) => {
         fetched.push(mri);
+        sizes.push(size);
         return photo ? { kind: 'photo', bytes: fakeJpeg(extra) } : { kind: 'none' };
       },
     });
@@ -96,6 +97,16 @@ test('/mrs list: a row whose author has an exact picture shows it at 20px, next 
   const text = JSON.stringify(cardOf(message));
   for (const name of ['Alice Example', 'Bob Example', 'Carol Example']) assert.ok(text.includes(name));
   assert.deepEqual(fetched.sort(), [ALICE, BOB].sort());
+});
+
+test('/mrs list: pictures are the small 24px variant and do not touch the 32px card cache', async () => {
+  const sizes = [];
+  const w = newWatcher({ sizes });
+  w.getOrFetchMrsData = async () => [mr(1, ALICE_GL), mr(2, BOB_GL)];
+  await w.getOrFetchMrsText({});
+  assert.deepEqual([...new Set(sizes)], ['HR24x24']);
+  assert.equal(w.avatarService.peek('Alice Example'), null, 'the MR card size is not pre-filled by the list');
+  assert.ok(w.avatarService.peek('Alice Example', { size: 'HR24x24' }));
 });
 
 test('/mrs list: every fact of the plain list card is kept, pictures only add a column', async () => {
