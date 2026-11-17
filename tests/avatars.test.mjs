@@ -602,10 +602,10 @@ test('merge request card: pending to approved keeps one fixed label column and o
     avatars: { 'Alice Example': URI, 'Bob Example': URI },
   };
   const approved = { ...base, approved: true, approvedBy: ['Bob Example'], autoMerge: true, autoMergeUser: 'Bob Example' };
-  const labels = ['Status', 'Author', 'Pipeline', 'Target', 'Ticket'];
+  const labels = ['Status', 'Author', 'Pipeline', 'Ticket'];
   for (const [state, data, expected] of [
     ['pending', base, labels],
-    ['approved', approved, ['Status', 'Author', 'Approval', 'Pipeline', 'Auto-merge', 'Target', 'Ticket']],
+    ['approved', approved, ['Status', 'Author', 'Approval', 'Pipeline', 'Auto-merge', 'Ticket']],
   ]) {
     const card = buildMergeRequestCard(data);
     assert.equal(items(card).filter((i) => i.type === 'FactSet').length, 0, `${state}: no auto-sized FactSet left`);
@@ -645,7 +645,8 @@ test('merge request approvers and the auto-merge user get pictures, in fact orde
   assert.equal(autoMerge.columns[0].verticalContentAlignment, 'Center');
   const order = items(card).filter((i) => i.type === 'ColumnSet').map((i) => i.columns[0].items[0].text ?? '');
   assert.ok(order.indexOf('Approval') < order.indexOf('Auto-merge'));
-  assert.ok(order.includes('Status') && order.includes('Target'), 'plain facts stay, as rows');
+  assert.ok(order.includes('Status'), 'plain facts stay, as rows');
+  assert.equal(order.includes('Target'), false, 'no Target row');
 });
 
 test('a person without a picture next to one with a picture keeps their name', () => {

@@ -118,7 +118,7 @@ test('merge request card: open, approved, green pipeline, auto-merge', () => {
   assert.equal(f.Approval, 'Approved Alice Example, Bob Example');
   assert.equal(f.Pipeline, 'Passed (#7)');
   assert.equal(f['Auto-merge'], '\u{1F500} Enabled by Alice Example');
-  assert.equal(f.Target, 'main');
+  assert.equal(f.Target, undefined, 'the target branch is not a rich fact');
   assert.equal(f.Ticket, 'EX-123');
   assert.equal(f.Rebase, undefined);
   assert.equal(rawTitle(card), `[Add example feature](${baseMr.url})`);
@@ -847,7 +847,7 @@ test('header identifier slot: large bold right-aligned linked reference per enti
 test('header identifier slot: semantic context stays when the repeated identifier subtitle goes', () => {
   const mr = buildMergeRequestCard({ ...baseMr, state: 'open', targetBranch: 'main', pipeline: { id: 7, status: 'success' } });
   assert.equal(subtitle(mr), 'group/project');
-  assert.equal(facts(mr).Target, 'main');
+  assert.equal(facts(mr).Target, undefined);
   assert.equal(facts(mr).Pipeline, 'Passed (#7)');
   const job = buildJobCard({ id: 5, name: 'build', status: 'failed', project: 'group/project', stage: 'test', ref: 'main' });
   assert.equal(subtitle(job), 'group/project');
@@ -907,7 +907,7 @@ test('merge request card: the Ticket fact keeps its bold label, then the embedde
   // Every other fact is still there, none is lost to the rows.
   const f = facts(card);
   assert.equal(f.Status, 'Open');
-  assert.equal(f.Target, 'main');
+  assert.equal(f.Target, undefined);
   // No external image URL anywhere in the card.
   const urls = [];
   JSON.stringify(card, (k, v) => (k === 'url' && typeof v === 'string' && /^https?:/.test(v) && urls.push(v), v));
@@ -931,7 +931,7 @@ test('merge request card: with a Ticket every fact row shares one label width, s
   const rows = factRows(card);
   assert.deepEqual(
     rows.map((r) => r.columns[0].items[0].text),
-    ['Status', 'Approval', 'Pipeline', 'Auto-merge', 'Target', 'Ticket']
+    ['Status', 'Approval', 'Pipeline', 'Auto-merge', 'Ticket']
   );
   const widths = new Set(rows.map((r) => r.columns[0].width));
   assert.equal(widths.size, 1);

@@ -626,7 +626,6 @@ export function buildMergeRequestCard(mr) {
       autoMerge === true && mr.autoMergeUser
         ? personFact('Auto-merge', autoMergeText, [str(mr.autoMergeUser)], mr.avatars, '🔀 Enabled by')
         : ['Auto-merge', autoMergeText],
-      ['Target', mr.targetBranch],
       logoFact('Ticket', mdLink(jiraLabel, mr.jira?.url), 'jira'),
     ].filter(Boolean),
     actions: live
