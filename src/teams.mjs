@@ -429,6 +429,9 @@ export function prepareRichMessages(message) {
     const candidate = asMessage(text, [2, 2]);
     return isRichMessage(candidate) && richMessageWireBytes(candidate) <= MAX_CARD_BYTES;
   });
+  // No card could be built or fits (nothing but fences, or a card that cannot be built at all):
+  // never swallow the message, send it as the regular message it would have been.
+  if (texts.length === 0) return [markdown];
   return texts.map((text, i) => asMessage(text, [i + 1, texts.length]));
 }
 

@@ -1218,7 +1218,10 @@ export function splitMarkdownForCards(markdown, fits, { maxParts = 10 } = {}) {
     while (i < lines.length && !lines[i].trim() && !parity[i]) i += 1;
   }
   if (i < lines.length && parts.length > 0) {
-    parts[parts.length - 1] += truncationNote(lines.length - i);
+    // Normally measured into the last part already; stopping early (not one more character
+    // fits) skips that, so only add the note where it stays within the budget.
+    const withNote = parts[parts.length - 1] + truncationNote(lines.length - i);
+    if (fits(withNote)) parts[parts.length - 1] = withNote;
   }
   return parts;
 }

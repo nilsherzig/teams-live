@@ -1,6 +1,6 @@
 import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { prepareRichMessages, richMessageWireBytes, setRichMessages, transport, updateReply } from '../src/teams.mjs';
+import { prepareRichMessages, richMessageWireBytes, sendReply, setRichMessages, transport, updateReply } from '../src/teams.mjs';
 import { MAX_CARD_BYTES, splitMarkdownForCards } from '../src/cards.mjs';
 import { useStubbedTransport } from './stub-transport.mjs';
 
@@ -108,4 +108,38 @@ test('a longer text only posts the additional overflow cards', async () => {
   assert.ok(calls.sent.length - before < before + 5);
   const total = prepareRichMessages(rows(900, 60)).length - 1;
   assert.equal(calls.sent.length, total);
+});
+
+test('a message with no cardable content is never swallowed: it falls back to the regular message', () => {
+  // Nothing but code fences over the budget: no card carries content, the splitter returns no part.
+  const fences = '```\n'.repeat(8000);
+  assert.ok(Buffer.byteLength(fences) > MAX_CARD_BYTES);
+  assert.deepEqual(splitMarkdownForCards(fences, (t) => Buffer.byteLength(t) <= 1000), []);
+  const prepared = prepareRichMessages(fences);
+  assert.equal(prepared.length, 1);
+  assert.equal(typeof prepared[0], 'string', 'a regular message, not a card');
+  assert.equal(prepared[0], fences.trim());
+});
+
+test('a pathological budget yields no parts instead of looping, and the note never overflows a card', () => {
+  assert.deepEqual(splitMarkdownForCards('hello\nworld', () => false), []);
+  // Not one more character fits once the first card is full: the note is left out rather than overflowing it.
+  const fits = (t) => Buffer.byteLength(t) <= 60;
+  const parts = splitMarkdownForCards(`${'a'.repeat(59)}\nb\nc\nd`, fits, { maxParts: 1 });
+  assert.ok(parts.length <= 1);
+  for (const part of parts) assert.ok(fits(part), 'every part is within the budget');
+});
+
+test('when no card can be built, sendReply still posts and updateReply keeps the existing content', async () => {
+  const fences = '```\n'.repeat(8000);
+  const sent = await sendReply(CONV, ORIGINAL, fences);
+  assert.ok(sent && sent.ok, 'sendReply returns a result, not null');
+  assert.equal(calls.sent.length, 1);
+
+  const updated = await updateReply(CONV, '1700000000007', ORIGINAL, fences);
+  assert.ok(updated.ok);
+  assert.equal(calls.edited.length, 1);
+  // Edited to the regular message, not wiped to an empty body (the reply quote only).
+  assert.match(calls.edited[0].html, /<pre>/);
+  assert.ok(calls.edited[0].html.length > 500);
 });
