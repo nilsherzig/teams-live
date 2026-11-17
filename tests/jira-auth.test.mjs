@@ -40,6 +40,13 @@ function makeWatcher() {
     opsgenie: null,
   });
   watcher.getAdminConversationId = () => null;
+  // Connector alert state is persisted on disk; keep each test's tracker private.
+  watcher.serviceAlerts.file = null;
+  watcher.serviceAlerts.states.clear();
+  watcher.sentAlerts = [];
+  watcher.sendServiceAlert = async (event) => {
+    watcher.sentAlerts.push(event.type);
+  };
   return watcher;
 }
 
@@ -69,7 +76,8 @@ test('per-issue 403 then 200 emits zero admin auth notifications', async () => {
     await assert.rejects(client.getIssue('ABC-1'));
     await client.getIssue('ABC-1');
   }
-  assert.equal(watcher.serviceAlertState.has('jira'), false);
+  assert.equal(watcher.serviceAlerts.get('jira'), undefined);
+  assert.deepEqual(watcher.sentAlerts, []);
 });
 
 test('a 401 is still an auth failure, and the next success restores it', async () => {
@@ -87,9 +95,11 @@ test('a 401 is still an auth failure, and the next success restores it', async (
     return true;
   });
   assert.deepEqual(seen, ['expired']);
-  assert.equal(watcher.serviceAlertState.get('jira').failing, true);
+  assert.equal(watcher.serviceAlerts.get('jira').failing, true);
   await client.getIssue('ABC-1');
-  assert.equal(watcher.serviceAlertState.get('jira').failing, false);
+  // Recovery is only announced once the connector stayed healthy for a while.
+  assert.equal(watcher.serviceAlerts.get('jira').failing, true);
+  assert.deepEqual(watcher.sentAlerts, ['expired']);
 });
 
 test('a 403 on a non-issue request (credentials level) still raises the auth alert', async () => {
@@ -113,4 +123,32 @@ test('denied watched issues back off exponentially up to a cap and are keyed per
   assert.equal(watcher.recordJiraIssueDenial('mr|ABC-1', t0), 240_000);
   for (let i = 0; i < 20; i += 1) watcher.recordJiraIssueDenial('mr|ABC-1', t0);
   assert.equal(watcher.recordJiraIssueDenial('mr|ABC-1', t0), 6 * 60 * 60 * 1000);
+});
+
+test('alternating 401/200 produces one expired and one flapping alert, then a single summary', async () => {
+  const watcher = makeWatcher();
+  const { client } = makeClient();
+  let t = 1_700_000_000_000;
+  watcher.serviceAlerts.now = () => t;
+  client.onAuthError = (err) => watcher.notifyAdminAuthExpired('Jira', err);
+  client.onSuccess = () => watcher.notifyAdminAuthRecovered('Jira');
+  respond(Array.from({ length: 12 }, (_, i) => (i % 2 === 0 ? 401 : 200)));
+  for (let i = 0; i < 6; i += 1) {
+    await assert.rejects(client.getIssue('ABC-1'));
+    t += 30_000;
+    await client.getIssue('ABC-1');
+    t += 30_000;
+  }
+  assert.deepEqual(watcher.sentAlerts, ['expired', 'flapping']);
+  t += 5 * 60_000 + 1000;
+  watcher.serviceAlerts.tick();
+  assert.deepEqual(watcher.sentAlerts, ['expired', 'flapping', 'flapping-restored']);
+});
+
+test('the watcher closes the alert tick timer on stop()', () => {
+  const watcher = makeWatcher();
+  watcher.serviceAlerts.start(60_000);
+  assert.ok(watcher.serviceAlerts.timer);
+  watcher.stop();
+  assert.equal(watcher.serviceAlerts.timer, null);
 });

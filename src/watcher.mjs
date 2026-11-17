@@ -53,6 +53,7 @@ import { SnakeGame } from './snake.mjs';
 import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
 import { formatTokenExpiry } from './gitlab.mjs';
+import { ServiceAlertTracker, formatServiceAlert, serviceAlertOptionsFromConfig } from './service-alerts.mjs';
 
 const log = (...args) => console.error(new Date().toISOString(), '[watcher]', ...args);
 
@@ -1015,7 +1016,6 @@ export class MergeRequestWatcher {
     this.approvingMrs = new Set();
     this.botPlacedReactions = new Map();
     this.syncingAwardEmojis = new Set();
-    this.serviceAlertState = new Map();
     this.pollIntervalMs = (config.gitlab.poll_interval_seconds || 60) * 1000;
     // Watched Jira issues we cannot read (HTTP 403/404): `${mr key}|${issue key}` -> retry state.
     this.jiraIssueDenials = new Map();
@@ -1066,6 +1066,13 @@ export class MergeRequestWatcher {
       }
     }
     this.stateFile = path.join(stateDir, 'watcher-state.json');
+    // Admin alerts about connector credentials; see src/service-alerts.mjs
+    this.serviceAlerts = new ServiceAlertTracker({
+      notify: (event) => this.sendServiceAlert(event),
+      file: path.join(stateDir, 'service-alerts.json'),
+      options: serviceAlertOptionsFromConfig(config.teams?.service_alerts),
+      log,
+    });
     this.completedMessages = new Set();
     // Message ids already taken up by push or a history scan in this process, so
     // the history poll and trouter never handle the same message twice.
@@ -1434,73 +1441,28 @@ export class MergeRequestWatcher {
     return delayMs;
   }
 
-  async notifyAdminAuthExpired(serviceName, errorDetails) {
-    const key = String(serviceName || '').toLowerCase();
-    if (!this.serviceAlertState) this.serviceAlertState = new Map();
-    const state = this.serviceAlertState.get(key) || { failing: false, lastAlert: 0 };
-
-    const now = Date.now();
-    // Do not spam: only alert once when entering the failure state,
-    // or if at least 12 hours have elapsed during persistent failure
-    if (state.failing && now - state.lastAlert < 12 * 60 * 60 * 1000) {
-      return;
-    }
-
-    state.failing = true;
-    state.lastAlert = now;
-    state.error = errorDetails;
-    this.serviceAlertState.set(key, state);
-
-    const adminConv = this.getAdminConversationId();
-    if (!adminConv) return;
-
-    const hostname = os.hostname();
-    const timeStr = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
-    const msg =
-      `⚠️ **Authentication Expired: ${serviceName}**\n\n` +
-      `- **Host**: \`${hostname}\`\n` +
-      `- **Service**: \`${serviceName}\`\n` +
-      `- **Error**: \`${errorDetails}\`\n` +
-      `- **Time**: ${timeStr}\n\n` +
-      `Please check or refresh the secret credentials in SOPS for **${serviceName}**.`;
-
-    log(`[alert] Notifying admin (${adminConv}) about ${serviceName} auth expiry: ${errorDetails}`);
-    try {
-      await sendDirectMessage(adminConv, msg);
-    } catch (err) {
-      log(`[alert] Failed to send auth expiry alert to ${adminConv}: ${err.message}`);
-    }
+  /** Connector credential failure; the tracker decides whether and when the admin hears about it. */
+  notifyAdminAuthExpired(serviceName, errorDetails) {
+    this.serviceAlerts.reportFailure(serviceName, errorDetails);
   }
 
-  async notifyAdminAuthRecovered(serviceName) {
-    const key = String(serviceName || '').toLowerCase();
-    if (!this.serviceAlertState) this.serviceAlertState = new Map();
-    const state = this.serviceAlertState.get(key);
+  notifyAdminAuthRecovered(serviceName) {
+    this.serviceAlerts.reportSuccess(serviceName);
+  }
 
-    // Only notify recovery if it was previously in a failing/expired state!
-    if (!state || !state.failing) return;
-
-    state.failing = false;
-    state.error = null;
-    this.serviceAlertState.set(key, state);
-
+  async sendServiceAlert(event) {
     const adminConv = this.getAdminConversationId();
     if (!adminConv) return;
-
-    const hostname = os.hostname();
-    const timeStr = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
-    const msg =
-      `🟢 **Authentication Restored: ${serviceName}**\n\n` +
-      `- **Host**: \`${hostname}\`\n` +
-      `- **Service**: \`${serviceName}\`\n` +
-      `- **Status**: Connection and credentials are valid again\n` +
-      `- **Time**: ${timeStr}`;
-
-    log(`[alert] Notifying admin (${adminConv}) about ${serviceName} auth recovery`);
+    const msg = formatServiceAlert(event, {
+      hostname: os.hostname(),
+      time: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
+    });
+    if (!msg) return;
+    log(`[alert] Notifying admin (${adminConv}) about ${event.name} (${event.type})`);
     try {
       await sendDirectMessage(adminConv, msg);
     } catch (err) {
-      log(`[alert] Failed to send auth recovery alert to ${adminConv}: ${err.message}`);
+      log(`[alert] Failed to send ${event.type} alert for ${event.name} to ${adminConv}: ${err.message}`);
     }
   }
 
@@ -7560,9 +7522,11 @@ export class MergeRequestWatcher {
       );
     }, 6 * 60 * 60 * 1000); // 6 hours
     if (this.tokenExpiryCheckTimer.unref) this.tokenExpiryCheckTimer.unref();
+    this.serviceAlerts.start();
   }
 
   stop() {
+    this.serviceAlerts?.stop();
     if (this.historyPollTimer) {
       clearInterval(this.historyPollTimer);
       this.historyPollTimer = null;

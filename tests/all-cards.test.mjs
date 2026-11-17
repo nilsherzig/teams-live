@@ -233,6 +233,9 @@ function matrixWatcher(gitlab = {}) {
   });
   watcher.saveState = () => {};
   watcher.setCommandReaction = async () => {};
+  // Connector alert state is persisted on disk; keep each test's tracker private.
+  watcher.serviceAlerts.file = null;
+  watcher.serviceAlerts.states.clear();
   return watcher;
 }
 
@@ -249,11 +252,18 @@ function assertEveryCallIsACard(label) {
 
 test('matrix: admin auth expired and restored notices are cards', async () => {
   const watcher = matrixWatcher();
-  await watcher.notifyAdminAuthExpired('Jira', 'HTTP 401');
+  let now = 1_700_000_000_000;
+  watcher.serviceAlerts.now = () => now;
+  watcher.notifyAdminAuthExpired('Jira', 'HTTP 401');
+  await new Promise((resolve) => setImmediate(resolve));
   assertEveryCallIsACard('auth expired');
   assert.match(cardText(calls[0]), /Authentication Expired/);
   calls.length = 0;
-  await watcher.notifyAdminAuthRecovered('Jira');
+  // Recovery is only announced after a stable healthy period.
+  watcher.notifyAdminAuthRecovered('Jira');
+  now += 3 * 60_000;
+  watcher.serviceAlerts.tick();
+  await new Promise((resolve) => setImmediate(resolve));
   assertEveryCallIsACard('auth restored');
 });
 
