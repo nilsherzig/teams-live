@@ -43,12 +43,12 @@ const wire = (markdown, card) => richMessageWireBytes(makeRichMessage(markdown, 
 test('safeArtworkUrl: only https URLs of the EPG picture hosts, rebuilt without the source query', () => {
   assert.equal(
     safeArtworkUrl(ART_ARD),
-    'https://programm-api.ard.de/images/MjAyNi0wMS0xNQ==/64ff2f19fca76d00089981f2_1694445337959.jpg?w=192'
+    'https://programm-api.ard.de/images/MjAyNi0wMS0xNQ==/64ff2f19fca76d00089981f2_1694445337959.jpg?w=288'
   );
-  assert.equal(safeArtworkUrl(ART_MEDIATHEK), 'https://api.ardmediathek.de/image-service/images/urn:ard:image:47bcd77c9be3c359?w=192');
+  assert.equal(safeArtworkUrl(ART_MEDIATHEK), 'https://api.ardmediathek.de/image-service/images/urn:ard:image:47bcd77c9be3c359?w=288');
   assert.equal(
     safeArtworkUrl('https://api.ardmediathek.de/image-service/image-collections/urn:ard:image-collection:3c60299b82eebe9f/16x9?w={width}'),
-    'https://api.ardmediathek.de/image-service/image-collections/urn:ard:image-collection:3c60299b82eebe9f/16x9?w=192'
+    'https://api.ardmediathek.de/image-service/image-collections/urn:ard:image-collection:3c60299b82eebe9f/16x9?w=288'
   );
   // XMLTV icons come as http: upgraded, and a tracking query or fragment is dropped.
   assert.equal(safeArtworkUrl(ART_ZDF), 'https://img.tvspielfilm.de/f5/d4/c6/6ada2fde6b6f3b46dcc6d4f5.jpeg');
@@ -103,16 +103,40 @@ test('parsers keep the source picture URL; a programme without one has an empty 
 
 // ------------------------------------------------------------------ /tv program card
 
+// The per-channel Containers inside the card's emphasis wrapper.
+const channelBlocks = (card) => card.body[0].items.filter((n) => n.type === 'Container');
+
 const CHANNELS = [
   { key: 'ard', name: 'Das Erste', error: null, current: programme('Tagesschau', '13:00', '14:00', { subtitle: 'Folge 1', image: ART_ARD }), next: programme('Sportschau', '14:00', '15:00', { image: ART_ARD }) },
   { key: 'zdf', name: 'ZDF', error: null, current: programme('heute', '13:00', '14:00', { image: ART_ZDF }), next: programme('Drehscheibe', '14:00', '15:00') },
 ];
 const DATA = { now: NOW, timezone: TZ, channels: CHANNELS };
 
-test('programme card: the logo and name of each channel, the running programme with time and progress, then the next', () => {
+test('programme card: no heading row, no visible channel label, the logo sits right of the running programme', () => {
   const card = buildTvProgrammeCard(DATA);
   const all = texts(card);
-  assert.ok(all.includes('Das Erste') && all.includes('ZDF'));
+  assert.ok(!all.includes('Das Erste') && !all.includes('ZDF'), 'the channel name is not shown as text');
+  // Each channel block is one programme row (+ the NEXT line); the logo is the last column of the NOW row.
+  const blocks = channelBlocks(card);
+  assert.equal(blocks.length, 2);
+  for (const [i, alt] of [[0, 'ARD'], [1, 'ZDF']]) {
+    const [row, next, ...rest] = blocks[i].items;
+    assert.equal(row.type, 'ColumnSet', 'the programme row leads the block');
+    assert.equal(rest.length, 0);
+    assert.equal(next.type, 'TextBlock');
+    assert.ok(next.text.startsWith('NEXT'));
+    const cols = row.columns;
+    const last = cols[cols.length - 1];
+    assert.equal(last.width, 'auto');
+    const logo = find(last, (n) => n.type === 'Image')[0];
+    assert.equal(logo.altText, alt);
+    assert.equal(logo.horizontalAlignment, 'Right');
+    assert.ok(logo.url.startsWith('data:image/png;base64,'));
+    assert.equal(cols.filter((c) => c.width === 'stretch').length, 1);
+    // Thumbnail first, then the text, then the logo.
+    assert.equal(find(cols[0], (n) => n.type === 'Image')[0].width, '96px');
+    assert.equal(cols[1].width, 'stretch');
+  }
   assert.ok(all.some((t) => t.startsWith('NOW · 13:00–14:00') && t.includes('50%') && t.includes('▰')));
   assert.ok(all.includes('Tagesschau') && all.includes('Folge 1'));
   assert.ok(all.some((t) => t === 'NEXT · **14:00**  Sportschau'));
@@ -131,10 +155,10 @@ test('programme card: now-pictures only from the allowlist, never for the next p
   const card = buildTvProgrammeCard(DATA);
   const pics = images(card).filter((i) => !i.url.startsWith('data:'));
   assert.deepEqual(pics.map((i) => i.url), [
-    'https://programm-api.ard.de/images/MjAyNi0wMS0xNQ==/64ff2f19fca76d00089981f2_1694445337959.jpg?w=192',
+    'https://programm-api.ard.de/images/MjAyNi0wMS0xNQ==/64ff2f19fca76d00089981f2_1694445337959.jpg?w=288',
     'https://img.tvspielfilm.de/f5/d4/c6/6ada2fde6b6f3b46dcc6d4f5.jpeg',
   ]);
-  assert.ok(pics.every((i) => i.width === '64px' && i.height === '36px' && i.altText));
+  assert.ok(pics.every((i) => i.width === '96px' && i.height === '54px' && i.altText));
 
   // A disallowed URL, a missing one and the opt-out all give the same card without a picture: no empty frame.
   const bad = { ...DATA, channels: CHANNELS.map((c) => ({ ...c, current: { ...c.current, image: 'https://evil.example/x.jpg' } })) };
@@ -145,11 +169,26 @@ test('programme card: now-pictures only from the allowlist, never for the next p
   }
 });
 
-test('programme card: a failed channel says so in its own block and keeps the other', () => {
+test('programme card: a failed channel says so in its own block, with its logo at the right, and keeps the other', () => {
   const card = buildTvProgrammeCard({ now: NOW, timezone: TZ, channels: [{ ...CHANNELS[0], current: null, next: null, error: 'HTTP 500' }, CHANNELS[1]] });
   const all = texts(card);
   assert.ok(all.some((t) => t.includes('HTTP 500')));
   assert.ok(all.includes('heute'));
+  const [set] = channelBlocks(card)[0].items;
+  assert.equal(set.type, 'ColumnSet');
+  assert.deepEqual(set.columns.map((c) => c.width), ['stretch', 'auto']);
+  assert.equal(find(set.columns[1], (n) => n.type === 'Image')[0].altText, 'ARD');
+  assert.ok(find(set.columns[0], (n) => n.type === 'TextBlock')[0].text.includes('Das Erste'));
+});
+
+test('programme card: nothing on now keeps the logo at the right and the next line below', () => {
+  const card = buildTvProgrammeCard({ now: NOW, timezone: TZ, channels: [{ ...CHANNELS[0], current: null }, CHANNELS[1]] });
+  const items = channelBlocks(card)[0].items;
+  assert.equal(items.length, 2);
+  assert.equal(items[0].type, 'ColumnSet');
+  assert.ok(find(items[0], (n) => n.type === 'TextBlock').some((n) => n.text.includes('nothing on now')));
+  assert.equal(find(items[0], (n) => n.type === 'Image')[0].altText, 'ARD');
+  assert.ok(items[1].text.startsWith('NEXT · '));
 });
 
 test('programme card: source text is escaped, the card stays well under the byte budget, even with long titles', () => {
@@ -174,7 +213,7 @@ test('programme card: at phone width (308px) the fixed columns leave the text ro
       const px = (find(c, (n) => n.type === 'Image').map((i) => parseInt(i.width, 10)))[0];
       return sum + (px || 0);
     }, 0);
-    assert.ok(fixed <= 110, `fixed width ${fixed}px`);
+    assert.ok(fixed <= 132, `fixed width ${fixed}px`); // 96px picture + a logo of at most 34px: about 135px of text remain
     assert.ok(set.columns.some((c) => c.width === 'stretch'), 'one column takes the rest');
   }
 });

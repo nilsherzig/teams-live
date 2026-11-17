@@ -75,9 +75,9 @@ export const TV_AUDIO_TITLES = Object.freeze({
 
 // ---------------------------------------------------------------- artwork
 
-/** Pixel width asked of the artwork service: the picture is shown at about 64px (3x for sharpness). */
-const ARTWORK_WIDTH = 192;
-export const ARTWORK_DISPLAY_PX = Object.freeze({ width: 64, height: 36 });
+/** Pixel width asked of the artwork service: the picture is shown at 96 px (3x for sharpness). */
+const ARTWORK_WIDTH = 288;
+export const ARTWORK_DISPLAY_PX = Object.freeze({ width: 96, height: 54 });
 const MAX_ARTWORK_URL = 300;
 
 // The only hosts a programme picture may come from: the picture CDNs of the EPG sources.
@@ -147,8 +147,18 @@ function headerRow({ logo, glyph, title, status, color }) {
   };
 }
 
-/** The running programme: title first, then the time with progress; a picture beside it when there is one. */
-function nowRow(programme, { now, timeZone, artwork }) {
+/** The channel logo as a right-hand column (no heading row: the logo carries the channel name as alt text). */
+function logoColumn(logo, name) {
+  if (!logo) return { type: 'Column', width: 'auto', verticalContentAlignment: 'Center', items: [textBlock(cardText(name), { size: 'Small', weight: 'Bolder', isSubtle: true, spacing: 'None' })] };
+  return { type: 'Column', width: 'auto', verticalContentAlignment: 'Center', items: [{ ...imageOf(logo), horizontalAlignment: 'Right' }] };
+}
+
+/**
+ * The running programme: title first, then the time with progress. A picture sits
+ * beside it when there is one and the channel logo (`trailing`, a Column) at the
+ * right edge, so the programme row doubles as the channel's heading.
+ */
+function nowRow(programme, { now, timeZone, artwork }, trailing = null) {
   const pct = now ? progressPercent(programme, now) : null;
   const lines = [
     textBlock(`NOW · ${programmeLine(programme, timeZone)}${pct === null ? '' : `  ${progressBar(pct, 8)} ${pct}%`}`, {
@@ -161,28 +171,27 @@ function nowRow(programme, { now, timeZone, artwork }) {
   ];
   if (programme.subtitle) lines.push(textBlock(cardText(programme.subtitle), { size: 'Small', isSubtle: true, spacing: 'None' }));
   const picture = artwork ? safeArtworkUrl(programme.image) : null;
-  if (!picture) return { type: 'Container', spacing: 'Small', items: lines };
-  return {
-    type: 'ColumnSet',
-    spacing: 'Small',
-    columns: [
-      {
-        type: 'Column',
-        width: 'auto',
-        items: [
-          {
-            type: 'Image',
-            url: picture,
-            altText: programme.title ? `Picture of ${cardText(programme.title)}` : 'Programme picture',
-            width: `${ARTWORK_DISPLAY_PX.width}px`,
-            height: `${ARTWORK_DISPLAY_PX.height}px`,
-            style: 'Default',
-          },
-        ],
-      },
-      { type: 'Column', width: 'stretch', items: lines },
-    ],
-  };
+  if (!picture && !trailing) return { type: 'Container', spacing: 'Small', items: lines };
+  const columns = [];
+  if (picture) {
+    columns.push({
+      type: 'Column',
+      width: 'auto',
+      items: [
+        {
+          type: 'Image',
+          url: picture,
+          altText: programme.title ? `Picture of ${cardText(programme.title)}` : 'Programme picture',
+          width: `${ARTWORK_DISPLAY_PX.width}px`,
+          height: `${ARTWORK_DISPLAY_PX.height}px`,
+          style: 'Default',
+        },
+      ],
+    });
+  }
+  columns.push({ type: 'Column', width: 'stretch', items: lines });
+  if (trailing) columns.push(trailing);
+  return { type: 'ColumnSet', spacing: 'Small', columns };
 }
 
 /** The next programme: one line, the start time first so the hierarchy reads time, then title. */
@@ -195,10 +204,10 @@ function nextRow(programme, { timeZone }) {
 }
 
 /** `{ current, next }` as card items (empty when there is nothing to say). */
-function programmeItems(programme, ctx) {
+function programmeItems(programme, ctx, trailing = null) {
   if (!programme) return [];
   const items = [];
-  if (programme.current) items.push(nowRow(programme.current, ctx));
+  if (programme.current) items.push(nowRow(programme.current, ctx, trailing));
   if (programme.next) items.push(nextRow(programme.next, ctx));
   return items;
 }
@@ -358,20 +367,34 @@ export function formatProgrammeText({ now, timezone, channels }) {
 }
 
 /**
- * Adaptive Card of `/tv program`: one block per channel (its logo and name,
- * the running programme with its picture when the source has one, then the
- * next programme). A channel whose source failed says so in its own block.
+ * Adaptive Card of `/tv program`: one block per channel with no heading row of its
+ * own. The running programme (its picture on the left when the source has one,
+ * "NOW", title and subtitle in the middle) carries the channel logo at the right
+ * edge, then the next programme follows. A channel whose source failed, or that
+ * has nothing on now, says so in a row that carries the logo the same way.
  */
 export function buildTvProgrammeCard({ now, timezone, channels }, { artwork = true } = {}) {
   if (!channels || channels.length === 0) return null;
   const view = { now, timeZone: timezone, artwork };
   const items = [textBlock(`On now and next · ${clock(now, timezone)}`, { size: 'Small', weight: 'Bolder', isSubtle: true, spacing: 'None' })];
   channels.forEach((ch) => {
-    const inner = [
-      headerRow({ logo: Object.hasOwn(TV_LOGOS, ch.key) ? TV_LOGOS[ch.key] : null, title: ch.name }),
-    ];
-    if (ch.error) inner.push(textBlock(`⚠️ ${cardText(ch.error)}`, { color: 'Attention', size: 'Small', spacing: 'Small' }));
-    else inner.push(...programmeItems({ current: ch.current, next: ch.next }, view));
+    const logo = logoColumn(Object.hasOwn(TV_LOGOS, ch.key) ? TV_LOGOS[ch.key] : null, ch.name);
+    const inner = [];
+    if (!ch.error && ch.current) {
+      inner.push(...programmeItems({ current: ch.current, next: ch.next }, view, logo));
+    } else {
+      // No running programme to hang the logo on: the status line takes it.
+      const status = ch.error ? `⚠️ ${cardText(ch.name)}: ${cardText(ch.error)}` : `${cardText(ch.name)}: nothing on now`;
+      inner.push({
+        type: 'ColumnSet',
+        spacing: 'Small',
+        columns: [
+          { type: 'Column', width: 'stretch', verticalContentAlignment: 'Center', items: [textBlock(status, { size: 'Small', spacing: 'None', ...(ch.error ? { color: 'Attention' } : { isSubtle: true }) })] },
+          logo,
+        ],
+      });
+      if (!ch.error && ch.next) inner.push(nextRow(ch.next, view));
+    }
     items.push({ type: 'Container', spacing: 'Medium', separator: true, items: inner });
   });
   return cardOf(
