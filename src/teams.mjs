@@ -673,20 +673,26 @@ async function sendReplyOnce(conversationId, originalMessage, replyMarkdown, opt
   return result;
 }
 
-// Overflow cards posted for an edited reply, by conversation and message id: later edits update
-// them in place instead of posting them again. Bounded: the oldest entries are forgotten first
-// (an edit of a forgotten message then reposts its overflow, as before).
+// Overflow cards posted for an edited reply, by conversation and root server message id: later
+// edits update them in place instead of posting them again, and a reply that shrinks edits the
+// surplus ones to a short "superseded" note (never deleting them: the ids stay for a later growth).
+// Bounded: the oldest entries are forgotten first (an edit of a forgotten message then reposts its
+// overflow, as before, and its surplus cards are left as they are).
 const OVERFLOW_TRACKED_MAX = 200;
+const SUPERSEDED_TEXT = 'Superseded by the updated message.';
 const overflowCards = new Map();
 
 const messageSignature = (message) => (typeof message === 'string' ? message : JSON.stringify(message));
 
-function trackOverflow(key) {
+/** The tracked overflow entries of a reply, created when `create` is set; marks the reply as recently used. */
+function trackOverflow(key, { create = true } = {}) {
   let entries = overflowCards.get(key);
   if (entries) {
     overflowCards.delete(key); // re-insert: most recently used last
-  } else {
+  } else if (create) {
     entries = [];
+  } else {
+    return null;
   }
   overflowCards.set(key, entries);
   while (overflowCards.size > OVERFLOW_TRACKED_MAX) overflowCards.delete(overflowCards.keys().next().value);
@@ -694,19 +700,47 @@ function trackOverflow(key) {
 }
 
 /**
+ * Edits the tracked overflow messages beyond the `keep` the reply still needs to a compact
+ * "superseded" card (a plain note in regular mode). An entry is only marked once its edit went
+ * through, so a failed edit is tried again by the next update; an already marked one is left alone.
+ */
+async function supersedeSurplus(conversationId, originalMessage, entries, keep) {
+  if (entries.length <= keep) return;
+  const note = prepareRichMessages(SUPERSEDED_TEXT)[0];
+  const signature = messageSignature(note);
+  for (const entry of entries.slice(keep)) {
+    if (!entry || entry.signature === signature) continue;
+    const edited = await withCardFallback(note, (message) =>
+      updateReplyOnce(conversationId, entry.id, originalMessage, message)
+    );
+    if (edited.ok) entry.signature = signature;
+  }
+}
+
+/**
  * Updates an existing reply message in-place.
  *
  * A text that no longer fits one card keeps the first card in the message; the rest is posted as
- * further replies once, and later edits update those in place (and skip the unchanged ones).
+ * further replies once, and later edits update those in place (and skip the unchanged ones). When
+ * the text shrinks, the tracked messages it no longer needs are edited to a "superseded" note
+ * (once, and retried if the edit failed) instead of being deleted or left showing stale content.
  */
 export async function updateReply(conversationId, serverMessageId, originalMessage, replyMarkdown) {
   const [head, ...rest] = prepareRichMessages(replyMarkdown);
   const result = await withCardFallback(head, (message) =>
     updateReplyOnce(conversationId, serverMessageId, originalMessage, message)
   );
-  if (!result.ok || rest.length === 0) return result;
+  if (!result.ok) return result;
 
-  const entries = trackOverflow(`${conversationId}\n${serverMessageId}`);
+  const key = `${conversationId}\n${serverMessageId}`;
+  if (rest.length === 0) {
+    // Shrunk to one card (or nothing): the overflow posted earlier is marked as superseded.
+    const tracked = trackOverflow(key, { create: false });
+    if (tracked) await supersedeSurplus(conversationId, originalMessage, tracked, 0);
+    return result;
+  }
+
+  const entries = trackOverflow(key);
   for (const [index, part] of rest.entries()) {
     const signature = messageSignature(part);
     const known = entries[index];
@@ -729,6 +763,7 @@ export async function updateReply(conversationId, serverMessageId, originalMessa
     if (id) entries[index] = { id: String(id), signature };
     else entries.length = Math.min(entries.length, index);
   }
+  await supersedeSurplus(conversationId, originalMessage, entries, rest.length);
   return result;
 }
 

@@ -110,6 +110,167 @@ test('a longer text only posts the additional overflow cards', async () => {
   assert.equal(calls.sent.length, total);
 });
 
+const SUPERSEDED = /Superseded by the updated message/;
+const isSuperseded = (call) => SUPERSEDED.test(JSON.stringify(call));
+const wireIdsPosted = () => calls.sent.map((_, i) => serverId(i + 1));
+const FAIL_EDIT = { ok: false, error: new Error('Teams rejected the edit (400)') };
+
+test('a reply that shrinks edits its surplus overflow cards to a superseded note, keeping the ids', async () => {
+  const ROOT = '1700000000100';
+  await updateReply(CONV, ROOT, ORIGINAL, rows(500, 60));
+  const posted = wireIdsPosted();
+  assert.ok(posted.length >= 2, 'precondition: several overflow cards');
+  const edits = calls.edited.length;
+
+  // Shrunk to one card: every overflow card is edited (by server id), nothing is posted or deleted.
+  await updateReply(CONV, ROOT, ORIGINAL, 'short answer');
+  const shrinkEdits = calls.edited.slice(edits);
+  assert.equal(calls.sent.length, posted.length, 'nothing is posted');
+  assert.equal(shrinkEdits[0].messageId, ROOT, 'the first card is edited as before');
+  assert.equal(isSuperseded(shrinkEdits[0]), false);
+  assert.deepEqual(shrinkEdits.slice(1).map((c) => c.messageId), posted, 'the surplus cards, by server id and in order');
+  for (const call of shrinkEdits.slice(1)) {
+    assert.ok(isSuperseded(call));
+    assert.match(call.rest[1].properties.cards, /AdaptiveCard/, 'a compact card in rich mode');
+    assert.ok(call.html.length < 2000, 'compact');
+  }
+
+  // Unchanged: no further edits of the superseded cards.
+  const after = calls.edited.length;
+  await updateReply(CONV, ROOT, ORIGINAL, 'short answer');
+  assert.equal(calls.edited.length - after, 1, 'only the first card');
+  assert.equal(calls.sent.length, posted.length);
+
+  // Growth again reuses the same messages instead of posting new ones.
+  const regrow = calls.edited.length;
+  await updateReply(CONV, ROOT, ORIGINAL, rows(500, 60));
+  assert.equal(calls.sent.length, posted.length, 'no new message');
+  const regrown = calls.edited.slice(regrow);
+  assert.deepEqual(regrown.slice(1).map((c) => c.messageId), posted);
+  for (const call of regrown) assert.equal(isSuperseded(call), false, 'content is back');
+});
+
+test('a partial shrink keeps the cards still needed and supersedes only the rest', async () => {
+  const ROOT = '1700000000101';
+  await updateReply(CONV, ROOT, ORIGINAL, rows(900, 60));
+  const posted = wireIdsPosted();
+  const keep = prepareRichMessages(rows(400, 60)).length - 1;
+  assert.ok(keep >= 1 && keep < posted.length, 'precondition');
+  const before = calls.edited.length;
+  await updateReply(CONV, ROOT, ORIGINAL, rows(400, 60));
+  const edits = calls.edited.slice(before);
+  const superseded = edits.filter(isSuperseded);
+  assert.deepEqual(superseded.map((c) => c.messageId), posted.slice(keep));
+  for (const call of edits.filter((c) => !isSuperseded(c))) {
+    assert.ok([ROOT, ...posted.slice(0, keep)].includes(call.messageId));
+  }
+  assert.equal(calls.sent.length, posted.length);
+});
+
+test('an empty reply supersedes the overflow too', async () => {
+  const ROOT = '1700000000102';
+  await updateReply(CONV, ROOT, ORIGINAL, rows(500, 60));
+  const posted = wireIdsPosted();
+  const before = calls.edited.length;
+  await updateReply(CONV, ROOT, ORIGINAL, '');
+  assert.deepEqual(calls.edited.slice(before).filter(isSuperseded).map((c) => c.messageId), posted);
+});
+
+test('a failed supersede edit is not remembered as done and is retried by the next update', async () => {
+  const ROOT = '1700000000103';
+  await updateReply(CONV, ROOT, ORIGINAL, rows(500, 60));
+  const posted = wireIdsPosted();
+  const editMessage = transport.editMessage;
+  let failing = true;
+  transport.editMessage = async (conversationId, messageId, ...rest) => {
+    if (failing && posted.includes(messageId)) {
+      calls.edited.push({ conversationId, messageId, html: rest[0], rest: rest.slice(1), failed: true });
+      return FAIL_EDIT;
+    }
+    return editMessage(conversationId, messageId, ...rest);
+  };
+  const before = calls.edited.length;
+  const result = await updateReply(CONV, ROOT, ORIGINAL, 'short answer');
+  assert.equal(result.ok, true, 'the first card was edited, the reply itself succeeded');
+  assert.ok(calls.edited.slice(before).some((c) => c.failed), 'the surplus edit was attempted');
+
+  failing = false;
+  const retryFrom = calls.edited.length;
+  await updateReply(CONV, ROOT, ORIGINAL, 'short answer');
+  const retried = calls.edited.slice(retryFrom).filter(isSuperseded).map((c) => c.messageId);
+  assert.deepEqual(retried, posted, 'every failed edit is tried again');
+
+  const settled = calls.edited.length;
+  await updateReply(CONV, ROOT, ORIGINAL, 'short answer');
+  assert.equal(calls.edited.length - settled, 1, 'and then left alone');
+});
+
+test('superseding is isolated per conversation and per root message', async () => {
+  const OTHER_CONV = '19:other@thread.v2';
+  const ROOT = '1700000000104';
+  await updateReply(CONV, ROOT, ORIGINAL, rows(500, 60));
+  const postedA = wireIdsPosted();
+  await updateReply(OTHER_CONV, ROOT, ORIGINAL, rows(500, 60)); // same root id, another conversation
+  await updateReply(CONV, '1700000000105', ORIGINAL, rows(500, 60)); // another root, same conversation
+  const all = wireIdsPosted();
+  const postedOtherConv = all.slice(postedA.length, postedA.length + postedA.length);
+  const postedOtherRoot = all.slice(postedA.length * 2);
+
+  const before = calls.edited.length;
+  await updateReply(CONV, ROOT, ORIGINAL, 'short answer');
+  const touched = calls.edited.slice(before).filter(isSuperseded);
+  assert.deepEqual(touched.map((c) => c.messageId), postedA);
+  assert.ok(touched.every((c) => c.conversationId === CONV));
+  for (const id of [...postedOtherConv, ...postedOtherRoot]) assert.ok(!touched.some((c) => c.messageId === id));
+
+  // A reply that never had overflow, or was never seen, has nothing to supersede.
+  const none = calls.edited.length;
+  await updateReply(CONV, '1700000000199', ORIGINAL, 'short answer');
+  assert.equal(calls.edited.length - none, 1);
+});
+
+test('the client message id is never used to edit a surplus card', async () => {
+  const ROOT = '1700000000106';
+  await updateReply(CONV, ROOT, ORIGINAL, rows(500, 60));
+  const before = calls.edited.length;
+  await updateReply(CONV, ROOT, ORIGINAL, 'short answer');
+  for (const call of calls.edited.slice(before)) assert.doesNotMatch(call.messageId, /^client-/);
+});
+
+test('in regular mode the surplus overflow becomes a plain note, not a card', async () => {
+  const ROOT = '1700000000107';
+  await updateReply(CONV, ROOT, ORIGINAL, rows(500, 60));
+  const posted = wireIdsPosted();
+  setRichMessages(false);
+  const before = calls.edited.length;
+  await updateReply(CONV, ROOT, ORIGINAL, 'short answer');
+  const notes = calls.edited.slice(before).filter(isSuperseded);
+  assert.deepEqual(notes.map((c) => c.messageId), posted);
+  for (const call of notes) assert.equal(call.rest[1].properties.cards, '[]');
+});
+
+test('the tracking stays bounded: the oldest replies are forgotten and their cards are left as they are', async () => {
+  const text = rows(500, 60);
+  const first = '1700000001000';
+  await updateReply(CONV, first, ORIGINAL, text);
+  const firstPosted = wireIdsPosted();
+  // Enough other replies to push the first one out of the 200 tracked.
+  const small = `${rows(240, 60)}`;
+  assert.equal(prepareRichMessages(small).length >= 2, true, 'precondition: the small text overflows too');
+  for (let i = 0; i < 200; i++) await updateReply(CONV, String(1700000002000 + i), ORIGINAL, small);
+
+  const before = calls.edited.length;
+  await updateReply(CONV, first, ORIGINAL, 'short answer');
+  assert.equal(calls.edited.length - before, 1, 'forgotten: only the first card is edited');
+  assert.ok(!calls.edited.slice(before).some((c) => firstPosted.includes(c.messageId)));
+
+  // A recent one is still tracked.
+  const recent = String(1700000002199);
+  const recentBefore = calls.edited.length;
+  await updateReply(CONV, recent, ORIGINAL, 'short answer');
+  assert.ok(calls.edited.slice(recentBefore).some(isSuperseded));
+});
+
 test('a message with no cardable content is never swallowed: it falls back to the regular message', () => {
   // Nothing but code fences over the budget: no card carries content, the splitter returns no part.
   const fences = '```\n'.repeat(8000);
