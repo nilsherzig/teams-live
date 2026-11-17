@@ -20,6 +20,7 @@
 import { SERVICE_ICONS } from './card-icons.mjs';
 import { GITLAB_ICONS } from './gitlab-icons.mjs';
 import { GITLAB_ICONS_SMALL } from './gitlab-icons-small.mjs';
+import { MAX_AVATAR_CHARS_PER_CARD, userRow } from './card-user-row.mjs';
 
 export const ADAPTIVE_CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json';
 export const ADAPTIVE_CARD_VERSION = '1.4';
@@ -35,6 +36,45 @@ function factSet(facts) {
     .map(([title, value]) => ({ title: str(title), value: str(value) }))
     .filter((f) => f.title && f.value);
   return entries.length > 0 ? { type: 'FactSet', facts: entries, spacing: 'Small' } : null;
+}
+
+/**
+ * A fact naming people. With no usable profile picture it is the plain
+ * `[title, text]` fact, byte for byte; otherwise it carries the people so
+ * `factBlocks` can render a picture row. `avatars` maps a name to a data URI.
+ */
+function personFact(title, text, names, avatars, lead = '') {
+  const has = (name) => avatars && Object.hasOwn(avatars, name) && avatars[name];
+  if (!names.some(has)) return [title, text];
+  return [title, text, { lead, people: names.map((name) => ({ name, avatar: has(name) ? avatars[name] : undefined })) }];
+}
+
+/**
+ * Facts as card items: one FactSet, unchanged, unless a fact has pictures; the
+ * picture rows then sit in place and split the FactSet around them. The
+ * pictures of one card share a size budget.
+ */
+function factBlocks(facts) {
+  if (!facts.some((f) => f?.[2]?.people)) return [factSet(facts)];
+  const blocks = [];
+  let plain = [];
+  let budget = MAX_AVATAR_CHARS_PER_CARD;
+  const flush = () => {
+    blocks.push(factSet(plain));
+    plain = [];
+  };
+  for (const fact of facts) {
+    const built = fact[2]?.people && str(fact[1]) ? userRow(fact[0], fact[2].people, { lead: fact[2].lead, charBudget: budget }) : null;
+    if (built) {
+      flush();
+      blocks.push(built.row);
+      budget -= built.usedChars;
+    } else {
+      plain.push(fact);
+    }
+  }
+  flush();
+  return blocks;
 }
 
 /**
@@ -190,7 +230,7 @@ function assembleCard({
     subtitle && title ? textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }) : null,
     diffStatsRow(stats),
     badgeRow(badges),
-    factSet(facts),
+    ...factBlocks(facts),
     ...extraItems,
   ].filter(Boolean);
 
@@ -441,10 +481,14 @@ export function buildMergeRequestCard(mr) {
     stats: mr.diffStats,
     facts: [
       ['Status', statusLabel],
-      ['Approval', approval],
+      approved === true && approvers.length > 0
+        ? personFact('Approval', approval, approvers.map(str), mr.avatars, '👍 Approved by')
+        : ['Approval', approval],
       pipelineFact(mr.pipeline, mr.pipelineKnown),
       ['Rebase', rebase],
-      ['Auto-merge', autoMergeText],
+      autoMerge === true && mr.autoMergeUser
+        ? personFact('Auto-merge', autoMergeText, [str(mr.autoMergeUser)], mr.avatars, '🔀 Enabled by')
+        : ['Auto-merge', autoMergeText],
       ['Target', mr.targetBranch],
       ['Jira', mdLink(jiraLabel, mr.jira?.url)],
     ].filter(Boolean),
@@ -554,7 +598,7 @@ export function buildJiraIssueCard(issue) {
     facts: [
       ['Status', status ? `${jiraStatusIcon(status, category)} ${status}` : ''],
       ['Priority', `${jiraPriorityIcon(issue.priority)} ${priority}`],
-      ['Assignee', issue.assignee || 'Unassigned'],
+      personFact('Assignee', issue.assignee || 'Unassigned', issue.assignee ? [str(issue.assignee)] : [], issue.avatars),
     ],
     fallbackText: issue.fallbackText,
   });
@@ -608,7 +652,7 @@ export function buildOpsGenieAlertCard(alert) {
     facts: [
       ['Priority', `${OPSGENIE_PRIORITY_ICONS[priority.toUpperCase()] || '⚠️'} ${priority}`],
       ['Status', `${statusIcon} ${alert.status || 'open'} (${alert.acknowledged ? 'acknowledged' : 'unacknowledged'})`],
-      ['Owner', alert.owner || 'Unassigned'],
+      personFact('Owner', alert.owner || 'Unassigned', alert.owner ? [str(alert.owner)] : [], alert.avatars),
     ],
     fallbackText: alert.fallbackText,
   });
