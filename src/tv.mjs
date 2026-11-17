@@ -495,6 +495,9 @@ export const TV_USAGE =
 export const TV_AUDIO_LABELS = { mute: 'Muted.', volume_up: 'Volume up.', volume_down: 'Volume down.' };
 export const TV_SWITCH_LABELS = { ard: 'ARD', zdf: 'ZDF', tagesschau: 'Tagesschau', off: 'off (brb)' };
 
+/** How long a successful switch outranks a readback that still shows the previous channel. */
+const RECENT_SWITCH_MS = 5000;
+
 /**
  * Switches the OBS input through Home Assistant webhooks and cycles through the
  * channels. Failures are reported as a short, fixed text: neither a webhook
@@ -505,9 +508,13 @@ export const TV_SWITCH_LABELS = { ard: 'ARD', zdf: 'ZDF', tagesschau: 'Tagesscha
  * overlap: a `/tv next` always reads the channel the previous one left.
  */
 export class TvSwitch {
-  constructor(config, { fetchImpl = (...args) => globalThis.fetch(...args) } = {}) {
+  constructor(config, { fetchImpl = (...args) => globalThis.fetch(...args), now = () => Date.now() } = {}) {
     this.config = config;
     this.fetchImpl = fetchImpl;
+    this.now = now;
+    // The last successful switch and when it happened: a readback that still
+    // shows the previous channel right after it is Home Assistant lagging.
+    this.recentSwitch = null;
     this.queue = Promise.resolve();
     // The channel this daemon switched to last (null: off). Only a fallback
     // for cycling when no Home Assistant readback is configured.
@@ -530,7 +537,10 @@ export class TvSwitch {
   /** Whether a `/tv` control has what it needs configured (any one of the targets for next/prev). */
   canRun(action) {
     if (action === 'next' || action === 'prev') return TV_SWITCH_TARGETS.some((key) => this.isConfigured(key));
-    if (action === 'volume_up' || action === 'volume_down') return this.isConfigured(action) || this.isConfigured('volume');
+    if (action === 'volume_up' || action === 'volume_down') {
+      // The absolute `volume` webhook needs the level readback; without it only the step webhooks work.
+      return this.isConfigured(action) || (this.isConfigured('volume') && Boolean(this.config.volume?.entity_id) && this.hasReadback());
+    }
     return this.isConfigured(action);
   }
 
@@ -600,7 +610,10 @@ export class TvSwitch {
     });
     if (error) return { ok: false, error };
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
-    if (TV_SWITCH_ACTIONS.includes(action)) this.lastKnown = action === 'off' ? null : action;
+    if (TV_SWITCH_ACTIONS.includes(action)) {
+      this.lastKnown = action === 'off' ? null : action;
+      this.recentSwitch = { channel: this.lastKnown, at: this.now() };
+    }
     return { ok: true };
   }
 
@@ -633,6 +646,9 @@ export class TvSwitch {
         const read = await this.readChannel();
         if (!read.ok) return { ok: false, error: `could not read the current channel (${read.error})` };
         from = read.channel;
+        // Home Assistant can lag a switch that just succeeded; trust that switch for a few seconds.
+        const recent = this.recentSwitch;
+        if (recent && this.now() - recent.at < RECENT_SWITCH_MS && recent.channel !== from) from = recent.channel;
       } else {
         // No reliable truth: fail closed instead of guessing (after a restart nothing is known).
         if (!this.config.state.trust_last_switch) {

@@ -916,3 +916,28 @@ test('TvSwitch.cycle: the readback can use an entity attribute and a configured 
   assert.deepEqual(await new TvSwitch(cfg, { fetchImpl: missing }).readChannel(), { ok: false, error: 'state unavailable' });
   assert.deepEqual(posts, [{ action: 'tagesschau' }]);
 });
+
+test('TvSwitch.canRun: the absolute volume webhook alone cannot run a step, it needs the entity and the readback', () => {
+  const full = readbackConfig().switch;
+  assert.equal(new TvSwitch(full).canRun('volume_up'), true);
+  const onlyVolume = (extra) =>
+    config({ switch: { base_url: 'https://ha.example', webhooks: { volume: SECRET_ID + '-volume' }, ...extra } }).switch;
+  assert.equal(new TvSwitch(onlyVolume({})).canRun('volume_up'), false, 'no entity, no readback');
+  assert.equal(new TvSwitch(onlyVolume({ volume: { entity_id: 'media_player.tv_x' } })).canRun('volume_down'), false, 'no state readback');
+  const withStep = config({ switch: { base_url: 'https://ha.example', webhooks: { volume_up: SECRET_ID + '-vu' } } }).switch;
+  assert.equal(new TvSwitch(withStep).canRun('volume_up'), true, 'a step webhook needs no readback');
+});
+
+test('TvSwitch.cycle: a readback that still shows the previous channel right after a switch does not repeat it', async () => {
+  const { ha, impl } = fakeHa({ scene: 'ard' });
+  let now = 1000;
+  const sw = new TvSwitch(readbackConfig().switch, { fetchImpl: impl, now: () => now });
+  assert.equal((await sw.cycle('next')).target, 'zdf');
+  ha.scene = 'ard'; // Home Assistant has not caught up yet
+  now += 1000;
+  const second = await sw.cycle('next');
+  assert.deepEqual(second, { ok: true, target: 'tagesschau', from: 'zdf' });
+  now += 10000; // long after: the readback is the truth again
+  ha.scene = 'ard';
+  assert.equal((await sw.cycle('next')).from, 'ard');
+});
