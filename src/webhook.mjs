@@ -10,12 +10,17 @@ export class GitLabWebhookServer {
     path = '/webhook/gitlab',
     secret = null,
     onEvent = null,
+    acceptedTokens = null,
+    onDelivery = null,
   } = {}) {
     this.port = Number(port) || 3000;
     this.host = host || '0.0.0.0';
     this.path = path.startsWith('/') ? path : `/${path}`;
     this.secret = secret ? String(secret).trim() : null;
     this.onEvent = onEvent;
+    // Optional provider of [{token, genId}]; replaces the single secret when set.
+    this.acceptedTokens = typeof acceptedTokens === 'function' ? acceptedTokens : null;
+    this.onDelivery = onDelivery;
     this.server = null;
     this.listening = false;
     this.stats = {
@@ -25,17 +30,31 @@ export class GitLabWebhookServer {
     };
   }
 
-  verifyToken(reqToken) {
-    if (!this.secret) return true;
-    if (!reqToken) return false;
-    try {
-      const a = Buffer.from(this.secret);
-      const b = Buffer.from(String(reqToken).trim());
-      if (a.length !== b.length) return false;
-      return crypto.timingSafeEqual(a, b);
-    } catch {
-      return false;
+  /** Whether any token is required at all. */
+  requiresToken() {
+    return this.acceptedTokens ? true : Boolean(this.secret);
+  }
+
+  /**
+   * Checks the request token. Returns {ok, genId}; genId names the webhook
+   * generation whose derived token matched (null for the shared secret).
+   * Every candidate is compared, over digests, in constant time.
+   */
+  matchToken(reqToken) {
+    if (!this.requiresToken()) return { ok: true, genId: null };
+    if (!reqToken) return { ok: false, genId: null };
+    const digest = (v) => crypto.createHash('sha256').update(String(v)).digest();
+    const given = digest(String(reqToken).trim());
+    const candidates = this.acceptedTokens ? this.acceptedTokens() : [{ token: this.secret, genId: null }];
+    let match = null;
+    for (const c of candidates) {
+      if (crypto.timingSafeEqual(given, digest(c.token)) && !match) match = c;
     }
+    return match ? { ok: true, genId: match.genId ?? null } : { ok: false, genId: null };
+  }
+
+  verifyToken(reqToken) {
+    return this.matchToken(reqToken).ok;
   }
 
   async start() {
@@ -85,7 +104,8 @@ export class GitLabWebhookServer {
     }
 
     const gitlabToken = req.headers['x-gitlab-token'];
-    if (this.secret && !this.verifyToken(gitlabToken)) {
+    const tokenMatch = this.matchToken(gitlabToken);
+    if (!tokenMatch.ok) {
       log('Rejected webhook request: invalid X-Gitlab-Token');
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized: invalid secret token' }));
@@ -125,6 +145,14 @@ export class GitLabWebhookServer {
       this.stats.receivedCount++;
       this.stats.lastReceivedAt = Date.now();
       this.stats.lastEvent = eventType;
+
+      if (tokenMatch.genId) {
+        try {
+          this.onDelivery?.(tokenMatch.genId);
+        } catch (err) {
+          log(`Error recording webhook delivery: ${err.message}`);
+        }
+      }
 
       try {
         this.onEvent?.(eventType, payload);

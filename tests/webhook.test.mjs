@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { test } from 'node:test';
 
-import { GitLabClient } from '../src/gitlab.mjs';
 import { GitLabWebhookServer } from '../src/webhook.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 
@@ -122,91 +121,6 @@ test('GitLabWebhookServer verifies secret token and handles events', async () =>
     assert.equal(events[0].payload.object_attributes.iid, 42);
   } finally {
     await server.stop();
-  }
-});
-
-test('GitLabClient.ensureGroupWebhook creates or updates group hook', async () => {
-  const originalFetch = globalThis.fetch;
-  const requests = [];
-
-  let existingHooks = [
-    {
-      id: 10,
-      url: 'https://other.example.com/hook',
-      merge_requests_events: true,
-      pipeline_events: true,
-      enable_ssl_verification: true,
-    },
-  ];
-
-  globalThis.fetch = async (url, opts = {}) => {
-    requests.push({ url, method: opts.method || 'GET', body: opts.body ? JSON.parse(opts.body) : null });
-
-    if (url.endsWith('/api/v4/groups/my-group/hooks')) {
-      if ((opts.method || 'GET') === 'GET') {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => existingHooks,
-        };
-      }
-      if (opts.method === 'POST') {
-        const newHook = { id: 11, ...JSON.parse(opts.body) };
-        existingHooks.push(newHook);
-        return {
-          ok: true,
-          status: 201,
-          json: async () => newHook,
-        };
-      }
-    }
-
-    if (url.includes('/api/v4/groups/my-group/hooks/')) {
-      if (opts.method === 'PUT') {
-        const id = Number(url.split('/').pop());
-        const hook = existingHooks.find((h) => h.id === id);
-        Object.assign(hook, JSON.parse(opts.body));
-        return {
-          ok: true,
-          status: 200,
-          json: async () => hook,
-        };
-      }
-    }
-
-    return { ok: false, status: 404, text: async () => 'Not found' };
-  };
-
-  try {
-    const client = new GitLabClient({
-      host: 'git.example.com',
-      token: 'dummy-token',
-      group: 'my-group',
-    });
-
-    // Case 1: Hook does not exist -> creates it
-    const res1 = await client.ensureGroupWebhook({
-      url: 'https://teams-live.example.com/webhook/gitlab',
-      secretToken: 'my-secret',
-    });
-    assert.equal(res1.action, 'created');
-    assert.equal(res1.hook.id, 11);
-    assert.equal(res1.hook.url, 'https://teams-live.example.com/webhook/gitlab');
-
-    // Case 2: Hook exists and secretToken is provided -> updates it
-    const res2 = await client.ensureGroupWebhook({
-      url: 'https://teams-live.example.com/webhook/gitlab',
-      secretToken: 'my-secret',
-    });
-    assert.equal(res2.action, 'updated');
-
-    // Case 3: Hook exists and no update needed (secretToken omitted and events match)
-    const res3 = await client.ensureGroupWebhook({
-      url: 'https://teams-live.example.com/webhook/gitlab',
-    });
-    assert.equal(res3.action, 'unchanged');
-  } finally {
-    globalThis.fetch = originalFetch;
   }
 });
 

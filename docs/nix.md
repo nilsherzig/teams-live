@@ -142,6 +142,9 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `gitlab.max_watch_duration_seconds` | How long an MR is watched (7200). |
 | `gitlab.notify.ci.{enable,on_failure,on_success}` | CI result messages. |
 | `gitlab.notify.{rebase,approval_lost,merged,closed}` | Other MR messages. |
+| `gitlab.webhook.{enable,port,host,path,url,secret_file,auto_setup}` | Receiver for GitLab events and the group hook that feeds it. See [GitLab webhook](#gitlab-webhook). |
+| `gitlab.webhook.adopt_hooks` | Hand-made hooks this service may take over, `[{ id, url }]` (none). |
+| `gitlab.webhook.accept_shared_secret` | Keep accepting the shared secret next to the per-hook tokens (false). |
 | `jira.url`, `.token_file`, `.board_id` | Jira for `/sprint`, `/issue` and `/standup`. |
 | `confluence.url`, `.token_file` | Confluence instance and API token for doc links and `/doc`. |
 | `opsgenie.on_call_key`, `.support_key`, `.edge_key` | OpsGenie API keys for `/alerts` and `/oncall`. |
@@ -150,6 +153,46 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `home_assistant.url`, `.token_file` | Home Assistant with the HR WORKS integration, for `/whereis`. |
 | `home_assistant.hrworks_batch_size` | Organizational units per HR WORKS request when prefetching the company (4). Keep each request under the proxy timeout. |
 | `conversations` | Chats to watch: `{ id, name, gitlab }`. Default: the self chat `48:notes`. |
+
+## GitLab webhook
+
+With `gitlab.webhook.auto_setup` (default) and a secret, the service keeps one
+group hook pointing at `gitlab.webhook.url`. It never trusts a name or a URL
+to decide which hook is its own:
+
+- Every hook it creates carries a marker in its description,
+  `teams-live-owner:<owner> gen:<generation> v1`. The owner id is created once
+  and kept in `webhook-reconcile.json` (0600) in the state directory. Hooks
+  without the marker, or with another owner, are never changed or deleted. A
+  hook that merely has the configured URL is not adopted either; a separate
+  hook is created next to it.
+- Every hook gets its own token, derived (HMAC) from the secret, the owner
+  and the generation. The receiver accepts these tokens and nothing else
+  once management is on. The token proves which generation delivered, not
+  where the request came from. Neither the secret nor a token is logged or put
+  in the state file, and the secret itself is not sent to GitLab for managed
+  hooks.
+- A new `url` (for example a hostname change) never edits the existing hook.
+  It creates a replacement with its own generation and keeps the old hook. When
+  the replacement has delivered an event with its own token, the old hook is
+  re-read, compared (id, URL, marker) and deleted. Several hooks of this
+  service during such a move are expected. Changing the secret is handled the
+  same way.
+- Nothing is deleted without a strong secret (at least 32 characters) and
+  with a failed or partial hook listing. At most three hooks are deleted per
+  run, a hook that changed since it was recorded is left alone, and the plan is
+  written to the state file before each deletion. Without a strong secret hooks
+  are only registered.
+- The run happens at startup, every ten minutes and after a verified delivery.
+  A sample delivery is requested from GitLab after creating a hook
+  where the API allows it.
+
+Taking over an existing hand-made hook: list it in
+`gitlab.webhook.adopt_hooks` with its id and exact URL. It is read again and
+must still have that URL and no marker. While such a hook is tracked, the
+shared secret stays valid for it. Deploying management to a group that already
+has a hook without listing it there means its deliveries are rejected (401)
+and a new hook is created.
 
 ## Rich messages
 

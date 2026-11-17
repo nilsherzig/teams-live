@@ -145,6 +145,16 @@ export function loadConfig(configPath) {
           ? process.env.TEAMS_GITLAB_WEBHOOK_AUTO_SETUP === 'true' || process.env.TEAMS_GITLAB_WEBHOOK_AUTO_SETUP === '1'
           : true)
     ),
+    // Hooks created by hand that this service may take over: [{id, url}].
+    adopt_hooks: (Array.isArray(rawWebhook.adopt_hooks) ? rawWebhook.adopt_hooks : [])
+      .map((h) => ({ id: Number(h?.id), url: getString(h?.url).trim() }))
+      .filter((h) => Number.isInteger(h.id) && h.id > 0 && h.url),
+    // Keep accepting the shared secret next to the per-hook tokens.
+    accept_shared_secret: Boolean(
+      rawWebhook.accept_shared_secret ??
+        (process.env.TEAMS_GITLAB_WEBHOOK_ACCEPT_SHARED_SECRET === 'true' ||
+          process.env.TEAMS_GITLAB_WEBHOOK_ACCEPT_SHARED_SECRET === '1')
+    ),
   };
 
   if (webhook.secret_file && fs.existsSync(webhook.secret_file)) {

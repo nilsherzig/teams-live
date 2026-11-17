@@ -11,6 +11,7 @@ import { TrouterClient } from './trouter.mjs';
 import { MergeRequestWatcher } from './watcher.mjs';
 import { GitLabWebhookServer } from './webhook.mjs';
 import { ApproveServer } from './approve.mjs';
+import { WebhookReconciler, isStrongSecret, MIN_SECRET_LENGTH } from './webhook-reconcile.mjs';
 import path from 'node:path';
 import { SystemdWatchdog } from './systemd.mjs';
 import { HealthMonitor } from './health.mjs';
@@ -120,6 +121,7 @@ async function main() {
 
   let trouter = null;
   let webhookServer = null;
+  let webhookReconciler = null;
   let approveServer = null;
   let stopping = false;
 
@@ -160,6 +162,7 @@ async function main() {
     }
     watcher.stop();
     authManager.stop();
+    webhookReconciler?.stop();
     if (webhookServer) {
       await webhookServer.stop().catch((e) => log(`Error stopping webhook server: ${e.message}`));
     }
@@ -173,14 +176,42 @@ async function main() {
   process.on('SIGINT', () => cleanup('SIGINT'));
   process.on('SIGTERM', () => cleanup('SIGTERM'));
 
-  // Start GitLab webhook server and ensure group webhook if enabled
+  // Start GitLab webhook server and reconcile the group webhook if enabled
   if (config.gitlab?.webhook?.enable) {
     const whCfg = config.gitlab.webhook;
+    const manage = Boolean(whCfg.auto_setup && whCfg.url && gitlab.token && whCfg.secret);
+    if (whCfg.auto_setup && whCfg.url && whCfg.secret && !isStrongSecret(whCfg.secret)) {
+      log(`The GitLab webhook secret is shorter than ${MIN_SECRET_LENGTH} characters: hooks are registered but never replaced or cleaned up.`);
+    }
+    if (whCfg.auto_setup && whCfg.url && !whCfg.secret) {
+      log('No GitLab webhook secret configured: the hook is registered without one and never replaced or cleaned up.');
+    }
+    if (manage) {
+      webhookReconciler = new WebhookReconciler({
+        gitlab,
+        url: whCfg.url,
+        secret: whCfg.secret,
+        stateFile: path.join(config.gitlab.state_dir, 'webhook-reconcile.json'),
+        events: { merge_requests: true, pipeline: true },
+        adoptHooks: whCfg.adopt_hooks,
+        acceptSharedSecret: whCfg.accept_shared_secret,
+        log,
+      });
+      // The receiver must know the generation tokens before any hook exists.
+      try {
+        webhookReconciler.loadState();
+      } catch (err) {
+        log(`Webhook state unusable (${err.message}): hook management is off`);
+        webhookReconciler = null;
+      }
+    }
     webhookServer = new GitLabWebhookServer({
       port: whCfg.port,
       host: whCfg.host,
       path: whCfg.path,
       secret: whCfg.secret,
+      acceptedTokens: webhookReconciler && webhookReconciler.managed ? () => webhookReconciler.acceptedTokens() : null,
+      onDelivery: webhookReconciler ? (genId) => webhookReconciler.noteDelivery(genId) : null,
       onEvent: (eventType, payload) => {
         watcher.handleWebhookEvent(eventType, payload);
       },
@@ -193,36 +224,38 @@ async function main() {
       log(`Failed to start GitLab webhook server: ${err.message}`);
     }
 
+    const publishStatus = (result) => {
+      watcher.setWebhookSetupStatus({
+        ok: result.ok,
+        action: result.action,
+        hookId: result.hook?.id ?? null,
+        url: whCfg.url,
+        group: gitlab.group,
+        pendingCleanup: result.pendingCleanup ?? 0,
+        error: result.error,
+        timestamp: Date.now(),
+      });
+    };
+
     if (whCfg.auto_setup && whCfg.url && gitlab.token) {
-      try {
-        log(`Ensuring GitLab group webhook is configured for ${whCfg.url}...`);
-        const result = await gitlab.ensureGroupWebhook({
+      if (!webhookReconciler) {
+        // No secret: register only, never replace or delete anything.
+        webhookReconciler = new WebhookReconciler({
+          gitlab,
           url: whCfg.url,
-          secretToken: whCfg.secret,
-          events: {
-            merge_requests: true,
-            pipeline: true,
-          },
-        });
-        log(`GitLab group webhook status: ${result.action} (id: ${result.hook?.id ?? 'existing'})`);
-        watcher.setWebhookSetupStatus({
-          ok: true,
-          action: result.action,
-          hookId: result.hook?.id ?? null,
-          url: whCfg.url,
-          group: gitlab.group,
-          timestamp: Date.now(),
-        });
-      } catch (err) {
-        log(`GitLab group webhook auto-setup failed: ${err.message}`);
-        watcher.setWebhookSetupStatus({
-          ok: false,
-          error: err.message,
-          url: whCfg.url,
-          group: gitlab.group,
-          timestamp: Date.now(),
+          secret: whCfg.secret,
+          stateFile: path.join(config.gitlab.state_dir, 'webhook-reconcile.json'),
+          events: { merge_requests: true, pipeline: true },
+          adoptHooks: whCfg.adopt_hooks,
+          intervalMs: 0,
+          log,
         });
       }
+      log(`Reconciling the GitLab group webhook for ${whCfg.url}...`);
+      const result = await webhookReconciler.start();
+      log(`GitLab group webhook status: ${result.action}${result.ok ? '' : ` (${result.error})`}`);
+      publishStatus(result);
+      webhookReconciler.onStatus = publishStatus;
     } else if (whCfg.enable) {
       watcher.setWebhookSetupStatus({
         ok: true,

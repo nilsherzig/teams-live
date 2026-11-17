@@ -701,10 +701,42 @@ export class GitLabClient {
     };
   }
 
-  async getGroupHooks(group = null) {
+  /**
+   * Every hook of the group. Pages of 100 until a short page; any failed page
+   * throws, so a caller never acts on a partial list.
+   */
+  async listGroupHooks(group = null) {
     const targetGroup = group || this.group;
     if (!targetGroup) throw new Error('No GitLab group configured');
-    return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks`);
+    const all = [];
+    for (let page = 1; page <= 50; page++) {
+      const batch = await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks?per_page=100&page=${page}`);
+      if (!Array.isArray(batch)) throw new Error('GitLab returned an unexpected hook list');
+      all.push(...batch);
+      if (batch.length < 100) return all;
+    }
+    throw new Error('Too many group hook pages');
+  }
+
+  /** One hook, or null when it does not exist. */
+  async getGroupHook(group = null, hookId) {
+    const targetGroup = group || this.group;
+    if (!targetGroup) throw new Error('No GitLab group configured');
+    try {
+      return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks/${hookId}`);
+    } catch (err) {
+      if (/\(404\)/.test(err.message)) return null;
+      throw err;
+    }
+  }
+
+  /** Asks GitLab to send a sample delivery to the hook (not available everywhere). */
+  async testGroupHook(group = null, hookId, trigger = 'merge_requests_events') {
+    const targetGroup = group || this.group;
+    if (!targetGroup) throw new Error('No GitLab group configured');
+    return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks/${hookId}/test/${trigger}`, {
+      method: 'POST',
+    });
   }
 
   async addGroupHook(group = null, hookData) {
@@ -731,54 +763,6 @@ export class GitLabClient {
     return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks/${hookId}`, {
       method: 'DELETE',
     });
-  }
-
-  /**
-   * Ensures a group webhook exists with the specified URL and events.
-   * If an existing hook with the same URL is found, updates it if needed.
-   * Otherwise creates a new group webhook.
-   */
-  async ensureGroupWebhook({
-    group = null,
-    url,
-    secretToken = null,
-    events = {},
-  } = {}) {
-    if (!url) throw new Error('Webhook URL is required');
-    const targetGroup = group || this.group;
-    if (!targetGroup) throw new Error('No GitLab group configured');
-
-    const hookData = {
-      url,
-      merge_requests_events: events.merge_requests ?? true,
-      pipeline_events: events.pipeline ?? true,
-      job_events: events.job ?? false,
-      note_events: events.note ?? false,
-      enable_ssl_verification: events.enable_ssl_verification ?? true,
-    };
-    if (secretToken) {
-      hookData.token = secretToken;
-    }
-
-    const hooks = await this.getGroupHooks(targetGroup);
-    const existing = Array.isArray(hooks) ? hooks.find((h) => h.url === url) : null;
-
-    if (existing) {
-      const needsUpdate =
-        existing.merge_requests_events !== hookData.merge_requests_events ||
-        existing.pipeline_events !== hookData.pipeline_events ||
-        existing.enable_ssl_verification !== hookData.enable_ssl_verification ||
-        Boolean(secretToken);
-
-      if (needsUpdate) {
-        const updated = await this.editGroupHook(targetGroup, existing.id, hookData);
-        return { action: 'updated', hook: updated };
-      }
-      return { action: 'unchanged', hook: existing };
-    }
-
-    const created = await this.addGroupHook(targetGroup, hookData);
-    return { action: 'created', hook: created };
   }
 
   async getAwardEmojis(project, mrIid) {
