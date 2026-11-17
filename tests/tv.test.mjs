@@ -643,12 +643,17 @@ test('TvSwitch.cycle: forward, reverse and wrap follow the channel Home Assistan
 });
 
 test('TvSwitch.cycle: from off (brb or anything unmapped) next is ARD and prev is Tagesschau', async () => {
-  for (const scene of ['brb', 'something else']) {
+  for (const scene of ['brb', 'BRB']) {
     const a = fakeHa({ scene });
     assert.equal((await new TvSwitch(readbackConfig().switch, { fetchImpl: a.impl }).cycle('next')).target, 'ard');
     const b = fakeHa({ scene });
     assert.equal((await new TvSwitch(readbackConfig().switch, { fetchImpl: b.impl }).cycle('prev')).target, 'tagesschau');
   }
+  // Anything that is neither a channel nor the off scene is unknown: nothing is switched.
+  const odd = fakeHa({ scene: 'something else' });
+  const unknown = await new TvSwitch(readbackConfig().switch, { fetchImpl: odd.impl }).cycle('next');
+  assert.deepEqual(unknown, { ok: false, error: 'could not read the current channel (unrecognized state)' });
+  assert.deepEqual(odd.ha.posts, []);
   // The mapped state values are matched case-insensitively.
   const mapped = fakeHa({ scene: 'Scene ZDF' });
   assert.equal((await new TvSwitch(readbackConfig().switch, { fetchImpl: mapped.impl }).cycle('next')).target, 'tagesschau');
@@ -681,21 +686,39 @@ test('TvSwitch.cycle: a failed switch does not advance', async () => {
   assert.equal(flaky.ha.scene, 'ard');
   assert.equal(sw.lastKnown, undefined);
   // Without readback the remembered channel is untouched by the failure too.
-  const noRead = readbackConfig({ state: {} }).switch;
+  const noRead = readbackConfig({ state: { trust_last_switch: true } }).switch;
   const ha = fakeHa({ fail: (url, init) => init?.body?.includes('zdf') });
   const local = new TvSwitch(noRead, { fetchImpl: ha.impl });
-  assert.equal((await local.cycle('next')).target, 'ard');
+  await local.switchTo('ard');
   assert.equal((await local.cycle('next')).ok, false);
   assert.equal(local.lastKnown, 'ard');
 });
 
-test('TvSwitch.cycle: without readback it falls back to the last channel it switched to', async () => {
-  const { impl } = fakeHa();
+test('TvSwitch.cycle: without readback it fails closed, even after a restart', async () => {
+  const { ha, impl } = fakeHa();
   const sw = new TvSwitch(readbackConfig({ state: {} }).switch, { fetchImpl: impl });
   assert.equal(sw.hasReadback(), false);
+  for (const d of ['next', 'prev']) {
+    const out = await sw.cycle(d);
+    assert.equal(out.ok, false);
+    assert.match(out.error, /unknown \(no readback configured\)/);
+  }
+  await sw.switchTo('zdf');
+  assert.equal((await sw.cycle('next')).ok, false, 'a remembered switch is not trusted unless opted in');
+  assert.deepEqual(ha.posts, [{ action: 'zdf' }]);
+});
+
+test('TvSwitch.cycle: trust_last_switch cycles from this process\'s last switch, never before the first one', async () => {
+  const { impl } = fakeHa();
+  const sw = new TvSwitch(readbackConfig({ state: { trust_last_switch: true } }).switch, { fetchImpl: impl });
+  assert.equal(sw.hasReadback(), false);
+  const fresh = await sw.cycle('next');
+  assert.equal(fresh.ok, false);
+  assert.match(fresh.error, /unknown since the restart/);
+  await sw.switchTo('ard');
   const seen = [];
   for (const d of ['next', 'next', 'next', 'next', 'prev']) seen.push((await sw.cycle(d)).target);
-  assert.deepEqual(seen, ['ard', 'zdf', 'tagesschau', 'ard', 'tagesschau']);
+  assert.deepEqual(seen, ['zdf', 'tagesschau', 'ard', 'zdf', 'ard']);
   await sw.switchTo('off');
   assert.equal((await sw.cycle('prev')).target, 'tagesschau');
 });
@@ -872,4 +895,24 @@ test('/tv next|mute|vol failures: a failure reaction, never the URL, id, token o
       assert.match(r.replies, /failed/);
     }
   }
+});
+
+test('TvSwitch.cycle: the readback can use an entity attribute and a configured off value', async () => {
+  const cfg = readbackConfig({
+    state: { entity_id: 'select.scene_x', attribute: 'input', token: TOKEN, map: { off: ['idle'] } },
+  }).switch;
+  const posts = [];
+  const impl = async (url, init) => {
+    if (url.includes('/api/states/')) {
+      return { ok: true, status: 200, json: async () => ({ state: 'tv', attributes: { input: 'ZDF' } }) };
+    }
+    posts.push(JSON.parse(init.body));
+    return { ok: true, status: 200 };
+  };
+  assert.equal((await new TvSwitch(cfg, { fetchImpl: impl }).cycle('next')).target, 'tagesschau');
+  const idle = async () => ({ ok: true, status: 200, json: async () => ({ state: 'tv', attributes: { input: 'idle' } }) });
+  assert.equal((await new TvSwitch(cfg, { fetchImpl: idle }).readChannel()).channel, null);
+  const missing = async () => ({ ok: true, status: 200, json: async () => ({ state: 'tv', attributes: {} }) });
+  assert.deepEqual(await new TvSwitch(cfg, { fetchImpl: missing }).readChannel(), { ok: false, error: 'state unavailable' });
+  assert.deepEqual(posts, [{ action: 'tagesschau' }]);
 });

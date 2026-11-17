@@ -95,7 +95,8 @@ function httpBase(value) {
 }
 
 // What Home Assistant reports for each target, lowercased; by default the
-// target's own name. Anything else (the brb scene, an empty input) is "off".
+// target's own name. Only the configured off values (default: the off scene)
+// mean "off"; any other value is unknown and stops a cycle.
 function normalizeStateValues(raw, key) {
   const list = Array.isArray(raw) ? raw : [raw];
   const values = list.map((v) => str(v).toLowerCase()).filter(Boolean);
@@ -116,14 +117,24 @@ function normalizeSwitchConfig(raw, fallback) {
   const token = str(state.token) || (ownBase ? '' : str(fallback.token));
   const map = {};
   for (const key of TV_SWITCH_TARGETS) map[key] = normalizeStateValues(state.map?.[key], key);
+  const offScene = str(input.off_scene) || DEFAULT_OFF_SCENE;
+  map.off = normalizeStateValues(state.map?.off, offScene.toLowerCase());
   const volume = input.volume && typeof input.volume === 'object' ? input.volume : {};
   const step = Number(volume.step);
   return {
     base_url: ownBase || httpBase(fallback.baseUrl),
     webhooks,
-    off_scene: str(input.off_scene) || DEFAULT_OFF_SCENE,
+    off_scene: offScene,
     timeout_seconds: Number.isFinite(timeout) && timeout > 0 ? timeout : 10,
-    state: { entity_id: str(state.entity_id), token, map },
+    state: {
+      entity_id: str(state.entity_id),
+      // Read this attribute instead of the entity state (e.g. the active input of an OBS entity).
+      attribute: str(state.attribute),
+      token,
+      map,
+      // Without a readback, cycle from the channel this process switched to last (never after a restart).
+      trust_last_switch: state.trust_last_switch === true,
+    },
     // One step of `/tv vol up|down`, as a fraction of the full range.
     volume: {
       entity_id: str(volume.entity_id),
@@ -569,10 +580,13 @@ export class TvSwitch {
     const { state } = this.config;
     const read = await this.readEntity(state.entity_id);
     if (!read.ok) return read;
-    const value = str(read.body.state).toLowerCase();
+    const raw = state.attribute ? read.body.attributes?.[state.attribute] : read.body.state;
+    const value = str(typeof raw === 'string' || typeof raw === 'number' ? String(raw) : '').toLowerCase();
     if (!value || value === 'unavailable' || value === 'unknown') return { ok: false, error: 'state unavailable' };
     const channel = TV_SWITCH_TARGETS.find((key) => state.map[key].includes(value));
-    return { ok: true, channel: channel || null };
+    if (channel) return { ok: true, channel };
+    if (state.map.off.includes(value)) return { ok: true, channel: null };
+    return { ok: false, error: 'unrecognized state' };
   }
 
   async post(action, extra = {}) {
@@ -597,10 +611,13 @@ export class TvSwitch {
 
   /**
    * `/tv next` and `/tv prev`: ard -> zdf -> tagesschau -> ard (reversed for
-   * prev). From off (or from anything that is no channel) next is the first
-   * channel (ARD) and prev the last (Tagesschau). Targets without a webhook
+   * prev). From off (the configured off values, by default the brb scene) next is
+   * the first channel (ARD) and prev the last (Tagesschau); any other value is
+   * unknown and stops the command. Targets without a webhook
    * are skipped. The channel is read back from Home Assistant when that is
-   * configured; a failing readback stops the command rather than guessing,
+   * configured; a failing or unrecognized readback stops the command rather than guessing,
+   * as does a missing readback (unless `state.trust_last_switch` is set, and then only
+   * after this process switched once),
    * and a failing switch never counts as an advance.
    *
    * Resolves to `{ ok: true, target, from }` or `{ ok: false, error }`.
@@ -617,7 +634,14 @@ export class TvSwitch {
         if (!read.ok) return { ok: false, error: `could not read the current channel (${read.error})` };
         from = read.channel;
       } else {
-        from = this.lastKnown ?? null;
+        // No reliable truth: fail closed instead of guessing (after a restart nothing is known).
+        if (!this.config.state.trust_last_switch) {
+          return { ok: false, error: 'the current channel is unknown (no readback configured), pick one with /tv ard|zdf|tagesschau' };
+        }
+        if (this.lastKnown === undefined) {
+          return { ok: false, error: 'the current channel is unknown since the restart, pick one with /tv ard|zdf|tagesschau' };
+        }
+        from = this.lastKnown;
       }
 
       // Off sits "between" the last and the first channel.
