@@ -32,7 +32,7 @@ function textColumn(content, extra = {}, width = 'auto') {
   };
 }
 
-function avatarColumn(name, dataUri) {
+export function avatarColumn(name, dataUri) {
   return {
     type: 'Column',
     width: 'auto',

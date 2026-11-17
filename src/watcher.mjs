@@ -54,7 +54,7 @@ import {
 } from './users.mjs';
 import { SnakeGame } from './snake.mjs';
 import { AvatarService } from './avatars.mjs';
-import { collectCardPeople } from './card-user-row.mjs';
+import { collectCardPeople, isImageDataUri } from './card-user-row.mjs';
 import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
 import { formatTokenExpiry } from './gitlab.mjs';
@@ -71,6 +71,11 @@ const CI_JOB_PREFIX = 'CI job ';
 const SNAKE_FRAMES = 40;
 const SNAKE_FRAME_DELAY_MS = 1800;
 const REBASE_PREFIX = '**Rebase';
+// Author pictures on the /mrs list card: all lookups share one deadline (a list has many
+// rows, so not 1.5 s each), and every picture costs its data URI plus the column markup.
+const MRS_LIST_AVATAR_DEADLINE_MS = 2800;
+const MRS_LIST_AVATAR_MARGIN = 200;
+const MRS_LIST_AVATAR_ROW_OVERHEAD = 420;
 
 const GITLAB_EMOJI_TRANSLATIONS = {
   // Common Teams reaction names / slugs
@@ -4895,6 +4900,9 @@ export class MergeRequestWatcher {
     const { mode = 'default', userFilter = null, userFilterLabel = null, rich = false } =
       typeof opts === 'string' ? { mode: opts } : (opts || {});
 
+    // Rich lists show the author's picture where the identity is exact (see mrListAuthorPersons).
+    const authorPersons = rich && this.avatarService ? this.mrListAuthorPersons(mrs) : null;
+
     const groupPrefix = this.config.gitlab?.group
       ? new RegExp(`^${this.config.gitlab.group}/?`)
       : null;
@@ -4948,6 +4956,7 @@ export class MergeRequestWatcher {
         ciStatus: mr.head_pipeline?.status || mr.pipeline_status || mr.pipeline?.status || null,
         statusEmoji,
         author: mention,
+        authorPerson: authorPersons?.get(mr) || null,
         jira: jiraTicket ? { key: jiraTicket.key, url: jiraTicket.url } : null,
         badges: [approvalText, rebaseText, autoMerge ? '🔀 auto-merge' : ''].filter(Boolean),
       };
@@ -5033,7 +5042,83 @@ export class MergeRequestWatcher {
         }
       }
     }
+    await this.prefetchMrsListAvatars(data);
     return this.formatMrsMessage(data, parsed);
+  }
+
+  /**
+   * Who a listed merge request's author is, for the profile picture: the
+   * GitLab display name, and only when no other author of the list has the
+   * same name. AvatarService then still needs exactly one Teams identity with
+   * that full name (see avatars.mjs); GitLab usernames are not used, as the
+   * directory only guesses them from names. Bots have no Teams profile.
+   * Returns a Map of merge request to person.
+   */
+  mrListAuthorPersons(mrs) {
+    const persons = new Map();
+    if (!this.avatarService || !Array.isArray(mrs)) return persons;
+    const norm = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+    const listed = mrs.filter((mr) => mr?.author && typeof mr.author === 'object' && !isBotMr(mr));
+    const usernamesByName = new Map();
+    for (const { author } of listed) {
+      const name = norm(author.name);
+      if (!usernamesByName.has(name)) usernamesByName.set(name, new Set());
+      usernamesByName.get(name).add(norm(author.username));
+    }
+    for (const mr of listed) {
+      const name = String(mr.author.name ?? '').trim();
+      if (name && usernamesByName.get(norm(name))?.size === 1) persons.set(mr, { name });
+    }
+    return persons;
+  }
+
+  /**
+   * Fetches the pictures of the listed authors before the list is built: each
+   * author once, all of them under one deadline for the whole list (a slow
+   * lookup carries on in the background and is in the cache for the next list).
+   */
+  async prefetchMrsListAvatars(mrs) {
+    if (!this.avatarService) return;
+    try {
+      const unique = new Map();
+      for (const person of this.mrListAuthorPersons(mrs).values()) unique.set(person.name, person);
+      await this.avatarService.avatarsFor([...unique.values()], { deadlineMs: MRS_LIST_AVATAR_DEADLINE_MS });
+    } catch (e) {
+      log(`profile picture lookup failed: ${e.message}`);
+    }
+  }
+
+  /**
+   * Adds the author pictures to a list card that already fits, as many as the
+   * wire limit leaves room for, in row order (a row without one keeps its name
+   * line). Never costs the list anything else: no picture is traded for an
+   * emoji, a row or a fact, and the result is measured again. Returns the
+   * message with pictures, or null when there is none to show.
+   */
+  withMrsListAvatars(listing, message, { markdown, images }) {
+    if (!this.avatarService || this.suppressAvatars) return null;
+    let room = MAX_CARD_BYTES - richMessageWireBytes(message) - MRS_LIST_AVATAR_MARGIN;
+    let shown = 0;
+    for (const section of listing.sections) {
+      for (const row of section.rows) {
+        const uri = row.authorPerson ? this.avatarService.peek(row.authorPerson) : null;
+        if (!isImageDataUri(uri)) continue;
+        const cost = Math.ceil(uri.length * 1.1) + MRS_LIST_AVATAR_ROW_OVERHEAD;
+        if (cost > room) continue;
+        room -= cost;
+        row.avatar = uri;
+        shown += 1;
+      }
+    }
+    if (shown === 0) return null;
+    try {
+      const card = buildMrListCard({ title: listing.headline, sections: listing.sections, images, avatars: true });
+      const withPictures = card ? makeRichMessage(markdown, card) : null;
+      return withPictures && richMessageWireBytes(withPictures) <= MAX_CARD_BYTES ? withPictures : null;
+    } catch (e) {
+      log(`building the picture list card failed: ${e.message}`);
+      return null;
+    }
   }
 
   /**
@@ -5050,7 +5135,9 @@ export class MergeRequestWatcher {
       const message = this.richMessage(markdown, () =>
         buildMrListCard({ title: listing.headline, sections: listing.sections, images })
       );
-      if (isRichMessage(message)) return message;
+      if (isRichMessage(message)) {
+        return this.withMrsListAvatars(listing, message, { markdown, images }) || message;
+      }
     }
     return markdown;
   }

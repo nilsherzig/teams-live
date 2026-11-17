@@ -21,7 +21,7 @@
 import { SERVICE_ICONS } from './card-icons.mjs';
 import { GITLAB_ICONS } from './gitlab-icons.mjs';
 import { GITLAB_ICONS_SMALL } from './gitlab-icons-small.mjs';
-import { MAX_AVATAR_CHARS_PER_CARD, userRow } from './card-user-row.mjs';
+import { MAX_AVATAR_CHARS_PER_CARD, avatarColumn, isImageDataUri, userRow } from './card-user-row.mjs';
 
 export const ADAPTIVE_CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json';
 export const ADAPTIVE_CARD_VERSION = '1.4';
@@ -997,9 +997,10 @@ function listIconColumn(glyph, { images, emoji }) {
  * One merge request as a compact row: the GitLab state glyph (an emoji
  * without images), the linked reference and title, and one meta line. The CI
  * status is the emoji of the other cards ("passed", "failed"...) with its
- * label.
+ * label. With `avatars`, a row whose author has a picture (`row.avatar`, a
+ * data URI) shows it, 20px like on the other cards, in a column on the right.
  */
-function mrListRow(row, { images }) {
+function mrListRow(row, { images, avatars = false }) {
   const state = MR_LIST_STATES[row.state] || MR_LIST_STATES.open;
   const ciLabel = row.ciStatus ? `CI ${ciStatusInfo(row.ciStatus).label.toLowerCase()}` : '';
   const readiness = MR_LIST_READINESS[row.statusEmoji];
@@ -1015,21 +1016,19 @@ function mrListRow(row, { images }) {
   ].filter(Boolean);
 
   const title = `${mdLink(row.ref, row.url)} ${escapeMarkdownText(str(row.title))}`.trim();
-  return {
-    type: 'ColumnSet',
-    spacing: 'Small',
-    columns: [
-      listIconColumn({ icon: state.icon, label: state.label }, { images, emoji: state.emoji }),
-      {
-        type: 'Column',
-        width: 'stretch',
-        items: [
-          textBlock(title, { weight: 'Bolder' }),
-          textBlock(meta.join(' · '), { size: 'Small', isSubtle: true, spacing: 'None' }),
-        ],
-      },
-    ],
-  };
+  const columns = [
+    listIconColumn({ icon: state.icon, label: state.label }, { images, emoji: state.emoji }),
+    {
+      type: 'Column',
+      width: 'stretch',
+      items: [
+        textBlock(title, { weight: 'Bolder' }),
+        textBlock(meta.join(' · '), { size: 'Small', isSubtle: true, spacing: 'None' }),
+      ],
+    },
+  ];
+  if (avatars && isImageDataUri(row.avatar)) columns.push(avatarColumn(author || 'Author', row.avatar));
+  return { type: 'ColumnSet', spacing: 'Small', columns };
 }
 
 /** Rows grouped by project, in order of first appearance. */
@@ -1056,10 +1055,13 @@ function groupRowsByProject(rows) {
  * the glyph once per row, and a card is limited in size (MAX_CARD_BYTES), so a
  * long list needs the lighter form.
  *
+ * `avatars: true` adds the author pictures the rows carry (see mrListRow); the
+ * caller decides which rows get one, as a card is limited in size.
+ *
  * `title`/`heading`/`note` are the markdown of the regular list. Returns null
  * without any row.
  */
-export function buildMrListCard({ title, sections, images = true, fallbackText } = {}) {
+export function buildMrListCard({ title, sections, images = true, avatars = false, fallbackText } = {}) {
   const usable = (sections || []).filter((sec) => (sec.rows || []).length > 0);
   if (usable.length === 0) return null;
   const clean = (text) =>
@@ -1073,7 +1075,7 @@ export function buildMrListCard({ title, sections, images = true, fallbackText }
   for (const sec of usable) {
     if (sec.heading) items.push(textBlock(`**${clean(sec.heading)}**`, { spacing: 'Medium' }));
     for (const group of groupRowsByProject(sec.rows)) {
-      const rows = group.rows.map((row) => mrListRow(row, { images }));
+      const rows = group.rows.map((row) => mrListRow(row, { images, avatars }));
       if (!group.project) {
         items.push(...rows);
         continue;
