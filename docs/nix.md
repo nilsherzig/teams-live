@@ -340,6 +340,11 @@ How the link is built:
   is never blocked by it; a link opens at most 3 sessions at a time (the
   oldest of that link is replaced, other links are untouched) and at most 10
   sessions per minute. Reads of the confirmation page are cached for 5 s.
+- `node scripts/mock-approve-server.mjs [--port N] [--out FILE]` runs this flow
+  against a mock GitLab with generic data (`group/app!7`), to try the browser
+  bootstrap and confirmation without a live merge request. The capability URL
+  is written to a 0600 file and never printed; the mock "approval" lives in
+  memory only.
 - The link store is bounded (500). When it is full, used-up and superseded
   records are dropped first; a still-valid open link is never evicted, and no
   new link is minted until there is room (the warning is logged at most once
