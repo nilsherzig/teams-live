@@ -5,6 +5,12 @@
 // request shows approval, CI and rebase state, a Jira issue shows type,
 // status, priority and assignee, and so on. The watcher always keeps the
 // regular markdown text next to the card as the fallback.
+//
+// Layout of every card: a compact header with the logo of the service and a
+// label for the kind of entity (for example "GitLab - Merge request"), then the
+// title, an optional one-line subtitle, a few facts and the link actions.
+
+import { SERVICE_ICONS } from './card-icons.mjs';
 
 export const ADAPTIVE_CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json';
 export const ADAPTIVE_CARD_VERSION = '1.4';
@@ -27,13 +33,43 @@ function openUrl(title, url) {
   return target ? { type: 'Action.OpenUrl', title, url: target } : null;
 }
 
+const SERVICES = {
+  gitlab: 'GitLab',
+  jira: 'Jira',
+  opsgenie: 'OpsGenie',
+  confluence: 'Confluence',
+};
+
+/** Compact integration header: small service logo plus "Service - kind". */
+function header(service, kind) {
+  const name = SERVICES[service];
+  return {
+    type: 'ColumnSet',
+    columns: [
+      {
+        type: 'Column',
+        width: 'auto',
+        verticalContentAlignment: 'Center',
+        items: [{ type: 'Image', url: SERVICE_ICONS[service], altText: name, width: '16px', height: '16px' }],
+      },
+      {
+        type: 'Column',
+        width: 'stretch',
+        verticalContentAlignment: 'Center',
+        items: [textBlock(kind ? `${name} \u00b7 ${kind}` : name, { size: 'Small', weight: 'Bolder', isSubtle: true })],
+      },
+    ],
+  };
+}
+
 /**
  * Wraps the entity body in a coloured container and assembles the card.
  * `style` is an Adaptive Card container style (`good`, `attention`,
  * `warning`, `accent`, `emphasis`) and conveys the state at a glance.
  */
-function assembleCard({ style = 'emphasis', title, subtitle, facts = [], actions = [], fallbackText }) {
+function assembleCard({ service, kind, style = 'emphasis', title, subtitle, facts = [], actions = [], fallbackText }) {
   const items = [
+    header(service, kind),
     textBlock(title || subtitle || 'Update', { weight: 'Bolder', size: 'Medium' }),
     subtitle && title ? textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }) : null,
     factSet(facts),
@@ -129,9 +165,11 @@ export function buildMergeRequestCard(mr) {
   const pipelineLabel = pipelineFact(mr.pipeline);
 
   return assembleCard({
+    service: 'gitlab',
+    kind: 'Merge request',
     style,
     title: mr.title || `Merge request !${mr.iid}`,
-    subtitle: `Merge request !${mr.iid}${mr.project ? ` in ${mr.project}` : ''}`,
+    subtitle: `!${mr.iid}${mr.project ? ` in ${mr.project}` : ''}`,
     facts: [
       ['Status', statusLabel],
       ['Approval', approval],
@@ -154,9 +192,11 @@ export function buildMergeRequestCard(mr) {
 export function buildJobCard(job) {
   const info = ciStatusInfo(job.status);
   return assembleCard({
+    service: 'gitlab',
+    kind: 'CI job',
     style: info.style,
     title: job.name || `Job #${job.id}`,
-    subtitle: `CI job #${job.id}${job.project ? ` in ${job.project}` : ''}`,
+    subtitle: `#${job.id}${job.project ? ` in ${job.project}` : ''}`,
     facts: [
       ['Status', info.label],
       ['Stage', job.stage],
@@ -179,9 +219,11 @@ export function buildJobCard(job) {
 export function buildPipelineCard(pipeline) {
   const info = ciStatusInfo(pipeline.status);
   return assembleCard({
+    service: 'gitlab',
+    kind: 'Pipeline',
     style: info.style,
     title: `Pipeline #${pipeline.id}`,
-    subtitle: pipeline.project ? `CI pipeline in ${pipeline.project}` : 'CI pipeline',
+    subtitle: pipeline.project,
     facts: [
       ['Status', info.label],
       ['Ref', pipeline.ref],
@@ -206,9 +248,11 @@ export function buildJiraIssueCard(issue) {
   }
 
   return assembleCard({
+    service: 'jira',
+    kind: issue.issueType || 'Issue',
     style,
     title: issue.summary || issue.key,
-    subtitle: `${issue.issueType || 'Issue'} ${issue.key}`,
+    subtitle: issue.key,
     facts: [
       ['Status', issue.status],
       ['Priority', issue.priority || 'None'],
@@ -229,9 +273,11 @@ export function buildOpsGenieAlertCard(alert) {
   else if (priority === 'P1' || priority === 'P2') style = 'attention';
 
   return assembleCard({
+    service: 'opsgenie',
+    kind: 'Alert',
     style,
     title: alert.message || 'Alert',
-    subtitle: alert.tinyId ? `OpsGenie alert #${alert.tinyId}` : 'OpsGenie alert',
+    subtitle: alert.tinyId ? `#${alert.tinyId}` : '',
     facts: [
       ['Priority', priority],
       ['Status', `${alert.status || 'open'}, ${alert.acknowledged ? 'acknowledged' : 'unacknowledged'}`],
@@ -246,9 +292,10 @@ export function buildOpsGenieAlertCard(alert) {
 export function buildConfluencePageCard(page) {
   const space = page.spaceName ? `${page.spaceName}${page.spaceKey ? ` (${page.spaceKey})` : ''}` : page.spaceKey;
   return assembleCard({
+    service: 'confluence',
+    kind: 'Page',
     style: 'emphasis',
     title: page.title || 'Confluence page',
-    subtitle: 'Confluence page',
     facts: [
       ['Space', space],
       ['Last edited by', page.author],

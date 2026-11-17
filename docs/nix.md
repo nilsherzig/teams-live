@@ -164,6 +164,11 @@ out for what the entity is:
 | OpsGenie alert | Message, priority, status, owner |
 | Confluence page | Title, space, author |
 
+Every card starts with a compact header: the logo of the service (GitLab, Jira,
+OpsGenie or Confluence, embedded as a small PNG, no image fetch) and a label
+such as "GitLab · Merge request" or "Jira · Bug". Below it come the title, a
+one-line subtitle, a few facts and the link buttons.
+
 Replies, in-place updates and edits of the author's message behave as with
 regular messages: channel replies stay in the thread, chat replies quote the
 original, and the card replaces the previous message content. The regular text

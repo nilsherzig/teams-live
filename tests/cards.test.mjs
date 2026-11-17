@@ -10,10 +10,15 @@ import {
   ciStatusInfo,
 } from '../src/cards.mjs';
 
-const facts = (card) => Object.fromEntries(card.body[0].items.find((i) => i.type === 'FactSet').facts.map((f) => [f.title, f.value]));
+const items = (card) => card.body[0].items;
+const facts = (card) => Object.fromEntries(items(card).find((i) => i.type === 'FactSet').facts.map((f) => [f.title, f.value]));
 const style = (card) => card.body[0].style;
 const actionUrls = (card) => (card.actions || []).map((a) => a.url);
-const mainTitle = (card) => card.body[0].items[0].text;
+const header = (card) => items(card)[0];
+const headerLabel = (card) => header(card).columns[1].items[0].text;
+const headerIcon = (card) => header(card).columns[0].items[0];
+const mainTitle = (card) => items(card)[1].text;
+const subtitle = (card) => items(card).find((i) => i.type === 'TextBlock' && i.isSubtle && i !== header(card))?.text;
 
 function assertValidCard(card) {
   assert.equal(card.type, 'AdaptiveCard');
@@ -170,7 +175,8 @@ test('jira issue card styles by status and shows assignee/priority', () => {
   const card = buildJiraIssueCard(issue);
   assertValidCard(card);
   assert.equal(mainTitle(card), 'Something is broken');
-  assert.equal(card.body[0].items[1].text, 'Bug EX-1');
+  assert.equal(headerLabel(card), 'Jira \u00b7 Bug');
+  assert.equal(subtitle(card), 'EX-1');
   assert.equal(style(card), 'accent');
   assert.deepEqual(facts(card), { Status: 'In Progress', Priority: 'High', Assignee: 'Alice Example' });
   assert.deepEqual(actionUrls(card), [issue.url]);
@@ -195,7 +201,8 @@ test('opsgenie alert card styles by priority, acknowledgement and status', () =>
   const card = buildOpsGenieAlertCard(alert);
   assertValidCard(card);
   assert.equal(mainTitle(card), 'Disk almost full');
-  assert.equal(card.body[0].items[1].text, 'OpsGenie alert #123');
+  assert.equal(headerLabel(card), 'OpsGenie \u00b7 Alert');
+  assert.equal(subtitle(card), '#123');
   assert.equal(style(card), 'attention');
   assert.equal(facts(card).Status, 'open, unacknowledged');
   assert.equal(facts(card).Owner, 'Alice Example');
@@ -230,4 +237,42 @@ test('cards never contain empty facts or empty actions', () => {
     assert.ok(fact.title && fact.value);
   }
   assert.equal(card.actions, undefined);
+});
+
+test('every card has a compact branded header: logo plus "Service - kind"', () => {
+  const cases = [
+    [buildMergeRequestCard({ ...baseMr, state: 'open' }), 'GitLab', 'GitLab \u00b7 Merge request', '!42 in group/project'],
+    [buildJobCard({ id: 5, name: 'build', status: 'failed', project: 'group/project' }), 'GitLab', 'GitLab \u00b7 CI job', '#5 in group/project'],
+    [buildPipelineCard({ id: 9, status: 'success', project: 'group/project' }), 'GitLab', 'GitLab \u00b7 Pipeline', 'group/project'],
+    [buildJiraIssueCard({ key: 'EX-1', summary: 'S', issueType: 'Story', status: 'Open' }), 'Jira', 'Jira \u00b7 Story', 'EX-1'],
+    [buildOpsGenieAlertCard({ message: 'M', tinyId: '7' }), 'OpsGenie', 'OpsGenie \u00b7 Alert', '#7'],
+    [buildConfluencePageCard({ title: 'T', spaceKey: 'EX' }), 'Confluence', 'Confluence \u00b7 Page', undefined],
+  ];
+  const icons = new Set();
+  for (const [card, service, label, sub] of cases) {
+    assertValidCard(card);
+    assert.equal(header(card).type, 'ColumnSet');
+    assert.equal(headerLabel(card), label);
+    assert.equal(subtitle(card), sub);
+    const icon = headerIcon(card);
+    assert.equal(icon.type, 'Image');
+    assert.equal(icon.altText, service);
+    // Self-contained PNG, small enough not to bloat the message.
+    assert.match(icon.url, /^data:image\/png;base64,iVBOR/);
+    assert.ok(icon.url.length < 10_000, `${service} icon is ${icon.url.length} bytes`);
+    assert.equal(icon.width, '16px');
+    icons.add(`${service}:${icon.url}`);
+    // Compact: header, title, optional subtitle, facts. No grid or roster.
+    assert.ok(items(card).length <= 4);
+    assert.ok(!JSON.stringify(card.body).includes('"Table"'));
+  }
+  // One logo per service, shared by cards of the same service, never across services.
+  const byService = new Map();
+  for (const entry of icons) {
+    const [service, ...rest] = entry.split(':');
+    byService.set(service, new Set([...(byService.get(service) || []), rest.join(':')]));
+  }
+  assert.equal(byService.size, 4);
+  for (const set of byService.values()) assert.equal(set.size, 1);
+  assert.equal(new Set([...byService.values()].map((set) => [...set][0])).size, 4);
 });
