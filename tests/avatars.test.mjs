@@ -143,6 +143,76 @@ test('search fallback accepts exactly one equal-name hit with an orgid MRI', asy
   assert.deepEqual(await ambiguous.avatarsFor(['Frank Example']), {});
 });
 
+test('search fallback fails closed when the result page is full (truncated)', async () => {
+  const asked = [];
+  const svc = new AvatarService({
+    directory: defaultDirectory(),
+    searchLimit: 3,
+    searchFn: async (name, limit) => {
+      asked.push(limit);
+      return [
+        { displayName: 'Frank Example', mri: DAVE },
+        { displayName: 'Other Person', mri: CAROL },
+        { displayName: 'Another Person', mri: BOB },
+      ];
+    },
+    fetchPhoto: async () => assert.fail('must not fetch when uniqueness cannot be established'),
+  });
+  assert.deepEqual(await svc.avatarsFor(['Frank Example']), {});
+  assert.deepEqual(asked, [3], 'the search is asked for the configured limit');
+  await svc.avatarsFor(['Frank Example']);
+  assert.equal(asked.length, 1, 'the negative answer is cached');
+});
+
+test('searches share the concurrency cap and are deduplicated', async () => {
+  let active = 0;
+  let peak = 0;
+  let calls = 0;
+  const svc = new AvatarService({
+    directory: defaultDirectory(),
+    concurrency: 2,
+    searchFn: async () => {
+      calls++;
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 5));
+      active--;
+      return [];
+    },
+    fetchPhoto: async () => photo(),
+  });
+  await Promise.all([
+    svc.avatarsFor(['Frank Example', 'Grace Example', 'Heidi Example', 'Ivan Example']),
+    svc.avatarsFor(['Frank Example']),
+  ]);
+  assert.equal(peak, 2);
+  assert.equal(calls, 4, 'one search per distinct name');
+});
+
+test('failing searches open the circuit breaker for searches and photos alike', async () => {
+  const clk = clock();
+  let searches = 0;
+  const svc = new AvatarService({
+    directory: defaultDirectory(),
+    now: clk.now,
+    breakerThreshold: 2,
+    breakerMs: 60_000,
+    searchFn: async () => {
+      searches++;
+      throw new Error('directory down');
+    },
+    fetchPhoto: async () => photo(),
+  });
+  await svc.avatarsFor(['Frank Example']);
+  await svc.avatarsFor(['Grace Example']);
+  assert.equal(svc.breakerOpen, true);
+  await svc.avatarsFor(['Heidi Example']);
+  assert.equal(searches, 2, 'no search while the breaker is open');
+  assert.deepEqual(await svc.avatarsFor(['Alice Example']), {}, 'photos pause too');
+  clk.advance(61_000);
+  assert.equal(svc.breakerOpen, false);
+});
+
 test('isOrgIdMri', () => {
   assert.equal(isOrgIdMri(ALICE), true);
   assert.equal(isOrgIdMri('8:live:someone'), false);
@@ -378,6 +448,41 @@ test('fetcher treats missing photo headers, 404 and non-images as no picture', a
   assert.deepEqual(await run(fakeResponse(404)), { kind: 'none' });
   assert.deepEqual(await run(fakeResponse(200, { headers: { ...REAL, 'content-type': 'text/html' } })), { kind: 'none' });
   assert.deepEqual(await run(fakeResponse(200, { headers: { ...REAL, 'content-length': '999999' } })), { kind: 'none' });
+});
+
+test('fetcher stops reading a body that exceeds the cap even without a content-length', async () => {
+  let cancelled = false;
+  let reads = 0;
+  const chunk = new Uint8Array(4096);
+  const res = fakeResponse(200, { headers: REAL });
+  res.body = {
+    getReader: () => ({
+      read: async () => (++reads > 100 ? { done: true } : { done: false, value: chunk }),
+      cancel: async () => {
+        cancelled = true;
+      },
+    }),
+  };
+  res.arrayBuffer = async () => assert.fail('the whole body must not be buffered');
+  const out = await createTeamsPhotoFetcher({ loadAuth: () => AUTH, fetchFn: async () => res, maxBytes: 12 * 1024 })(ALICE);
+  assert.deepEqual(out, { kind: 'none' });
+  assert.equal(cancelled, true);
+  assert.ok(reads <= 4, 'reading stopped right after the cap');
+});
+
+test('fetcher reads a small streamed body completely', async () => {
+  const bytes = fakeJpeg();
+  const res = fakeResponse(200, { headers: REAL });
+  let sent = false;
+  res.body = {
+    getReader: () => ({
+      read: async () => (sent ? { done: true } : ((sent = true), { done: false, value: bytes })),
+      cancel: async () => {},
+    }),
+  };
+  const out = await createTeamsPhotoFetcher({ loadAuth: () => AUTH, fetchFn: async () => res })(ALICE);
+  assert.equal(out.kind, 'photo');
+  assert.equal(out.bytes.length, bytes.length);
 });
 
 test('fetcher errors carry neither URL nor token', async () => {

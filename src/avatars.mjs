@@ -42,6 +42,7 @@ const DEFAULTS = {
   breakerThreshold: 5, // consecutive failures
   breakerMs: 5 * 60 * 1000,
   size: 'HR32x32', // server-side resize, a 24px badge stays sharp
+  searchLimit: 10, // directory hits asked for; a full page cannot prove a name is unique
 };
 
 const norm = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -153,12 +154,41 @@ export function createTeamsPhotoFetcher({
     if (Number.isFinite(declared) && declared > maxBytes) return { kind: 'none' };
     let bytes;
     try {
-      bytes = new Uint8Array(await res.arrayBuffer());
+      bytes = await readCapped(res, maxBytes);
     } catch {
       throw new Error('network');
     }
-    return { kind: 'photo', bytes };
+    // More than the cap (no usable Content-Length): not a profile picture we embed.
+    return bytes ? { kind: 'photo', bytes } : { kind: 'none' };
   };
+}
+
+/** Reads the body but never more than `maxBytes`; null when it is larger. */
+async function readCapped(res, maxBytes) {
+  const reader = res.body?.getReader?.();
+  if (!reader) {
+    const all = new Uint8Array(await res.arrayBuffer());
+    return all.length > maxBytes ? null : all;
+  }
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
 }
 
 export class AvatarService {
@@ -166,7 +196,7 @@ export class AvatarService {
    * @param {object} opts
    * @param {object} opts.directory  UserDirectory (only `users` is read)
    * @param {Function} [opts.fetchPhoto]  async (mri) => {kind:'photo',bytes}|{kind:'none'}; throws on failure
-   * @param {Function} [opts.searchFn]  optional async (name) => people[]; used only when the
+   * @param {Function} [opts.searchFn]  optional async (name, limit) => people[]; used only when the
    *   directory has no match, and only an exact single hit with an orgid MRI counts
    * @param {Function} [opts.now]
    */
@@ -179,6 +209,7 @@ export class AvatarService {
     this.cache = new Map(); // mri -> { value: dataUri|null, expires }
     this.identities = new Map(); // normalized name -> { mri|null, expires } (search-resolved only)
     this.inflight = new Map(); // mri -> Promise<dataUri|null>
+    this.searches = new Map(); // name -> Promise<results>
     this.queue = [];
     this.active = 0;
     this.failures = 0;
@@ -210,17 +241,41 @@ export class AvatarService {
     if (name.split(' ').length < 2) return null;
     const cached = this.identities.get(name);
     if (cached && cached.expires > this.now()) return cached.mri;
+    // Searches share the request budget and the circuit breaker with the photo requests.
+    if (this.breakerOpen) return null;
     let mri = null;
     let ttl = this.opts.negativeTtlMs;
     try {
-      const results = (await this.searchFn(name)) || [];
+      const results = (await this.#search(name)) || [];
       const exact = results.filter((r) => norm(r.displayName ?? r.name) === name);
-      if (exact.length === 1 && isOrgIdMri(exact[0].mri)) mri = exact[0].mri;
-    } catch {
+      // A full page of hits may hide more people with this name: fail closed.
+      const truncated = results.length >= this.opts.searchLimit;
+      if (!truncated && exact.length === 1 && isOrgIdMri(exact[0].mri)) mri = exact[0].mri;
+    } catch (err) {
       ttl = this.opts.errorTtlMs;
+      this.#recordFailure(err);
     }
     this.#remember(this.identities, name, { mri, expires: this.now() + ttl });
     return mri;
+  }
+
+  #search(name) {
+    const existing = this.searches.get(name);
+    if (existing) return existing;
+    const promise = this.#schedule(async () => this.searchFn(name, this.opts.searchLimit)).finally(() =>
+      this.searches.delete(name)
+    );
+    this.searches.set(name, promise);
+    return promise;
+  }
+
+  #recordFailure(err) {
+    this.failures += 1;
+    if (this.failures >= this.opts.breakerThreshold) {
+      this.breakerUntil = this.now() + this.opts.breakerMs;
+      this.failures = 0;
+      log(`Photo lookups paused for ${Math.round(this.opts.breakerMs / 1000)}s after repeated failures (${err.message})`);
+    }
   }
 
   #remember(map, key, entry) {
@@ -299,12 +354,7 @@ export class AvatarService {
       } catch (err) {
         ttl = this.opts.errorTtlMs;
         this.stats.errors += 1;
-        this.failures += 1;
-        if (this.failures >= this.opts.breakerThreshold) {
-          this.breakerUntil = this.now() + this.opts.breakerMs;
-          this.failures = 0;
-          log(`Photo lookups paused for ${Math.round(this.opts.breakerMs / 1000)}s after repeated failures (${err.message})`);
-        }
+        this.#recordFailure(err);
       }
       this.#remember(this.cache, mri, { value, expires: this.now() + ttl });
       return value;
