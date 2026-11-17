@@ -1096,8 +1096,9 @@ export class MergeRequestWatcher {
     this.avatarService = this.richMessages
       ? new AvatarService({
           directory: this.userDirectory,
-          searchFn: async (name) => {
-            const res = await searchPeople(name, 5);
+          // The limit comes from the service: a full page means "maybe more", which fails closed.
+          searchFn: async (name, limit) => {
+            const res = await searchPeople(name, limit);
             if (!res?.ok) throw new Error('directory search failed');
             return res.value?.results || [];
           },
