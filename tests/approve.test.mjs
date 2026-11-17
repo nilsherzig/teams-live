@@ -669,3 +669,161 @@ test('refreshMrCards re-checks every watched card of the merge request', async (
   assert.deepEqual(checked.sort(), ['a', 'c']);
   assert.deepEqual(result, { matched: 2, completed: 1, failed: 1 });
 });
+
+// --- review fixes ---
+
+test('junk tokens cannot lock out a valid token: lookup first, the invalid counter only gates unknown tokens', async () => {
+  const ctx = await setup();
+  try {
+    for (let i = 0; i < 65; i++) await ctx.bootstrap(crypto.randomBytes(32).toString('base64url'));
+    assert.equal((await ctx.bootstrap(crypto.randomBytes(32).toString('base64url'))).status, 429, 'junk is throttled');
+    assert.equal((await ctx.bootstrap()).status, 200, 'the valid token still works');
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('a first approve attempt that landed followed by a 401/403 is recognised as approved', async () => {
+  for (const status of [401, 403]) {
+    const gitlab = makeGitlab();
+    gitlab.approveError = new Error(`GitLab error (${status}): already approved`);
+    gitlab.userState = () => ({ known: true, user: { id: 1 }, hasApproved: gitlab.calls.approve.length > 0, canApprove: true });
+    const ctx = await setup({ gitlab });
+    try {
+      const res = await ctx.confirm();
+      assert.equal(res.status, 200, String(status));
+      assert.match(await res.text(), /Approved in GitLab/);
+      assert.equal(ctx.server.store.byId(ctx.record.id).status, 'approved');
+    } finally {
+      await ctx.server.stop();
+    }
+  }
+
+  // A 401/403 with the recheck unavailable is an unknown outcome, not a definitive refusal.
+  const g = makeGitlab();
+  g.approveError = new Error('GitLab error (401): unauthorized');
+  g.userState = () => (g.calls.approve.length === 0 ? { known: true, user: { id: 1 }, hasApproved: false, canApprove: true } : { known: false });
+  const ctx = await setup({ gitlab: g });
+  try {
+    const res = await ctx.confirm();
+    assert.equal(res.status, 502);
+    assert.match(await res.text(), /may or may not be approved/);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('approveMr does not retry a thrown fetch error; reads still do', async () => {
+  const { GitLabClient } = await import('../src/gitlab.mjs');
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    throw new TypeError('fetch failed', { cause: new Error('socket hang up') });
+  };
+  try {
+    const client = new GitLabClient({ baseUrl: 'https://gitlab.example.com', token: 'test-token' });
+    await assert.rejects(() => client.approveMr('group/app', 7, { sha: SHA }), /GitLab request failed/);
+    assert.equal(calls, 1, 'a mutation is sent once');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('a full store refuses to mint, never evicts open links and drops terminal records first', () => {
+  let now = 1_000_000;
+  const store = new ApprovalStore({ max: 3, now: () => ++now });
+  const a = store.linkFor({ project: PROJECT, iid: 1, sha: SHA });
+  const b = store.linkFor({ project: PROJECT, iid: 2, sha: SHA });
+  const c = store.linkFor({ project: PROJECT, iid: 3, sha: SHA });
+  assert.ok(a && b && c);
+  assert.equal(store.linkFor({ project: PROJECT, iid: 4, sha: SHA }), null, 'refused when full');
+  for (const x of [a, b, c]) assert.equal(store.byToken(x.token)?.status, 'open', 'advertised links survive');
+  assert.equal(store.records.size, 3);
+
+  // A consumed record makes room, and the open ones are still intact.
+  store.markApproved(PROJECT, 1, SHA);
+  const d = store.linkFor({ project: PROJECT, iid: 4, sha: SHA });
+  assert.ok(d, 'room after a terminal record is dropped');
+  assert.equal(store.records.size, 3);
+  assert.equal(store.byToken(b.token)?.status, 'open');
+  assert.equal(store.byToken(c.token)?.status, 'open');
+});
+
+test('linkFor persists only when something changed', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'approve-test-'));
+  const file = path.join(dir, 'links.json');
+  try {
+    const store = new ApprovalStore({ file });
+    store.linkFor({ project: PROJECT, iid: IID, sha: SHA });
+    let writes = 0;
+    const persist = store.persist.bind(store);
+    store.persist = () => {
+      writes++;
+      persist();
+    };
+    for (let i = 0; i < 5; i++) store.linkFor({ project: PROJECT, iid: IID, sha: SHA });
+    assert.equal(writes, 0, 'cached renders do not write');
+    store.linkFor({ project: PROJECT, iid: IID, sha: 'b'.repeat(40) });
+    assert.ok(writes > 0, 'a new head does');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('no new link is minted for a head the account already approved, also after a restart', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'approve-test-'));
+  const file = path.join(dir, 'links.json');
+  try {
+    const first = new ApprovalStore({ file });
+    first.linkFor({ project: PROJECT, iid: IID, sha: SHA });
+    first.markApproved(PROJECT, IID, SHA);
+    assert.equal(first.linkFor({ project: PROJECT, iid: IID, sha: SHA }), null);
+    const second = new ApprovalStore({ file });
+    second.load();
+    assert.equal(second.linkFor({ project: PROJECT, iid: IID, sha: SHA }), null, 'remembered across a restart');
+    assert.ok(second.linkFor({ project: PROJECT, iid: IID, sha: 'c'.repeat(40) }), 'a new head gets a link again');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a link holds at most three sessions and cannot evict the sessions of other links; bootstraps are rate limited per link', async () => {
+  const ctx = await setup();
+  try {
+    const other = ctx.server.store.linkFor({ project: PROJECT, iid: 99, sha: SHA });
+    const otherCookie = await ctx.open(other.token);
+    assert.ok(otherCookie);
+    const cookies = [];
+    for (let i = 0; i < 6; i++) cookies.push(await ctx.open());
+    assert.equal((await ctx.page(cookies[5])).status, 200, 'newest session works');
+    assert.equal((await ctx.page(cookies[0])).status !== 200, true, 'oldest own session was replaced');
+    assert.equal((await ctx.page(otherCookie)).status, 200, 'the other link keeps its session');
+    // 7 successes so far for this link; the rest of the minute allows 3 more, then 429.
+    let last;
+    for (let i = 0; i < 5; i++) last = await ctx.bootstrap();
+    assert.equal(last.status, 429);
+    assert.equal((await ctx.bootstrap(other.token)).status, 200, 'the limit is per link');
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('confirmation reads are coalesced for a few seconds; the approving POST always evaluates fresh', async () => {
+  let now = 5_000_000;
+  const ctx = await setup({ now: () => now });
+  try {
+    const cookie = await ctx.open();
+    for (let i = 0; i < 4; i++) assert.equal((await ctx.page(cookie)).status, 200);
+    assert.equal(ctx.gitlab.calls.getMr, 1, 'one GitLab read for repeated GETs');
+    const csrf = await ctx.csrfFrom(await ctx.page(cookie));
+    const before = ctx.gitlab.calls.getMr;
+    const res = await ctx.post(cookie, { csrf });
+    assert.equal(res.status, 200);
+    assert.ok(ctx.gitlab.calls.getMr > before, 'the POST re-reads');
+    assert.equal(ctx.gitlab.calls.approve.length, 1);
+  } finally {
+    await ctx.server.stop();
+  }
+});

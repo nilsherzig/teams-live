@@ -75,7 +75,7 @@ export class GitLabClient {
     return res;
   }
 
-  async request(path, { method = 'GET', body = null, timeoutMs = 30_000 } = {}) {
+  async request(path, { method = 'GET', body = null, timeoutMs = 30_000, retry = true } = {}) {
     const url = `${this.baseUrl}/${path.replace(/^\/+/, '')}`;
     const headers = {
       'User-Agent': 'teams-live/1.0',
@@ -99,6 +99,8 @@ export class GitLabClient {
     try {
       res = await makeFetch();
     } catch (err) {
+      // A mutation that may already have landed must not be sent twice blindly.
+      if (!retry) throw new Error(`GitLab request failed (${err.cause?.message || err.message})`);
       try {
         await new Promise((r) => setTimeout(r, 1000));
         res = await makeFetch();
@@ -316,7 +318,7 @@ export class GitLabClient {
     const body = sha ? { sha } : {};
     return await this.request(
       `projects/${encodeURIComponent(project)}/merge_requests/${iid}/approve`,
-      { method: 'POST', body }
+      { method: 'POST', body, retry: false }
     );
   }
 

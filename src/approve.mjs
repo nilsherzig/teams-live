@@ -41,6 +41,10 @@ const CSRF_TTL_MS = 10 * 60 * 1000;
 const MAX_RECORDS = 500;
 const MAX_SESSIONS = 2000;
 const MAX_BOOTSTRAP_FAILURES_PER_MINUTE = 60;
+const MAX_SESSIONS_PER_LINK = 3;
+const MAX_BOOTSTRAPS_PER_LINK_PER_MINUTE = 10;
+const READ_CACHE_MS = 5000;
+const APPROVED_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const REFRESH_TIMEOUT_MS = 15_000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const COOKIE_NAME = 'tl_approve';
@@ -73,6 +77,10 @@ export class ApprovalStore {
     // Raw tokens of links minted by this process, so a card refresh shows the
     // same link again. Memory only; a restart simply mints a new link.
     this.minted = new Map();
+    // `<mr>@<sha>` -> time: the configured account approved this head commit.
+    // No new link is minted for it, however long the merge request waits for
+    // other approvers.
+    this.approvedHeads = new Map();
   }
 
   load() {
@@ -101,24 +109,51 @@ export class ApprovalStore {
           });
         }
       }
+      for (const a of Array.isArray(data?.approvedHeads) ? data.approvedHeads : []) {
+        if (typeof a?.key === 'string' && Number.isFinite(a.at)) this.approvedHeads.set(a.key, a.at);
+      }
     } catch (err) {
       log(`Could not read ${this.file}: ${err.message}`);
     }
     this.prune();
   }
 
-  prune() {
+  /**
+   * Drops expired records, then (only when over the cap) used-up and superseded
+   * ones, oldest first (`room` slots are kept free). A still-valid open link is never evicted: a full store
+   * refuses to mint instead. Returns whether anything changed.
+   */
+  prune(room = 0) {
     const now = this.now();
+    let changed = false;
     for (const [id, r] of this.records) {
-      if (r.expiresAt <= now) this.records.delete(id);
+      if (r.expiresAt <= now) {
+        this.records.delete(id);
+        changed = true;
+      }
     }
-    if (this.records.size > this.max) {
-      const oldestFirst = [...this.records.values()].sort((a, b) => a.createdAt - b.createdAt);
-      for (const r of oldestFirst.slice(0, this.records.size - this.max)) this.records.delete(r.id);
+    if (this.records.size + room > this.max) {
+      const spent = [...this.records.values()].filter((r) => r.status !== 'open').sort((a, b) => a.createdAt - b.createdAt);
+      for (const r of spent.slice(0, this.records.size + room - this.max)) {
+        this.records.delete(r.id);
+        changed = true;
+      }
+    }
+    for (const [k, at] of this.approvedHeads) {
+      if (now - at > APPROVED_KEEP_MS) {
+        this.approvedHeads.delete(k);
+        changed = true;
+      }
+    }
+    if (this.approvedHeads.size > this.max) {
+      const oldest = [...this.approvedHeads.entries()].sort((a, b) => a[1] - b[1]);
+      for (const [k] of oldest.slice(0, this.approvedHeads.size - this.max)) this.approvedHeads.delete(k);
+      changed = true;
     }
     for (const [k, m] of this.minted) {
       if (!this.records.has(m.id)) this.minted.delete(k);
     }
+    return changed;
   }
 
   persist() {
@@ -126,7 +161,7 @@ export class ApprovalStore {
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
       const tmp = `${this.file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ version: 2, records: [...this.records.values()] }), { mode: 0o600 });
+      fs.writeFileSync(tmp, JSON.stringify({ version: 3, records: [...this.records.values()], approvedHeads: [...this.approvedHeads].map(([key, at]) => ({ key, at })) }), { mode: 0o600 });
       fs.renameSync(tmp, this.file);
     } catch (err) {
       log(`Could not write ${this.file}: ${err.message}`);
@@ -140,17 +175,31 @@ export class ApprovalStore {
    */
   linkFor({ project, iid, sha }) {
     if (!project || iid === undefined || iid === null || !sha) return null;
-    this.prune();
+    let changed = this.prune();
     const key = keyOf(project, iid);
-    for (const r of this.records.values()) {
-      if (keyOf(r.project, r.iid) === key && r.sha !== sha && r.status === 'open') r.status = 'stale';
-    }
     const cacheKey = `${key}@${sha}`;
+    if (this.approvedHeads.has(cacheKey)) {
+      if (changed) this.persist();
+      return null;
+    }
+    for (const r of this.records.values()) {
+      if (keyOf(r.project, r.iid) === key && r.sha !== sha && r.status === 'open') {
+        r.status = 'stale';
+        changed = true;
+      }
+    }
     const cached = this.minted.get(cacheKey);
     const live = cached ? this.records.get(cached.id) : null;
     if (cached && live && live.status === 'open' && live.expiresAt > this.now()) {
-      this.persist();
+      if (changed) this.persist();
       return { token: cached.token, record: live };
+    }
+    if (this.prune(1)) changed = true;
+    if (this.records.size >= this.max) {
+      // Never revoke a link that is still advertised on a card.
+      log(`Approval link store is full (${this.max}); no new link is created`);
+      if (changed) this.persist();
+      return null;
     }
     const token = crypto.randomBytes(32).toString('base64url');
     const now = this.now();
@@ -165,7 +214,6 @@ export class ApprovalStore {
     };
     this.records.set(record.id, record);
     this.minted.set(cacheKey, { token, id: record.id });
-    this.prune();
     this.persist();
     return { token, record };
   }
@@ -192,6 +240,7 @@ export class ApprovalStore {
   /** A confirmed approval uses up every link of the merge request. */
   markApproved(project, iid, sha) {
     const key = keyOf(project, iid);
+    this.approvedHeads.set(`${key}@${sha}`, this.now());
     for (const r of this.records.values()) {
       if (keyOf(r.project, r.iid) !== key || r.status === 'stale') continue;
       r.status = r.sha === sha ? 'approved' : 'stale';
@@ -319,6 +368,8 @@ export class ApproveServer {
     this.sessions = new Map();
     this.failures = { windowStart: 0, count: 0 };
     this.locks = new Map();
+    this.bootstraps = new Map();
+    this.readCache = new Map();
     this.server = null;
     this.script = this.bootstrapScript();
     this.scriptHash = `sha256-${crypto.createHash('sha256').update(this.script).digest('base64')}`;
@@ -459,11 +510,27 @@ export class ApproveServer {
     for (const [h, s] of this.sessions) {
       if (s.expiresAt <= now) this.sessions.delete(h);
     }
+    // A link holds only a few sessions at a time: opening more replaces its own
+    // oldest ones, so one holder cannot push out the sessions of other links.
+    const own = [...this.sessions.entries()].filter(([, s]) => s.recordId === record.id);
+    for (const [h] of own.slice(0, Math.max(0, own.length - (MAX_SESSIONS_PER_LINK - 1)))) this.sessions.delete(h);
     while (this.sessions.size >= MAX_SESSIONS) this.sessions.delete(this.sessions.keys().next().value);
     const sid = crypto.randomBytes(32).toString('base64url');
     const expiresAt = Math.min(now + SESSION_TTL_MS, record.expiresAt);
     this.sessions.set(sha256Hex(sid), { recordId: record.id, expiresAt });
     return { sid, maxAge: Math.max(1, Math.floor((expiresAt - now) / 1000)) };
+  }
+
+  /** At most a handful of successful bootstraps per link and minute. */
+  allowBootstrap(record) {
+    const now = this.now();
+    for (const [id, w] of this.bootstraps) {
+      if (now - w.start > 60_000 || !this.store.records.has(id)) this.bootstraps.delete(id);
+    }
+    const w = this.bootstraps.get(record.id) || { start: now, count: 0 };
+    w.count++;
+    this.bootstraps.set(record.id, w);
+    return w.count <= MAX_BOOTSTRAPS_PER_LINK_PER_MINUTE;
   }
 
   /** The session of a request: `{sid, record}` or null. The record may be used up. */
@@ -535,15 +602,18 @@ export class ApproveServer {
       res.end(text);
     };
     if (!this.originAllowed(req)) return reply(403, 'forbidden');
-    if (this.throttled()) return reply(429, 'too many attempts', { 'Retry-After': '60' });
     const parsed = await this.postForm(req);
     if (!parsed.form) return reply(parsed.status, 'rejected');
+    // Look the token up first: the counter of unknown tokens only slows down
+    // guessing and must never lock out a valid link.
     const record = this.store.byToken(parsed.form.get('token'));
     if (!record) {
+      if (this.throttled()) return reply(429, 'too many attempts', { 'Retry-After': '60' });
       this.noteFailure();
       return reply(404, 'unknown or expired');
     }
     if (record.status !== 'open') return reply(410, 'used or superseded');
+    if (!this.allowBootstrap(record)) return reply(429, 'too many attempts', { 'Retry-After': '60' });
     const { sid, maxAge } = this.openSession(record);
     return reply(200, 'ok', { 'Set-Cookie': this.cookie(sid, maxAge) });
   }
@@ -601,8 +671,25 @@ export class ApproveServer {
     return { code: 410, title: 'Link already used', body: `${this.summary(record, null, null)}<p>This link was already used to approve the merge request. Nothing more was sent.</p>` };
   }
 
+  /** Short-lived, coalesced read for the confirmation page (never used to approve). */
+  evaluateCached(record) {
+    const now = this.now();
+    for (const [id, c] of this.readCache) {
+      if (now - c.at > READ_CACHE_MS || !this.store.records.has(id)) this.readCache.delete(id);
+    }
+    const hit = this.readCache.get(record.id);
+    if (hit && hit.status === record.status) return hit.promise;
+    const promise = this.evaluate(record);
+    const entry = { at: now, status: record.status, promise };
+    this.readCache.set(record.id, entry);
+    promise.catch(() => {
+      if (this.readCache.get(record.id) === entry) this.readCache.delete(record.id);
+    });
+    return promise;
+  }
+
   async showConfirmation(res, { sid, record }) {
-    const result = await this.evaluate(record);
+    const result = await this.evaluateCached(record);
     if (result.status === 'used') {
       const u = this.usedPage(record);
       return this.send(res, u.code, this.page(u.title, u.body));
@@ -652,6 +739,7 @@ export class ApproveServer {
     }
 
     const outcome = await this.withLock(keyOf(record.project, record.iid), async () => {
+      this.readCache.delete(record.id);
       const current = this.store.byId(record.id);
       if (!current) return { code: 410, title: 'Link expired', body: '<p>This approval link expired. Nothing was approved.</p>' };
       const result = await this.evaluate(current);
@@ -675,20 +763,21 @@ export class ApproveServer {
     } catch (err) {
       const status = gitlabStatus(err);
       log(`Approval of ${record.project}!${record.iid} failed${status ? ` (HTTP ${status})` : ' (no response)'}`);
-      if (status === null || status >= 500) {
-        // The outcome is uncertain: look before saying anything. Nothing is
-        // consumed unless an approval is confirmed.
+      if (status === null || status >= 500 || status === 401 || status === 403) {
+        // The outcome is uncertain (a first attempt may have landed before a
+        // later answer): look before saying anything. Nothing is consumed
+        // unless an approval is confirmed.
         const state = await this.gitlab.getUserApprovalState(record.project, record.iid).catch(() => ({ known: false }));
         if (state.known && state.hasApproved) {
           return this.approved(record, summary);
         }
+        if (state.known && (status === 401 || status === 403)) {
+          return { code: 403, title: 'Approval refused', body: `${summary}<p>GitLab refused the approval (the configured account may not be allowed to approve this merge request) and no approval is recorded. Nothing was approved.</p>` };
+        }
         if (state.known) {
           return { code: 502, title: 'Approval failed', body: `${summary}<p>GitLab did not confirm the request and no approval is recorded. Nothing was approved. Reload the page to try again.</p>` };
         }
-        return { code: 502, title: 'Outcome unknown', body: `${summary}<p>GitLab did not answer and the result could not be checked. The merge request may or may not be approved: check it in GitLab before retrying.</p>` };
-      }
-      if (status === 401 || status === 403) {
-        return { code: 403, title: 'Approval refused', body: `${summary}<p>GitLab refused the approval (the configured account may not be allowed to approve this merge request). Nothing was approved.</p>` };
+        return { code: 502, title: 'Outcome unknown', body: `${summary}<p>GitLab did not give a clear answer and the result could not be checked. The merge request may or may not be approved: check it in GitLab before retrying.</p>` };
       }
       if (status === 404) {
         return { code: 404, title: 'Approval failed', body: `${summary}<p>GitLab could not find the merge request. Nothing was approved.</p>` };

@@ -327,7 +327,17 @@ How the link is built:
 - A link is used up only after GitLab confirms the approval; a replay or a
   concurrent request never approves twice. After an unclear network or server
   error the service looks at its own approval before saying what happened, and
-  does not use the link up unless the approval is confirmed.
+  does not use the link up unless the approval is confirmed. The approval
+  request is never retried blindly, and a 401/403 is treated like any other
+  unclear answer (the own approval is looked at first).
+- Limits: an unknown token counts against a global throttle, but a valid token
+  is never blocked by it; a link opens at most 3 sessions at a time (the
+  oldest of that link is replaced, other links are untouched) and at most 10
+  sessions per minute. Reads of the confirmation page are cached for 5 s.
+- The link store is bounded (500). When it is full, used-up and superseded
+  records are dropped first; a still-valid open link is never evicted, and no
+  new link is minted until there is room. Once the configured account approved
+  a head commit, no new link is minted for it (remembered for 7 days).
 - The approval is sent with the head SHA, and the page checks that the merge
   request is open, not a draft, not yet approved by the service's account and
   that GitLab lets it approve. A merge request that gained commits, was closed
