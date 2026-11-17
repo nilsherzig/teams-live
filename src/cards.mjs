@@ -1073,26 +1073,50 @@ function listIconColumn(glyph, { images, emoji }) {
 }
 
 /**
+ * The small meta line of a list row. Without CI icons (or without CI status) it
+ * is one text with the CI status as its emoji. With `ciIcons` the CI status is
+ * the GitLab status icon, 16px like the state glyph, in its own column in front
+ * of one text that starts with the CI label ("CI passed") and carries every
+ * other fact after it. The icon comes first and the text takes all the rest of
+ * the width, so a long author name or Jira key wraps instead of squeezing a
+ * column. `before` is what precedes the CI status in the plain line ("Open",
+ * the author), `ci` its label or '', `after` what follows (Jira, badges, readiness).
+ */
+function mrListMetaLine({ before, ci, after, ciStatus, ciIcons }) {
+  const small = { size: 'Small', isSubtle: true, spacing: 'None' };
+  if (!ciIcons || !ci) {
+    return textBlock([...before, ci && `${ciStatusEmoji(ciStatus)} ${ci}`, ...after].filter(Boolean).join(' \u00b7 '), small);
+  }
+  const icon = ciStatusIcon(ciStatus);
+  return {
+    type: 'ColumnSet',
+    spacing: 'None',
+    columns: [
+      {
+        type: 'Column',
+        width: LIST_ICON_PX,
+        items: [{ type: 'Image', url: icon.url, altText: icon.alt, width: LIST_ICON_PX, height: LIST_ICON_PX }],
+      },
+      { type: 'Column', width: 'stretch', verticalContentAlignment: 'Center', items: [textBlock([ci, ...before, ...after].join(' \u00b7 '), small)] },
+    ],
+  };
+}
+
+/**
  * One merge request as a compact row: the GitLab state glyph (an emoji
  * without images), the linked reference and title, and one meta line. The CI
- * status is the emoji of the other cards ("passed", "failed"...) with its
- * label. With `avatars`, a row whose author has a picture (`row.avatar`, a
+ * status is the GitLab status icon of the other cards (the emoji without
+ * images) with its label. With `avatars`, a row whose author has a picture (`row.avatar`, a
  * data URI) shows it, 18px like on the other cards, in a column on the right.
  */
-function mrListRow(row, { images, avatars = false }) {
+function mrListRow(row, { images, ciIcons, avatars = false }) {
   const state = MR_LIST_STATES[row.state] || MR_LIST_STATES.open;
   const ciLabel = row.ciStatus ? `CI ${ciStatusInfo(row.ciStatus).label.toLowerCase()}` : '';
   const readiness = MR_LIST_READINESS[row.statusEmoji];
   const author = cardText(row.author || '').replace(/\*\*/g, '');
   const jira = row.jira?.key ? `\u{1F3AB} ${mdLink(row.jira.key, row.jira.url)}` : '';
-  const meta = [
-    state.label,
-    author,
-    ciLabel && `${ciStatusEmoji(row.ciStatus)} ${ciLabel}`,
-    jira,
-    ...(row.badges || []).map((b) => cardText(b)),
-    readiness && `${row.statusEmoji} ${readiness}`,
-  ].filter(Boolean);
+  const before = [state.label, author].filter(Boolean);
+  const after = [jira, ...(row.badges || []).map((b) => cardText(b)), readiness && `${row.statusEmoji} ${readiness}`].filter(Boolean);
 
   const title = `${mdLink(row.ref, row.url)} ${escapeMarkdownText(str(row.title))}`.trim();
   const columns = [
@@ -1102,7 +1126,7 @@ function mrListRow(row, { images, avatars = false }) {
       width: 'stretch',
       items: [
         textBlock(title, { weight: 'Bolder' }),
-        textBlock(meta.join(' · '), { size: 'Small', isSubtle: true, spacing: 'None' }),
+        mrListMetaLine({ before, ci: ciLabel, after, ciStatus: row.ciStatus, ciIcons }),
       ],
     },
   ];
@@ -1134,13 +1158,17 @@ function groupRowsByProject(rows) {
  * the glyph once per row, and a card is limited in size (MAX_CARD_BYTES), so a
  * long list needs the lighter form.
  *
+ * `ciIcons: false` keeps the state glyph images but writes the CI status as its
+ * emoji: each CI icon costs about as much as a state glyph, so it is the first
+ * thing a long list gives up (default: the value of `images`).
+ *
  * `avatars: true` adds the author pictures the rows carry (see mrListRow); the
  * caller decides which rows get one, as a card is limited in size.
  *
  * `title`/`heading`/`note` are the markdown of the regular list. Returns null
  * without any row.
  */
-export function buildMrListCard({ title, sections, images = true, avatars = false, fallbackText } = {}) {
+export function buildMrListCard({ title, sections, images = true, ciIcons = images, avatars = false, fallbackText } = {}) {
   const usable = (sections || []).filter((sec) => (sec.rows || []).length > 0);
   if (usable.length === 0) return null;
   const clean = (text) =>
@@ -1154,7 +1182,7 @@ export function buildMrListCard({ title, sections, images = true, avatars = fals
   for (const sec of usable) {
     if (sec.heading) items.push(textBlock(`**${clean(sec.heading)}**`, { spacing: 'Medium' }));
     for (const group of groupRowsByProject(sec.rows)) {
-      const rows = group.rows.map((row) => mrListRow(row, { images, avatars }));
+      const rows = group.rows.map((row) => mrListRow(row, { images, ciIcons, avatars }));
       if (!group.project) {
         items.push(...rows);
         continue;

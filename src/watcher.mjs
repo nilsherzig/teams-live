@@ -5361,7 +5361,7 @@ export class MergeRequestWatcher {
    * emoji, a row or a fact, and the result is measured again. Returns the
    * message with pictures, or null when there is none to show.
    */
-  withMrsListAvatars(listing, message, { markdown, images }) {
+  withMrsListAvatars(listing, message, { markdown, images, ciIcons }) {
     if (!this.avatarService || this.suppressAvatars) return null;
     let room = MAX_CARD_BYTES - richMessageWireBytes(message) - MRS_LIST_AVATAR_MARGIN;
     let shown = 0;
@@ -5383,7 +5383,7 @@ export class MergeRequestWatcher {
     }
     if (shown === 0) return null;
     try {
-      const card = buildMrListCard({ title: listing.headline, sections: listing.sections, images, avatars: true });
+      const card = buildMrListCard({ title: listing.headline, sections: listing.sections, images, ciIcons, avatars: true });
       const withPictures = card ? makeRichMessage(markdown, card) : null;
       return withPictures && richMessageWireBytes(withPictures) <= MAX_CARD_BYTES ? withPictures : null;
     } catch (e) {
@@ -5394,20 +5394,22 @@ export class MergeRequestWatcher {
 
   /**
    * The /mrs reply: regular markdown, or with rich messages the list card
-   * (see buildMrListCard). The card shows the GitLab state glyph images; a
-   * list too long for that is tried again with emojis, and one still too long
+   * (see buildMrListCard). The card shows the GitLab state glyph images and
+   * CI status icons; a list too long for that is tried again with the CI
+   * status as emojis, then with emojis only, and one still too long
    * falls back to the full markdown (which is sent as several cards).
    */
   formatMrsMessage(mrs, parsed = {}) {
     const listing = this.collectMrsListing(mrs, { ...parsed, rich: this.richMessages });
     const markdown = this.renderMrsListing(listing);
     if (!this.richMessages || listing.text) return markdown;
-    for (const images of [true, false]) {
+    // Heaviest form first: state glyphs and CI status icons, then the glyphs only, then emojis.
+    for (const { images, ciIcons } of [{ images: true, ciIcons: true }, { images: true, ciIcons: false }, { images: false, ciIcons: false }]) {
       const message = this.richMessage(markdown, () =>
-        buildMrListCard({ title: listing.headline, sections: listing.sections, images })
+        buildMrListCard({ title: listing.headline, sections: listing.sections, images, ciIcons })
       );
       if (isRichMessage(message)) {
-        return this.withMrsListAvatars(listing, message, { markdown, images }) || message;
+        return this.withMrsListAvatars(listing, message, { markdown, images, ciIcons }) || message;
       }
     }
     return markdown;

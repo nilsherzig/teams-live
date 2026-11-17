@@ -4,6 +4,9 @@ import { isRichMessage, messageMarkdown, richMessageWireBytes, setRichMessages }
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 import { MAX_CARD_BYTES, buildMrListCard, mrListState } from '../src/cards.mjs';
 import { GITLAB_ICONS_SMALL } from '../src/gitlab-icons-small.mjs';
+import { CI_STATUS_ICONS } from '../src/ci-icons.mjs';
+
+const ciUrls = new Set(Object.values(CI_STATUS_ICONS).map((i) => i.url));
 
 beforeEach(() => setRichMessages(false));
 
@@ -106,15 +109,53 @@ test('/mrs card: projects are headings and their merge requests sit in an indent
 
 test('/mrs card: GitLab state glyph images with readable labels (open, draft), no external image URLs', () => {
   const message = rich(newWatcher(), humanMrs);
-  const imgs = images(message).filter((i) => i.altText !== 'GitLab' && i.style !== 'Person');
+  const imgs = images(message).filter((i) => i.altText !== 'GitLab' && i.style !== 'Person' && !ciUrls.has(i.url));
   assert.deepEqual(imgs.map((i) => i.altText), ['Open', 'Open', 'Draft', 'Open', 'Open']);
   const open = GITLAB_ICONS_SMALL['merge-request-open'];
   const draft = GITLAB_ICONS_SMALL['merge-request'];
   assert.deepEqual(imgs.map((i) => i.url), [open, open, draft, open, open]);
   for (const img of allNodes(message).filter((n) => n.type === 'Image')) assert.match(img.url, /^data:image\/png;base64,/);
   // The state is also written out.
-  assert.ok(texts(message).some((t) => t.startsWith('Draft · ')));
+  assert.ok(texts(message).some((t) => t.includes('Draft')));
   assert.ok(texts(message).some((t) => t.startsWith('Open · ')));
+});
+
+test('/mrs card: the CI status is the GitLab status icon next to its label, not an emoji', () => {
+  const message = rich(newWatcher(), humanMrs);
+  const ci = images(message).filter((i) => ciUrls.has(i.url));
+  // Three of the five fixtures have a pipeline: passed, failed, running.
+  assert.deepEqual(ci.map((i) => i.altText), ['Passed', 'Failed', 'Running']);
+  assert.deepEqual(ci.map((i) => i.url), [CI_STATUS_ICONS.success.url, CI_STATUS_ICONS.failed.url, CI_STATUS_ICONS.running.url]);
+  for (const img of ci) assert.deepEqual([img.width, img.height], ['16px', '16px']);
+  const all = texts(message).join('\n');
+  assert.ok(all.includes('CI passed'));
+  assert.ok(all.includes('CI failed'));
+  assert.ok(all.includes('CI running'));
+  assert.ok(!/[\u2705\u274C]\s*CI /u.test(all), 'no CI emoji next to the label');
+  assert.ok(!all.includes('\u23F3 CI'), 'no running emoji next to the label');
+  // The icon sits in its own column, directly followed by the label column.
+  const set = allNodes(message).find((n) => n.type === 'ColumnSet' && n.columns.some((c) => c.items.some((i) => i.url === CI_STATUS_ICONS.success.url)));
+  const at = set.columns.findIndex((c) => c.items.some((i) => i.url === CI_STATUS_ICONS.success.url));
+  assert.equal(set.columns[at].width, '16px');
+  assert.equal(set.columns[at + 1].items[0].text.startsWith('CI passed'), true);
+});
+
+test('/mrs card: a row without a pipeline has no CI icon and keeps a single meta line', () => {
+  const rows = [{ project: 'app', ref: '!1', url: `${GL}/app/-/merge_requests/1`, title: 'No pipeline', state: 'open', author: 'Alice' }];
+  const card = buildMrListCard({ title: 'Merge requests', sections: [{ rows }] });
+  const nodes = [];
+  walk(card, (n) => nodes.push(n));
+  assert.equal(nodes.filter((n) => n.type === 'Image' && ciUrls.has(n.url)).length, 0);
+  assert.ok(nodes.some((n) => n.type === 'TextBlock' && n.text === 'Open \u00b7 Alice'));
+});
+
+test('/mrs card: without images the CI status falls back to its emoji in the meta line', () => {
+  const rows = [{ project: 'app', ref: '!1', url: `${GL}/app/-/merge_requests/1`, title: 'T', state: 'open', author: 'Alice', ciStatus: 'success' }];
+  const card = buildMrListCard({ title: 'Merge requests', sections: [{ rows }], images: false });
+  const nodes = [];
+  walk(card, (n) => nodes.push(n));
+  assert.equal(nodes.filter((n) => n.type === 'Image' && ciUrls.has(n.url)).length, 0);
+  assert.ok(nodes.some((n) => n.type === 'TextBlock' && n.text.includes('\u2705 CI passed')));
 });
 
 test('/mrs card: merged and closed rows get their own GitLab glyphs', () => {
@@ -162,9 +203,9 @@ test('/mrs card: every fact of the regular list is kept (links, title, author, C
   assert.ok(all.includes('Fix flaky \\*test\\* in \\[module\\]'));
   assert.ok(all.includes('**Alice Example**') || all.includes('Alice Example'));
   assert.ok(all.includes('Bob Example'));
-  assert.ok(all.includes('✅ CI passed'));
-  assert.ok(all.includes('❌ CI failed'));
-  assert.ok(all.includes('⏳ CI running'));
+  assert.ok(all.includes('CI passed'));
+  assert.ok(all.includes('CI failed'));
+  assert.ok(all.includes('CI running'));
   assert.ok(all.includes('[APP-123](https://jira.example.com/browse/APP-123)'));
   assert.ok(all.includes('\u{1F44D} approved'));
   assert.ok(all.includes('⏳ not approved'));
@@ -236,6 +277,29 @@ test('/mrs card: a long list drops the images, a very long one falls back to the
   const message = w.formatMrsMessage(many, { mode: 'all' });
   assert.equal(typeof message, 'string');
   assert.ok(message.includes('!1399') || message.includes('!1000'));
+});
+
+test('/mrs card: a list too long for the CI icons keeps the state glyphs and writes the CI status as an emoji', () => {
+  const w = newWatcher();
+  const list = (n) =>
+    Array.from({ length: n }, (_, i) =>
+      mr('app', 400 + i, `Example change number ${i} with a reasonably descriptive title`, { head_pipeline: { status: 'success' } })
+    );
+  const ciIcons = (message) => images(message).filter((i) => ciUrls.has(i.url)).length;
+  const glyphs = (message) => images(message).filter((i) => i.altText === 'Open').length;
+
+  const short = rich(w, list(6));
+  assert.equal(ciIcons(short), 6);
+  assert.equal(glyphs(short), 6);
+
+  const long = rich(w, list(14));
+  assert.ok(richMessageWireBytes(long) <= MAX_CARD_BYTES);
+  assert.equal(ciIcons(long), 0, 'CI icons are the first thing given up');
+  assert.equal(glyphs(long), 14, 'the state glyphs stay');
+  assert.ok(texts(long).some((t) => t.includes('\u2705 CI passed')));
+
+  const huge = rich(w, list(22));
+  assert.equal(glyphs(huge) + ciIcons(huge), 0, 'beyond that, emojis only');
 });
 
 test('/mrs card: empty lists and regular mode stay as they are', () => {

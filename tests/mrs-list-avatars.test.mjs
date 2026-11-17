@@ -186,7 +186,7 @@ test('/mrs list: real photos come before placeholders when the picture budget is
   const w = newWatcher({ extra: 1500 });
   // The first rows are authors without any photo, the last ones have a photo: the photos still win the room.
   const mrs = [
-    ...Array.from({ length: 4 }, (_, i) => mr(10 + i, { name: 'Dave Nobody', username: 'dave' })),
+    ...Array.from({ length: 2 }, (_, i) => mr(10 + i, { name: 'Dave Nobody', username: 'dave' })),
     ...Array.from({ length: 4 }, (_, i) => mr(20 + i, i % 2 ? BOB_GL : ALICE_GL)),
   ];
   w.getOrFetchMrsData = async () => mrs;
@@ -197,8 +197,8 @@ test('/mrs list: real photos come before placeholders when the picture budget is
 
 test('/mrs list: a list near the size limit gets as many pictures as fit and never loses a row or the state icons', async () => {
   const w = newWatcher({ extra: 2300 });
-  // Titles that fill most of a card with the image form of the list.
-  const mrs = Array.from({ length: 10 }, (_, i) =>
+  // Titles that fill most of a card with the image form of the list (state glyphs and CI icons).
+  const mrs = Array.from({ length: 7 }, (_, i) =>
     mr(100 + i, i % 2 ? BOB_GL : ALICE_GL, `Example change number ${i} with a reasonably descriptive title`)
   );
   w.getOrFetchMrsData = async () => mrs;
