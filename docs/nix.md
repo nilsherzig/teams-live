@@ -181,9 +181,11 @@ link, count or truncation note is lost:
 
 Not carded, on purpose: help, errors, acknowledgements, admin notices, `/exec`,
 `/random`, `/weather`, `/flip`, `/retry`, and `/status` without arguments
-(runtime status). In a command card, people are named in bold instead of being
-mentioned, so a card never pings or downgrades to plain text. A card larger than
-the Teams payload limit falls back to the full regular message.
+(runtime status). Mentions keep their regular behaviour: a reply that mentions
+someone (for example `/whois` for a contact with a Teams identity) is sent as the
+regular plain message so the notification is unchanged, and the card is used when
+nobody is mentioned. A card larger than the Teams payload limit falls back to the
+full regular message.
 
 Merge request cards always show the approval and auto-merge lines on open
 merge requests, including "Not approved yet" and "Disabled", and say "Unknown

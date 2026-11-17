@@ -33,7 +33,6 @@ import {
   buildOpsGenieAlertCard,
   buildConfluencePageCard,
   buildMarkdownCard,
-  stripMentionMarkup,
   MAX_CARD_BYTES,
   opsGeniePriorityBadge,
   ciStatusEmoji as getCiStatusEmoji,
@@ -2260,21 +2259,21 @@ export class MergeRequestWatcher {
    *
    * `buildCard(markdown)` may return null (nothing card-worthy: the plain
    * markdown is sent). A card over the size limit is never truncated: the
-   * complete plain markdown is sent instead. With `stripMentions` the card
-   * and its fallback show contacts by name instead of pinging them.
+   * complete plain markdown is sent instead. Mentions in the markdown are
+   * kept: a message that mentions someone is sent as plain text (a card cannot
+   * carry the mention), so notifications behave as with regular messages.
    */
-  richMessage(markdown, buildCard, { stripMentions = false } = {}) {
+  richMessage(markdown, buildCard) {
     if (!this.richMessages) return markdown;
     try {
-      const text = stripMentions ? stripMentionMarkup(markdown) : markdown;
-      const card = buildCard(text);
+      const card = buildCard(markdown);
       if (!card) return markdown;
       const size = Buffer.byteLength(JSON.stringify(card));
       if (size > MAX_CARD_BYTES) {
         log(`Adaptive Card too large (${size} bytes), using regular message`);
         return markdown;
       }
-      return makeRichMessage(text, card);
+      return makeRichMessage(markdown, card);
     } catch (e) {
       log(`building Adaptive Card failed, using regular message: ${e.message}`);
       return markdown;
@@ -2283,7 +2282,7 @@ export class MergeRequestWatcher {
 
   /** Rich message for a command reply, generated from the regular markdown (see buildMarkdownCard). */
   richCommandMessage(markdown, spec) {
-    return this.richMessage(markdown, (text) => buildMarkdownCard(text, spec), { stripMentions: true });
+    return this.richMessage(markdown, (text) => buildMarkdownCard(text, spec));
   }
 
   findMrJiraTicket(mrDetails, title) {

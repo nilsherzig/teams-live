@@ -252,7 +252,7 @@ test('/mrs: regular markdown by default, list card with approval, auto-merge and
   assert.ok(rows.includes('_rebase!_'));
   assert.ok(rows.includes('_auto-merge_'));
   assert.ok(rows.includes('_approved_'));
-  // The card names authors instead of pinging them.
+  // The card text never carries mention markup; mentions stay in the markdown (see renderReplyContent).
   assert.ok(!JSON.stringify(rich.card).includes('8:orgid'));
   assert.ok(messageMarkdown(rich).includes('Open Merge Requests'));
   // Status emojis of the regular list stay.
@@ -305,7 +305,7 @@ test('/alerts: card when rich, regular markdown otherwise', async () => {
   }
 });
 
-test('richCommandMessage: person, availability and search results use cards without mentions', () => {
+test('richCommandMessage: person, availability and search results use cards, mentions stay in the markdown', () => {
   const person = { displayName: 'Alice Example', mri: '8:orgid:alice', email: 'alice@example.com', jobTitle: 'Engineer', department: 'Platform' };
   const on = newWatcher({ rich_messages: true });
   const off = newWatcher({});
@@ -318,8 +318,10 @@ test('richCommandMessage: person, availability and search results use cards with
   assert.equal(facts['\u{1F4BC} Role'], 'Engineer');
   assert.equal(facts['\u{1F4E7} Email'], 'alice@example.com');
   assert.ok(!JSON.stringify(contactCard.card).includes('8:orgid'));
-  // Mentions are gone from the markdown handed to Teams, so the card is not downgraded to plain text.
-  assert.ok(!messageMarkdown(contactCard).includes('8:orgid'));
+  // Parity: the regular markdown keeps its mention. Such a message is sent as the
+  // established plain reply (see the /whois test), so the notification stays.
+  assert.equal(messageMarkdown(contactCard), contact);
+  assert.ok(messageMarkdown(contactCard).includes('8:orgid'));
 
   const whereis = formatWhereisCard(person, { availability: 'Available', activity: 'Available' });
   const whereisCard = on.richCommandMessage(whereis, { service: 'availability', kind: 'Availability' });
@@ -338,9 +340,16 @@ test('richCommandMessage: person, availability and search results use cards with
   assert.ok(rows.includes('alice@example.com'));
 });
 
-test('/whois sends the contact card when rich and the regular reply otherwise', async () => {
-  const person = { displayName: 'Alice Example', mri: '8:orgid:alice', email: 'alice@example.com', jobTitle: 'Engineer' };
-  for (const [teams, expectCard] of [[{}, false], [{ rich_messages: true }, true]]) {
+test('/whois keeps its mention (plain reply) when rich, and sends a card for a contact without one', async () => {
+  const withMri = { displayName: 'Alice Example', mri: '8:orgid:alice', email: 'alice@example.com', jobTitle: 'Engineer' };
+  const withoutMri = { displayName: 'Alice Example', email: 'alice@example.com', jobTitle: 'Engineer' };
+  const cases = [
+    // [teams config, person, expect a card]
+    [{}, withMri, false],
+    [{ rich_messages: true }, withMri, false],
+    [{ rich_messages: true }, withoutMri, true],
+  ];
+  for (const [teams, person, expectCard] of cases) {
     const watcher = newWatcher(teams);
     watcher.userDirectory = { searchDirectory: async () => [person], findSuggestions: () => [], findUser: () => null };
     watcher.setCommandReaction = async () => {};
@@ -352,9 +361,9 @@ test('/whois sends the contact card when rich and the regular reply otherwise', 
     assert.equal(html.includes(CARD_TAG), expectCard);
     if (expectCard) {
       assert.equal(factsOf(cardOf(options))['\u{1F4BC} Role'], 'Engineer');
-      // No mention: names are plain in the card, so nobody is pinged.
       assert.equal(options.properties.mentions, '[]');
     } else {
+      // Same message and notification as without rich messages.
       assert.equal(options.properties.cards, '[]');
       assert.equal(JSON.parse(options.properties.mentions).length, 1);
     }
