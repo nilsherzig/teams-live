@@ -125,8 +125,8 @@ function factRow({ label, value, icon }) {
         verticalContentAlignment: 'Center',
         items: icon ? [{ type: 'Image', url: icon.url, altText: icon.alt, width: px, height: px }] : [],
       },
-      { type: 'Column', width: 5, items: [textBlock(label, { weight: 'Bolder', spacing: 'None' })] },
-      { type: 'Column', width: 7, items: [textBlock(value, { spacing: 'None' })] },
+      { type: 'Column', width: 7, items: [textBlock(label, { weight: 'Bolder', spacing: 'None' })] },
+      { type: 'Column', width: 5, items: [textBlock(value, { spacing: 'None' })] },
     ],
   };
 }

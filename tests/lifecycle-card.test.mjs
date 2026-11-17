@@ -206,7 +206,7 @@ test('fact rows: a 16px icon slot, the bold label, the value; real logos for ser
     // Same three columns in every row, so labels and values line up.
     assert.deepEqual(
       row.columns.map((c) => c.width),
-      [px, 5, 7],
+      [px, 7, 5],
       label
     );
     assert.equal(row.columns[1].items[0].weight, 'Bolder', label);
@@ -244,7 +244,7 @@ test('fact rows: an unknown label keeps an empty icon slot, so the labels stay a
   assert.equal(rows[1].icon, null);
   assert.deepEqual(
     rows[1].row.columns.map((c) => c.width),
-    ['16px', 5, 7]
+    ['16px', 7, 5]
   );
   assert.equal(rows[1].label, 'Something New');
 });
