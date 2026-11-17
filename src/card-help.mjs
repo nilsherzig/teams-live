@@ -10,9 +10,8 @@
  *
  * Layout, all phone-safe (no fixed-width columns, only wrapping text):
  *
- * - the header ("teams-live · Help") and a title ("Slash commands", or the
- *   domain when one was asked for);
- * - per domain a bold accent heading with a separator, then per command a
+ * - the header ("teams-live · Help") and the title "Slash commands";
+ * - per domain (one when a domain was asked for) a bold accent heading with a separator, then per command a
  *   two-level entry: the command in bold accent with its arguments dimmed (and
  *   "admin only" flagged in red), its aliases after it, the description below,
  *   and an "e.g." line when the description carried examples;
@@ -93,7 +92,7 @@ function commandLine(entry) {
 function entryItems(entry) {
   const items = [commandLine(entry), textBlock(entry.description, { spacing: 'None' })];
   if (entry.examples.length > 0) {
-    items.push(textBlock(`e.g. ${entry.examples.join(' · ')}`, { isSubtle: true, size: 'Small', spacing: 'None' }));
+    items.push(textBlock(`e.g. ${entry.examples.join(' · ')}`, { isSubtle: true, spacing: 'None' }));
   }
   return items;
 }
@@ -138,9 +137,9 @@ function categoryItems(category, has, { heading, footer }) {
  */
 export function buildHelpCard(categories, { has = () => true, part = null, single = false, notes = [], fallbackText } = {}) {
   const extraItems = [];
-  for (const category of categories) extraItems.push(...categoryItems(category, has, { heading: !single, footer: single }));
+  for (const category of categories) extraItems.push(...categoryItems(category, has, { heading: true, footer: single }));
   notes.forEach((note, i) => extraItems.push(textBlock(plain(note).replace(/^_|_$/g, ''), { isSubtle: true, size: 'Small', spacing: i === 0 ? 'Large' : 'Small', separator: i === 0 })));
-  const title = single ? helpCategoryHeading(categories[0]) : 'Slash commands';
+  const title = 'Slash commands';
   return assembleCard({
     service: 'bot',
     kind: part && part[1] > 1 ? `Help ${part[0]}/${part[1]}` : 'Help',
