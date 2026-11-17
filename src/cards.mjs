@@ -475,7 +475,6 @@ const tri = (value) => (value === true ? true : value === false ? false : null);
 export function buildMergeRequestCard(mr) {
   const state = mr.state || 'open';
   const live = state === 'open' || state === 'rebase' || state === 'rebased';
-  const ci = mr.pipeline ? ciStatusInfo(mr.pipeline.status) : null;
   const approved = tri(mr.approved);
   const autoMerge = tri(mr.autoMerge);
   const rebaseRequired = state === 'rebase' || (state !== 'rebased' && mr.needsRebase === true);
@@ -484,26 +483,15 @@ export function buildMergeRequestCard(mr) {
   const draft = mr.draft === true && live;
   // The coloured dots follow GitLab's state colours; the label carries the state too.
   let statusLabel = draft ? '⚪ Draft' : '🟢 Open';
-  let style = draft ? 'emphasis' : 'accent';
   if (state === 'merged') {
     statusLabel = '🟣 Merged';
-    style = 'emphasis';
   } else if (state === 'closed') {
     statusLabel = '🔴 Closed (unmerged)';
-    style = 'attention';
   } else if (state === 'rebase') {
     // A draft stays visible as a draft next to the rebase notice.
     statusLabel = `${draft ? '⚪ Draft · ' : ''}${mr.hasConflicts ? '⚠️ Rebase required (merge conflicts)' : '⚠️ Rebase required'}`;
-    style = 'warning';
   } else if (state === 'rebased') {
     statusLabel = `${draft ? '⚪ Draft · ' : ''}✅ Rebased, up to date and conflict-free`;
-    style = 'good';
-  } else if (ci?.style === 'attention') {
-    style = 'attention';
-  } else if (!draft && approved === true && ci?.style === 'good') {
-    style = 'good';
-  } else if (!draft && rebaseRequired) {
-    style = 'warning';
   }
 
   const approvers = (mr.approvedBy || []).filter(Boolean);
@@ -533,7 +521,8 @@ export function buildMergeRequestCard(mr) {
     service: 'gitlab',
     kind: 'Merge request',
     glyph: mrGlyph(state, draft),
-    style,
+    // The outer background stays neutral in every state; the state shows in the status row.
+    style: 'emphasis',
     title: mr.title || 'Merge request',
     titleUrl: mr.url,
     ref: numericReference('!', mr.iid, mr.url),

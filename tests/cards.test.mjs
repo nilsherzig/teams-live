@@ -112,7 +112,7 @@ test('merge request card: open, approved, green pipeline, auto-merge', () => {
   });
   assertValidCard(card);
   assert.equal(mainTitle(card), 'Add example feature');
-  assert.equal(style(card), 'good');
+  assert.equal(style(card), 'emphasis');
   const f = facts(card);
   assert.equal(f.Status, '\u{1F7E2} Open');
   assert.equal(f.Approval, '\u{1F44D} By Alice Example, Bob Example');
@@ -126,19 +126,19 @@ test('merge request card: open, approved, green pipeline, auto-merge', () => {
   assert.equal(rawFacts(card).Ticket, '[EX-123](https://jira.example.com/browse/EX-123)');
 });
 
-test('merge request card: failed pipeline wins over everything else for open MRs', () => {
+test('merge request card: failed pipeline shows in the pipeline row, the card stays neutral', () => {
   const card = buildMergeRequestCard({
     ...baseMr,
     approved: true,
     pipeline: { id: 8, status: 'failed' },
   });
-  assert.equal(style(card), 'attention');
+  assert.equal(style(card), 'emphasis');
   assert.equal(facts(card).Pipeline, '\u274c Failed (#8)');
 });
 
 test('merge request card: needs rebase and not approved', () => {
   const card = buildMergeRequestCard({ ...baseMr, approved: false, needsRebase: true, hasConflicts: true });
-  assert.equal(style(card), 'warning');
+  assert.equal(style(card), 'emphasis');
   const f = facts(card);
   assert.equal(f.Approval, '\u23f3 Not approved yet');
   assert.equal(f.Rebase, '\u26a0\ufe0f Required: merge conflicts');
@@ -151,15 +151,15 @@ test('merge request card: merged, closed, rebase and rebased states', () => {
   assert.equal(facts(merged).Approval, undefined);
 
   const closed = buildMergeRequestCard({ ...baseMr, state: 'closed' });
-  assert.equal(style(closed), 'attention');
+  assert.equal(style(closed), 'emphasis');
   assert.equal(facts(closed).Status, '\u{1F534} Closed (unmerged)');
 
   const rebase = buildMergeRequestCard({ ...baseMr, state: 'rebase', hasConflicts: false });
-  assert.equal(style(rebase), 'warning');
+  assert.equal(style(rebase), 'emphasis');
   assert.equal(facts(rebase).Status, '\u26a0\ufe0f Rebase required');
 
   const rebased = buildMergeRequestCard({ ...baseMr, state: 'rebased' });
-  assert.equal(style(rebased), 'good');
+  assert.equal(style(rebased), 'emphasis');
   assert.equal(facts(rebased).Status, '\u2705 Rebased, up to date and conflict-free');
   for (const c of [merged, closed, rebase, rebased]) assertValidCard(c);
 });
@@ -749,7 +749,7 @@ test('merge request state badges follow GitLab: open green, merged purple, close
   assert.equal(facts(closed).Status, '\u{1F534} Closed (unmerged)');
   assert.equal(style(draft), 'emphasis');
   assert.equal(style(merged), 'emphasis');
-  assert.equal(style(closed), 'attention');
+  assert.equal(style(closed), 'emphasis');
   for (const c of [open, draft, merged, closed]) assertValidCard(c);
 });
 
