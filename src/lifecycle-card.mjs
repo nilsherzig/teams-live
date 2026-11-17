@@ -8,13 +8,13 @@
 //   `teams.rich_messages` and the fallback text next to the card with it.
 // - `buildLifecycleCard()` is the dedicated Adaptive Card of the optional rich
 //   messages: green for the start, red for the last will. It is a layout of its
-//   own (status icon, colored heading, status pill, fact grid), not the
-//   generic markdown wrapper of the command replies.
+//   own (status icon, colored heading with the status word under it, fact
+//   grid), not the generic markdown wrapper of the command replies.
 //
 // The color never carries the meaning alone. Container `style` (`good` and
 // `attention`) is a 1.2+ feature that some hosts ignore, so the heading text is
 // colored explicitly (`Good` / `Attention`), the status icon is an emoji and
-// the pill has a word ("ONLINE", "STOPPED").
+// the status line has a word ("ONLINE", "STOPPED").
 //
 // This module only depends on the card constants, so it stays independent of
 // the entity builders in cards.mjs.
@@ -81,7 +81,12 @@ function factSet(facts) {
   return entries.length > 0 ? { type: 'FactSet', facts: entries, spacing: 'Medium' } : null;
 }
 
-/** Icon, colored heading and the status pill, side by side. */
+/**
+ * Icon beside the heading, with the status word as a compact second line under
+ * it. Two columns only (auto icon, stretch text): a third column for the
+ * status squeezed the title to about 95px at 308px, which wrapped it to four
+ * lines on a phone.
+ */
 function headerRow(spec) {
   return {
     type: 'ColumnSet',
@@ -96,15 +101,10 @@ function headerRow(spec) {
         type: 'Column',
         width: 'stretch',
         verticalContentAlignment: 'Center',
-        items: [textBlock(spec.title, { size: 'Large', weight: 'Bolder', color: spec.color, spacing: 'None' })],
-      },
-      {
-        type: 'Column',
-        width: 'auto',
-        verticalContentAlignment: 'Center',
-        style: spec.style,
-        bleed: false,
-        items: [textBlock(spec.pill, { size: 'Small', weight: 'Bolder', color: spec.color, spacing: 'None' })],
+        items: [
+          textBlock(spec.title, { size: 'Large', weight: 'Bolder', color: spec.color, spacing: 'None' }),
+          textBlock(spec.pill, { size: 'Small', weight: 'Bolder', color: spec.color, spacing: 'None' }),
+        ],
       },
     ],
   };

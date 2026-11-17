@@ -89,7 +89,7 @@ test('lifecycleMarkdown and buildLifecycleCard reject an unknown kind', () => {
   assert.throws(() => buildLifecycleCard({ kind: 'sleep' }), /unknown lifecycle kind/);
 });
 
-test('startup card is green: good container, green heading and icon, ONLINE pill', () => {
+test('startup card is green: good container, green heading and icon, ONLINE status line', () => {
   const card = buildLifecycleCard({ kind: 'startup', facts: STARTUP_FACTS });
   assert.equal(card.type, 'AdaptiveCard');
   assert.equal(card.version, ADAPTIVE_CARD_VERSION);
@@ -107,7 +107,7 @@ test('startup card is green: good container, green heading and icon, ONLINE pill
   assert.equal(find(card, (n) => n.color === 'Attention').length, 0);
 });
 
-test('last-will card is red: attention container, red heading and icon, STOPPED pill', () => {
+test('last-will card is red: attention container, red heading and icon, STOPPED status line', () => {
   const card = buildLifecycleCard({ kind: 'shutdown', facts: SHUTDOWN_FACTS });
   assert.equal(card.body[0].style, 'attention');
   const heading = find(card, (n) => n.type === 'TextBlock' && n.text === 'teams-live shutting down')[0];
@@ -155,6 +155,33 @@ test('the card is a dedicated layout, not the generic markdown wrapper', () => {
   // No "service · kind" header of the entity cards and no buttons.
   assert.equal(find(card, (n) => n.type === 'Image').length, 0);
   assert.equal(card.actions, undefined);
+});
+
+test('the header has two columns only; the status word sits under the title (phone width)', () => {
+  for (const [kind, title, word] of [
+    ['startup', 'teams-live started', 'ONLINE'],
+    ['shutdown', 'teams-live shutting down', 'STOPPED'],
+  ]) {
+    const card = buildLifecycleCard({ kind, facts: kind === 'startup' ? STARTUP_FACTS : SHUTDOWN_FACTS });
+    const [set] = find(card, (n) => n.type === 'ColumnSet');
+    // A third column squeezed the title to ~95px at 308px: icon (auto) + text (stretch) only.
+    assert.deepEqual(
+      set.columns.map((c) => c.width),
+      ['auto', 'stretch']
+    );
+    const [icon, text] = set.columns;
+    assert.equal(icon.items.length, 1);
+    assert.deepEqual(
+      text.items.map((i) => i.text),
+      [title, word]
+    );
+    // The status line is compact and carries the colour next to the word.
+    assert.equal(text.items[1].size, 'Small');
+    assert.equal(text.items[1].color, LIFECYCLE_KINDS[kind].color);
+    // The good/attention background stays on the outer container; the header has no styled column.
+    assert.equal(card.body[0].style, LIFECYCLE_KINDS[kind].style);
+    assert.equal(set.columns.filter((c) => c.style).length, 0);
+  }
 });
 
 // ---------------------------------------------------------------------------

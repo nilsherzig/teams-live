@@ -227,7 +227,7 @@ out for what the entity is:
 | Jira issue | Summary, type, status, priority, assignee |
 | OpsGenie alert | Message, priority badge (P1 red to P5 subdued), OPEN / ACK'D / CLOSED badge, owner |
 | Confluence page | Title, space, author |
-| Startup and shutdown ("last will") announcements to the admin chat | Green card (container style `good`, green heading and 🟢, ONLINE pill) for the start, red card (`attention`, red heading and 🛑, STOPPED pill) for the shutdown, with every fact of the regular message; the token override warning is a yellow block. The heading, icon and pill carry the colour for clients that ignore container styles. |
+| Startup and shutdown ("last will") announcements to the admin chat | Green card (container style `good`, green heading and 🟢, ONLINE under the title) for the start, red card (`attention`, red heading and 🛑, STOPPED under the title) for the shutdown, with every fact of the regular message; the token override warning is a yellow block. The heading, icon and status word carry the colour for clients that ignore container styles. |
 
 Command replies use the same gate. Commands that return structured data answer
 with a card built from the very same markdown as the regular reply, so no fact,
