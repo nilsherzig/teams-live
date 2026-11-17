@@ -109,10 +109,24 @@ const FACT_ICONS = Object.freeze({
 });
 
 /**
- * One fact as a row of three columns: a fixed 16px icon slot, the label and the
- * value. The label and value columns are weighted (not `auto`) so every row
- * lines up, and both wrap, so a long value or label stays inside a 308px phone
- * card.
+ * Shorter labels for the card only: the regular (plain) message keeps the full
+ * label the watcher sends, so the plain text is unchanged. Icons are looked up
+ * by the full label.
+ */
+const CARD_LABELS = Object.freeze({
+  'Watched Conversations': 'Chats',
+  'Home Assistant (HR works)': 'Home Assistant',
+  'Precompute Cache': 'Cache',
+});
+
+// Fixed label column: wide enough for "Home Assistant" in bold, narrow enough that
+// the value gets the rest of a 308px phone card.
+const LABEL_COLUMN = '130px';
+
+/**
+ * One fact as a row of three columns: a fixed 16px icon slot, a fixed-width bold
+ * label and the value, which takes the rest and wraps. The icon is top-aligned
+ * so it stays beside the first line of a label that wraps.
  */
 function factRow({ label, value, icon }) {
   return {
@@ -122,11 +136,10 @@ function factRow({ label, value, icon }) {
       {
         type: 'Column',
         width: px,
-        verticalContentAlignment: 'Center',
         items: icon ? [{ type: 'Image', url: icon.url, altText: icon.alt, width: px, height: px }] : [],
       },
-      { type: 'Column', width: 7, items: [textBlock(label, { weight: 'Bolder', spacing: 'None' })] },
-      { type: 'Column', width: 5, items: [textBlock(value, { spacing: 'None' })] },
+      { type: 'Column', width: LABEL_COLUMN, items: [textBlock(label, { weight: 'Bolder', spacing: 'None' })] },
+      { type: 'Column', width: 'stretch', items: [textBlock(value, { spacing: 'None' })] },
     ],
   };
 }
@@ -134,7 +147,11 @@ function factRow({ label, value, icon }) {
 /** The fact grid of the card body: one icon row per fact, as one container so the grid keeps its spacing. */
 function factGrid(facts) {
   const rows = facts
-    .map(([label, value]) => ({ label: cardText(label), value: cardText(value), icon: FACT_ICONS[str(label)] }))
+    .map(([label, value]) => ({
+      label: cardText(CARD_LABELS[str(label)] ?? label),
+      value: cardText(value),
+      icon: FACT_ICONS[str(label)],
+    }))
     .filter((f) => f.label && f.value)
     .map(factRow);
   return rows.length > 0 ? { type: 'Container', spacing: 'Medium', items: rows } : null;

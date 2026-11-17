@@ -27,6 +27,8 @@ const STARTUP_FACTS = [
   ['Home Assistant (HR works)', 'Active'],
   ['Precompute Cache', 'Active (every 5m)'],
 ];
+// The card shows three labels shorter than the regular message; the plain text keeps the full ones.
+const SHORT_LABELS = { 'Watched Conversations': 'Chats', 'Home Assistant (HR works)': 'Home Assistant', 'Precompute Cache': 'Cache' };
 const SHUTDOWN_FACTS = [
   ['Host', '`bot-host`'],
   ['PID', '`4242`'],
@@ -134,13 +136,13 @@ test('cards keep every fact of the regular message, code spans shown plainly, ma
   const card = buildLifecycleCard({ kind: 'startup', facts: STARTUP_FACTS });
   assert.deepEqual(
     gridRows(card).map((r) => r.label),
-    STARTUP_FACTS.map(([label]) => label)
+    STARTUP_FACTS.map(([label]) => SHORT_LABELS[label] ?? label)
   );
   const byTitle = gridFacts(card);
   assert.equal(byTitle.Host, 'bot-host');
   assert.equal(byTitle.Runtime, 'Node.js v22.1.0 (linux x64)');
   // An underscore in a value is not read as emphasis.
-  assert.equal(byTitle['Watched Conversations'], '2 (Notes, Team\\_Chat)');
+  assert.equal(byTitle.Chats, '2 (Notes, Team\\_Chat)');
   assert.ok(!JSON.stringify(card).includes('`'));
 });
 
@@ -206,10 +208,12 @@ test('fact rows: a 16px icon slot, the bold label, the value; real logos for ser
     // Same three columns in every row, so labels and values line up.
     assert.deepEqual(
       row.columns.map((c) => c.width),
-      [px, 7, 5],
+      [px, '130px', 'stretch'],
       label
     );
     assert.equal(row.columns[1].items[0].weight, 'Bolder', label);
+    // Top-aligned icon: it stays beside the first line of a label that wraps.
+    assert.equal(row.columns[0].verticalContentAlignment, undefined, label);
     assert.ok(icon, `${label} has an icon`);
     assert.equal(icon.type, 'Image');
     assert.equal(icon.width, px);
@@ -222,11 +226,21 @@ test('fact rows: a 16px icon slot, the bold label, the value; real logos for ser
   assert.equal(iconOf.GitLab, SERVICE_ICONS.gitlab);
   assert.equal(iconOf.Jira, SERVICE_ICONS.jira);
   assert.equal(iconOf.Runtime, LIFECYCLE_ICONS.node.url);
-  assert.equal(iconOf['Home Assistant (HR works)'], LIFECYCLE_ICONS.homeassistant.url);
+  assert.equal(iconOf['Home Assistant'], LIFECYCLE_ICONS.homeassistant.url);
   // The glyphs are all different, so the rows are told apart at a glance.
-  const glyphs = ['Host', 'PID', 'Memory', 'Started', 'Watched Conversations', 'Precompute Cache'].map((l) => iconOf[l]);
+  const glyphs = ['Host', 'PID', 'Memory', 'Started', 'Chats', 'Cache'].map((l) => iconOf[l]);
   assert.equal(new Set(glyphs).size, glyphs.length);
   assert.equal(new Set(Object.values(iconOf)).size, Object.keys(iconOf).length, 'every row has its own icon');
+});
+
+test('fact rows: the short labels are for the card only, the plain message keeps the full labels', () => {
+  const md = lifecycleMarkdown({ kind: 'startup', facts: STARTUP_FACTS });
+  for (const full of Object.keys(SHORT_LABELS)) assert.ok(md.includes(`**${full}**`), full);
+  for (const short of Object.values(SHORT_LABELS)) assert.ok(!md.includes(`**${short}**`), short);
+  const card = buildLifecycleCard({ kind: 'startup', facts: STARTUP_FACTS });
+  const labels = gridRows(card).map((r) => r.label);
+  for (const full of Object.keys(SHORT_LABELS)) assert.ok(!labels.includes(full), full);
+  assert.ok(!JSON.stringify(card).includes('HR works'));
 });
 
 test('fact rows: the shutdown facts have icons too, and no emoji sneaks into the grid', () => {
@@ -244,7 +258,7 @@ test('fact rows: an unknown label keeps an empty icon slot, so the labels stay a
   assert.equal(rows[1].icon, null);
   assert.deepEqual(
     rows[1].row.columns.map((c) => c.width),
-    ['16px', 7, 5]
+    ['16px', '130px', 'stretch']
   );
   assert.equal(rows[1].label, 'Something New');
 });
@@ -334,7 +348,7 @@ test('rich mode: startup is the green lifecycle card with the regular text as fa
   assert.equal(card.body[0].style, 'good');
   assert.deepEqual(
     gridRows(card).map((r) => r.label),
-    ['Host', 'PID', 'Runtime', 'Memory', 'Started', 'Watched Conversations', 'GitLab', 'Jira', 'Home Assistant (HR works)', 'Precompute Cache']
+    ['Host', 'PID', 'Runtime', 'Memory', 'Started', 'Chats', 'GitLab', 'Jira', 'Home Assistant', 'Cache']
   );
   assert.equal(find(card, (n) => n.style === 'warning').length, 0);
 });
