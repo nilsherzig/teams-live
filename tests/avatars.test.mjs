@@ -633,7 +633,8 @@ test('merge request approvers and the auto-merge user get pictures, in fact orde
   assert.equal(approval.columns[0].items[0].text, 'Approval');
   const approvers = linesOf(approval);
   assert.equal(approval.columns[1].items.some((l) => l.type === 'TextBlock'), false, 'no line of its own for the lead');
-  assert.deepEqual(approvers.map(lineTexts), [['Alice Example', '\u{1F44D} By Alice Example'], ['Bob Example', 'Bob Example']], 'the lead is part of the first name text');
+  // The approved pill ends the first line; no "By" lead is needed: the pill says what they did.
+  assert.deepEqual(approvers.map(lineTexts), [['Alice Example', 'Alice Example', 'Approved'], ['Bob Example', 'Bob Example']]);
   assert.equal(approvers[0].columns[1].items[0].wrap, true);
   assert.equal(autoMerge.columns[0].items[0].text, 'Auto-merge');
   // The Enabled state stays explicit, on the same single line as the picture and name.
@@ -650,7 +651,7 @@ test('a person without a picture next to one with a picture keeps their name', (
   const card = buildMergeRequestCard({ ...MR, avatars: { 'Bob Example': URI } });
   const [approval] = rows(card);
   assert.equal(approval.columns[0].items[0].text, 'Approval');
-  assert.deepEqual(linesOf(approval).map(lineTexts), [['\u00A0', '\u{1F44D} By Alice Example'], ['Bob Example', 'Bob Example']]);
+  assert.deepEqual(linesOf(approval).map(lineTexts), [['\u00A0', 'Alice Example', 'Approved'], ['Bob Example', 'Bob Example']]);
   assert.equal(images(card), 1);
 });
 
@@ -676,23 +677,29 @@ test('person rows wrap only their name: one stretch value column, a fixed pictur
     assert.equal(row.columns[0].width, labelWidth, 'the 112px label column and the same value origin');
     assert.equal(row.columns[1].width, 'stretch');
     for (const line of linesOf(row).filter((l) => l.type === 'ColumnSet')) {
-      const widths = line.columns.map((c) => c.width);
+      // The only auto column allowed is the approval pill image (an image never wraps), after the name.
+      const isPill = (c) => c.width === 'auto' && c.items[0].type === 'Image' && c.items[0].height === '22px';
+      const pills = line.columns.filter(isPill);
+      assert.ok(pills.length <= 1);
+      const lineColumns = line.columns.filter((c) => !isPill(c));
+      const widths = lineColumns.map((c) => c.width);
       assert.equal(widths.filter((w) => w === 'stretch').length, 1, 'exactly one flexible column per line');
       assert.equal(widths.at(-1), 'stretch', 'and it is the name');
-      assert.equal(widths.includes('auto'), false, 'no auto-sized column that could be squeezed character by character');
-      for (const c of line.columns.slice(0, -1)) assert.match(c.width, /^\d+px$/);
-      assert.equal(line.columns.length, 2, 'picture (or spacer) and name only: no fixed lead eating the name width');
-      for (const c of line.columns) {
+      assert.equal(widths.includes('auto'), false, 'no auto-sized text column that could be squeezed character by character');
+      for (const c of lineColumns.slice(0, -1)) assert.match(c.width, /^\d+px$/);
+      assert.equal(lineColumns.length, 2, 'picture (or spacer) and name only: no fixed lead eating the name width');
+      for (const c of lineColumns) {
         const block = c.items[0];
         if (block.type === 'TextBlock' && c.width !== 'stretch') assert.equal(block.wrap, false, 'spacers never wrap');
       }
-      assert.equal(line.columns.at(-1).items[0].wrap, true, 'the name wraps');
+      assert.equal(lineColumns.at(-1).items[0].wrap, true, 'the name wraps');
     }
   }
-  // The approval lead is the short "By", not "Approved by".
+  // The approval pill replaces the "By" lead; the auto-merge lead stays.
   const json = JSON.stringify(card);
   assert.equal(json.includes('Approved by'), false);
-  assert.ok(json.includes('\u{1F44D} By'));
+  assert.equal(json.includes('\u{1F44D} By'), false);
+  assert.ok(json.includes('\u{1F500} Enabled by'));
 });
 
 test('userRow stacks several people into one value column and aligns names without a picture', () => {
@@ -809,4 +816,70 @@ test('a status pill sits at the end of the first line and the name still stretch
     const r = userRow('Approval', [{ name: 'Alice Example', avatar: URI }], { pill: bad, labelWidth: '112px' }).row;
     assert.equal(r.columns[1].items[0].columns.length, 2, 'an unusable pill is left out');
   }
+});
+
+// ── approval pills in the Approval row ──────────────────────────────────────
+
+const pillOf = (row) => row.columns.flatMap((c) => c.items).find((i) => i.type === 'Image' && i.height === '22px');
+
+test('approval row: a pending request shows only the gray pill with the real counts', () => {
+  for (const [given, required] of [[0, 2], [1, 2], [2, 3]]) {
+    const card = buildMergeRequestCard({ ...MR, approved: false, approvedBy: [], approvalsGiven: given, approvalsRequired: required, avatars: { 'Carol Example': URI } });
+    const row = factOf(card, 'Approval');
+    assert.deepEqual(row.columns.map((c) => c.width).slice(1), ['auto'], 'label, then the pill image only');
+    assert.equal(pillOf(row).altText, `${given} of ${required} Approvals`);
+    assert.match(pillOf(row).url, /^data:image\/png;base64,/);
+  }
+  // No count from GitLab: nothing is invented, the generic pending pill says so.
+  const unknown = buildMergeRequestCard({ ...MR, approved: false, approvedBy: [], avatars: { 'Carol Example': URI } });
+  assert.equal(pillOf(factOf(unknown, 'Approval')).altText, 'Not approved yet');
+});
+
+test('approval row: approvers with pictures get the teal Approved pill on the first line, no "By" lead', () => {
+  const card = buildMergeRequestCard({ ...MR, avatars: { 'Alice Example': URI, 'Bob Example': URI } });
+  const [approval] = rows(card);
+  assert.equal(approval.columns.length, 2, 'label and one value column, as every row');
+  assert.equal(approval.columns[1].width, 'stretch');
+  const [first, second] = linesOf(approval);
+  assert.equal(pillOf({ columns: first.columns }).altText, 'Approved');
+  assert.equal(second.columns.some((c) => c.items[0].height === '22px'), false, 'one pill, not one per approver');
+  const texts = approval.columns[1].items.flatMap((l) => l.columns?.flatMap((c) => c.items.map((i) => i.text ?? '')) ?? []);
+  assert.equal(texts.some((t) => /\bBy\b/.test(t)), false);
+  // The pill is a trailing auto column; the name keeps the only stretch column and wraps.
+  assert.equal(first.columns.at(-1).width, 'auto');
+  assert.equal(first.columns.filter((c) => c.width === 'stretch').length, 1);
+});
+
+test('approval row: approvers without any picture still show the pill, then the names as text', () => {
+  const card = buildMergeRequestCard({ ...MR });
+  const row = factOf(card, 'Approval');
+  assert.equal(pillOf(row).altText, 'Approved');
+  assert.equal(row.columns.at(-1).items[0].text, 'Alice Example, Bob Example');
+  assert.equal(row.columns.at(-1).width, 'stretch');
+});
+
+test('approval row: an approved request with no approver names shows the pill alone', () => {
+  const row = factOf(buildMergeRequestCard({ ...MR, approvedBy: [] }), 'Approval');
+  assert.equal(pillOf(row).altText, 'Approved');
+  assert.equal(row.columns.length, 2);
+});
+
+test('approval row: unknown approval has no pill and keeps the text', () => {
+  const row = factOf(buildMergeRequestCard({ ...MR, approved: null, approvedBy: [] }), 'Approval');
+  assert.equal(pillOf(row), undefined);
+});
+
+test('approval row: long names and the pill stay within the cap and never use a second fixed text column', () => {
+  const long = 'Maximiliana Alexandrina Bartholomew-Featherstonehaugh';
+  const names = ['Alice Example', long, 'Bob Example'];
+  const avatars = Object.fromEntries([...names, 'Carol Example'].map((n) => [n, URI]));
+  const card = buildMergeRequestCard({ ...MR, approvedBy: names, avatars, approvalsGiven: 3, approvalsRequired: 3 });
+  for (const line of linesOf(rows(card)[0])) {
+    const textColumns = line.columns.filter((c) => c.items[0].type === 'TextBlock' && c.items[0].text !== ' ');
+    assert.equal(textColumns.length, 1);
+    assert.equal(textColumns[0].width, 'stretch');
+    assert.equal(textColumns[0].items[0].wrap, true);
+  }
+  const message = makeRichMessage('x', card);
+  assert.ok(richMessageWireBytes(message) <= MAX_CARD_BYTES, `wire bytes ${richMessageWireBytes(message)}`);
 });

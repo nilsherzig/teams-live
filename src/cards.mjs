@@ -22,6 +22,7 @@
 import { SERVICE_ICONS } from './card-icons.mjs';
 import { GITLAB_ICONS } from './gitlab-icons.mjs';
 import { MR_BADGES } from './mr-badges.mjs';
+import { approvalBadge, approvalBadgeText } from './approval-badges.mjs';
 import { CI_STATUS_ICONS } from './ci-icons.mjs';
 import { GITLAB_ICONS_SMALL } from './gitlab-icons-small.mjs';
 import { MAX_AVATAR_CHARS_PER_CARD, avatarColumn, isImageDataUri, userRow } from './card-user-row.mjs';
@@ -49,7 +50,10 @@ function factSet(facts) {
  */
 function personFact(title, text, names, avatars, headline = '', pill = null) {
   const has = (name) => avatars && Object.hasOwn(avatars, name) && avatars[name];
-  if (!names.some(has)) return [title, text];
+  if (!names.some(has)) {
+    // Nobody has a picture: the pill is still shown, as a badge row with the names as text after it.
+    return pill ? [title, text, { badge: pill, trail: names.join(', ') }] : [title, text];
+  }
   return [title, text, { headline, pill, people: names.map((name) => ({ name, avatar: has(name) ? avatars[name] : undefined })) }];
 }
 
@@ -568,11 +572,17 @@ export function buildMergeRequestCard(mr) {
   const statusLabel = [badge.alt, trail].filter(Boolean).join(' · ');
 
   const approvers = (mr.approvedBy || []).filter(Boolean);
+  // The approval state is a pill image ("Approved", or "N of M Approvals" from the counts GitLab
+  // reported); `approval` is its readable text twin, used where no image can be shown.
+  const approvalState = { approved, approvalsGiven: mr.approvalsGiven, approvalsRequired: mr.approvalsRequired };
   let approval = '';
+  let approvalPill = null;
   if (approved === true) {
     approval = approvers.length > 0 ? `👍 By ${approvers.join(', ')}` : '👍 Approved';
+    approvalPill = approvalBadge(approvalState);
   } else if (live || (state === 'closed' && approved === false)) {
-    approval = approved === false ? '⏳ Not approved yet' : '❔ Unknown (not retrieved)';
+    approval = approved === false ? `⏳ ${approvalBadgeText(approvalState)}` : '❔ Unknown (not retrieved)';
+    approvalPill = approvalBadge(approvalState);
   }
 
   let autoMergeText = '';
@@ -607,8 +617,11 @@ export function buildMergeRequestCard(mr) {
       ['Status', statusLabel, { badge, trail }],
       author ? personFact('Author', author, [author], mr.avatars) : ['Author', ''],
       approved === true && approvers.length > 0
-        ? personFact('Approval', approval, approvers.map(str), mr.avatars, '👍 By')
-        : ['Approval', approval],
+        ? // With the pill, the "👍 By" lead is not needed: the pill says what the people did.
+          personFact('Approval', approval, approvers.map(str), mr.avatars, approvalPill ? '' : '👍 By', approvalPill)
+        : approvalPill
+          ? ['Approval', approval, { badge: approvalPill, trail: '' }]
+          : ['Approval', approval],
       pipelineFact(mr.pipeline, mr.pipelineKnown),
       ['Rebase', rebase],
       autoMerge === true && mr.autoMergeUser
