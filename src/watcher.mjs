@@ -1037,6 +1037,7 @@ export class MergeRequestWatcher {
     this.selfOid = null;
     this.editOwnUrlMessages = Boolean(config.teams?.edit_own_url_messages ?? false);
     this.richMessages = config.teams?.rich_messages === true;
+    this.approveFlow = null;
     this.adminOids = new Set(
       (config.teams?.admin_ids || []).map(extractUserOid).filter(Boolean)
     );
@@ -1748,6 +1749,48 @@ export class MergeRequestWatcher {
     this.webhookServer = server;
   }
 
+  /** Enables the Approve button on merge request cards (an ApproveServer, or null). */
+  setApproveFlow(flow) {
+    this.approveFlow = flow || null;
+  }
+
+  /**
+   * Link to the approval confirmation page, or null when the button must not
+   * be shown: flow disabled, rich mode off, not a live open merge request,
+   * draft, head commit unknown, or already approved.
+   */
+  mrApproveUrl(mr, mrDetails, { state, approved }) {
+    if (!this.approveFlow || !this.richMessages) return null;
+    if (!['open', 'rebase', 'rebased'].includes(state)) return null;
+    if (mrDetails?.draft === true || approved === true) return null;
+    const sha = typeof mrDetails?.sha === 'string' && mrDetails.sha ? mrDetails.sha : null;
+    if (!sha || !mr?.project || mr.iid === undefined || mr.iid === null) return null;
+    try {
+      return this.approveFlow.linkFor({ project: mr.project, iid: mr.iid, sha });
+    } catch (err) {
+      log(`Approve link failed for ${mr.project}!${mr.iid}: ${err.message}`);
+      return null;
+    }
+  }
+
+  /** Re-checks the watched cards of one merge request (like a webhook event does). */
+  async refreshMrCards(project, iid) {
+    const projLower = String(project || '').toLowerCase();
+    const keys = [];
+    for (const [key, entry] of this.watched.entries()) {
+      const hasMr = (entry.mrs || []).some(
+        (m) => String(m.iid) === String(iid) && (m.project || '').toLowerCase() === projLower
+      );
+      if (hasMr) keys.push(key);
+    }
+    const results = await Promise.allSettled(keys.map((key) => this.checkWatchedKey(key)));
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    for (const r of results) {
+      if (r.status === 'rejected') log(`Approval refresh failed: ${r.reason?.message || r.reason}`);
+    }
+    return { matched: keys.length, completed: keys.length - failed, failed };
+  }
+
   setWebhookSetupStatus(status) {
     this.webhookSetupStatus = status;
     this.saveState();
@@ -2351,6 +2394,7 @@ export class MergeRequestWatcher {
     }
     return buildMergeRequestCard({
       state,
+      approveUrl: this.mrApproveUrl(mr, mrDetails, { state, approved }),
       iid: mr.iid,
       project: mr.project,
       title: cardTitle,

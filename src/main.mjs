@@ -10,6 +10,8 @@ import { ScreenshotClient } from './screenshot.mjs';
 import { TrouterClient } from './trouter.mjs';
 import { MergeRequestWatcher } from './watcher.mjs';
 import { GitLabWebhookServer } from './webhook.mjs';
+import { ApproveServer } from './approve.mjs';
+import path from 'node:path';
 import { SystemdWatchdog } from './systemd.mjs';
 import { HealthMonitor } from './health.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
@@ -118,6 +120,7 @@ async function main() {
 
   let trouter = null;
   let webhookServer = null;
+  let approveServer = null;
   let stopping = false;
 
   const hrworks = new HRWorksClient({
@@ -159,6 +162,9 @@ async function main() {
     authManager.stop();
     if (webhookServer) {
       await webhookServer.stop().catch((e) => log(`Error stopping webhook server: ${e.message}`));
+    }
+    if (approveServer) {
+      await approveServer.stop().catch((e) => log(`Error stopping approval server: ${e.message}`));
     }
     if (trouter) trouter.close();
     process.exit(0);
@@ -226,6 +232,34 @@ async function main() {
         group: gitlab.group,
         timestamp: Date.now(),
       });
+    }
+  }
+
+  // Approve button: authenticated confirmation page (fails closed when misconfigured)
+  const apCfg = config.gitlab?.approve;
+  if (apCfg?.enable) {
+    if (config.teams?.rich_messages !== true) {
+      log('GitLab approval flow is enabled but teams.rich_messages is off: no Approve button will be shown.');
+    }
+    try {
+      approveServer = new ApproveServer({
+        gitlab,
+        baseUrl: apCfg.base_url,
+        ownerUsers: apCfg.owner_users,
+        proxySecret: apCfg.proxy_secret,
+        host: apCfg.host,
+        port: apCfg.port,
+        userHeader: apCfg.user_header,
+        proxySecretHeader: apCfg.proxy_secret_header,
+        linkTtlSeconds: apCfg.link_ttl_seconds,
+        stateFile: path.join(config.gitlab.state_dir, 'approve-links.json'),
+        refreshCards: (project, iid) => watcher.refreshMrCards(project, iid),
+      });
+      await approveServer.start();
+      watcher.setApproveFlow(approveServer);
+    } catch (err) {
+      log(`GitLab approval flow not started: ${err.message}`);
+      approveServer = null;
     }
   }
 

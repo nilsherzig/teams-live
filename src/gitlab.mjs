@@ -372,6 +372,30 @@ export class GitLabClient {
   }
 
   /**
+   * Approval state of the token user (the identity an approval is made as):
+   * `{known, user, hasApproved, canApprove}`. The overall `approved` flag is
+   * deliberately not used. `known` is false when the identity or the approvals
+   * could not be retrieved. `canApprove` is null when GitLab does not say.
+   */
+  async getUserApprovalState(project, iid) {
+    const user = await this.getCurrentUser();
+    if (!user?.id) return { known: false, user: null, hasApproved: false, canApprove: null };
+    let approvals;
+    try {
+      approvals = await this.getApprovals(project, iid);
+    } catch {
+      return { known: false, user, hasApproved: false, canApprove: null };
+    }
+    if (!Array.isArray(approvals?.approved_by)) {
+      return { known: false, user, hasApproved: false, canApprove: null };
+    }
+    const ids = approvals.approved_by.map((a) => a.user?.id ?? a.id).filter((v) => v !== undefined && v !== null);
+    const hasApproved = approvals.user_has_approved === true || ids.some((id) => String(id) === String(user.id));
+    const canApprove = typeof approvals.user_can_approve === 'boolean' ? approvals.user_can_approve : null;
+    return { known: true, user, hasApproved, canApprove };
+  }
+
+  /**
    * Approval state of a merge request as `{known, approved, approvedBy}`.
    * `known` is false when the approvals could not be retrieved, so callers can
    * tell "not approved" from "unknown".
@@ -594,6 +618,8 @@ export class GitLabClient {
       title: mr.title,
       description: mr.description,
       source_branch: mr.source_branch,
+      // Head commit of the merge request (what an approval is bound to).
+      sha: mr.sha || mr.diff_refs?.head_sha || null,
       draft: isDraft,
       web_url: mr.web_url,
       target_branch: mr.target_branch,

@@ -22,6 +22,7 @@ check:
   node --check src/smoke-rich.mjs
   node --check src/trouter.mjs
   node --check src/webhook.mjs
+  node --check src/approve.mjs
   shellcheck scripts/*.sh
   nix flake check
 

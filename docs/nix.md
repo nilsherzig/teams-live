@@ -133,6 +133,7 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `teams.max_session_minutes` | Age after which the push session is replaced (60). |
 | `teams.history_poll_interval_seconds` | Poll of the watched chats for missed pushes (120, 0 disables). |
 | `teams.rich_messages` | Post the watcher messages as Adaptive Cards (false). See [Rich messages](#rich-messages). |
+| `gitlab.approve.*` | Approve button of merge request cards (off). See [Approving from a card](#approving-from-a-card). |
 | `teams.troll_user` | User MRI whose `/exec` gets a joke reply instead of the fake shell output. |
 | `browser_daemon.url`, `.profile`, `.secret_file` | browser-daemon used to sign in to Teams again. |
 | `gitlab.host`, `.group`, `.token_file` | GitLab instance, group for `/mrs`, API token. |
@@ -206,8 +207,9 @@ buttons: the title links to the entity, and cross references inside the card are
 linked too (the pipeline and Jira key of a merge request, and the pipeline and
 merge request of a job or pipeline). A link is only added for a valid http(s)
 URL; without one the text stays plain, and brackets in titles are escaped so
-they cannot break the link. Cards carry no bottom buttons; they are reserved
-for real actions.
+they cannot break the link. Cards carry no bottom buttons, except the optional
+"Approve..." button of a merge request card (see
+[Approving from a card](#approving-from-a-card)).
 
 Status lines keep the emojis of the regular messages: approval, pipeline,
 rebase, auto-merge, merged and closed on merge requests, and the CI status on
@@ -239,3 +241,50 @@ node src/smoke-rich.mjs <conversation-id> --dry-run   # print the payloads only
 ```
 
 The script uses generic fixture data and refuses channel conversations.
+
+### Approving from a card
+
+With `teams.rich_messages` on and the approval flow enabled, an open merge
+request card gets an "Approve..." button. It opens a confirmation page; it never
+approves by itself. Opening the page (and any scan or preview of the link) only
+reads. The approval is a POST with a CSRF token from that page.
+
+The page is served by a separate listener, not by the webhook server. It binds
+to loopback and is meant to sit behind a reverse proxy that authenticates the
+user, injects the authenticated user name and a shared secret header, and
+removes both headers from client requests. Requests without the secret are
+rejected, so the user header is not trusted from anywhere else. Only the
+configured owner users are allowed, and the approval is made with the service's
+own GitLab token (the owner's identity): there is no per-user sign-in and nobody
+else is authorized. Without owner users or without the proxy secret the flow
+does not start (fail closed).
+
+| Key | Description |
+| --- | --- |
+| `gitlab.approve.enable` | Start the flow (false). |
+| `gitlab.approve.host`, `.port` | Listener, loopback only (127.0.0.1, 3006). |
+| `gitlab.approve.base_url` | Public URL of the page, for example `https://<host>/approve`. It is also the allowed Origin of the POST. |
+| `gitlab.approve.owner_users` | Authenticated user names that may approve (list; `TEAMS_GITLAB_APPROVE_OWNER_USERS` takes a comma separated string). `.owner_users_file` reads names from a file. |
+| `gitlab.approve.user_header` | Header with the authenticated user (`Remote-User`). |
+| `gitlab.approve.proxy_secret_file` | File with the secret the proxy sends (never inline; read at runtime). |
+| `gitlab.approve.proxy_secret_header` | Header carrying it (`X-Teams-Live-Proxy-Secret`). |
+| `gitlab.approve.link_ttl_seconds` | Lifetime of a link (86400). |
+
+The environment fallbacks are `TEAMS_GITLAB_APPROVE_*` (`ENABLE`, `HOST`, `PORT`,
+`BASE_URL`, `OWNER_USERS`, `OWNER_USERS_FILE`, `USER_HEADER`,
+`PROXY_SECRET_FILE`, `PROXY_SECRET_HEADER`, `LINK_TTL_SECONDS`). The proxy may
+keep the path prefix or strip it; both are accepted.
+
+Links carry only an opaque random id. The merge request, its head commit and
+the expiry are kept on the server (`approve-links.json` in the state directory,
+mode 0600, bounded), so a link holds no credential and authorizes nothing by
+itself. The approval is bound to the head commit shown on the card and is sent
+with that SHA, so a merge request that gained commits is rejected as stale.
+The page also checks that the merge request is open and not a draft, that
+the service's GitLab account has not approved it yet, and that GitLab lets it
+approve. A pending pipeline or merge status does not block it. A replayed or
+concurrent request never approves twice, and after an unclear network or server
+error the service looks at its own approval before saying what happened. The
+button is hidden once the merge request is approved or when the head commit is
+unknown. After an approval the card of the merge request is re-checked; the
+page says whether that refresh ran, failed or had no card to update.

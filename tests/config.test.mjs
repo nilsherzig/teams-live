@@ -69,3 +69,39 @@ test('teams.rich_messages is off by default and only enabled by boolean true', (
   assert.equal(write({ rich_messages: 'false' }).teams.rich_messages, false);
   assert.equal(write({ rich_messages: true }).teams.rich_messages, true);
 });
+
+test('gitlab.approve defaults to off and reads the proxy secret only from a file', () => {
+  const dir = tmpDir();
+  fs.writeFileSync(path.join(dir, 'proxy'), 'file-secret\n');
+  fs.writeFileSync(path.join(dir, 'owners'), 'Carol\nDave\n');
+  const write = (approve) => {
+    const configPath = path.join(dir, `config-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ conversations: [{ id: '48:notes', name: 'Notes' }], ...(approve ? { gitlab: { approve } } : {}) }),
+    );
+    return loadConfig(configPath).gitlab.approve;
+  };
+
+  const off = write();
+  assert.equal(off.enable, false);
+  assert.equal(off.host, '127.0.0.1');
+  assert.equal(off.port, 3006);
+  assert.equal(off.user_header, 'Remote-User');
+  assert.equal(off.proxy_secret_header, 'X-Teams-Live-Proxy-Secret');
+  assert.equal(off.link_ttl_seconds, 86400);
+  assert.deepEqual(off.owner_users, []);
+  assert.equal(off.proxy_secret, '');
+
+  const on = write({
+    enable: true,
+    base_url: 'https://approve.example.com/approve',
+    owner_users: ['Alice', ' bob '],
+    owner_users_file: path.join(dir, 'owners'),
+    proxy_secret: 'inline-is-ignored',
+    proxy_secret_file: path.join(dir, 'proxy'),
+  });
+  assert.equal(on.enable, true);
+  assert.deepEqual(on.owner_users, ['alice', 'bob', 'carol', 'dave']);
+  assert.equal(on.proxy_secret, 'file-secret');
+});

@@ -161,6 +161,48 @@ export function loadConfig(configPath) {
 
   gitlab.webhook = webhook;
 
+  const rawApprove = fileConfig.gitlab?.approve ?? {};
+  const envBool = (value) => (value === undefined ? undefined : value === 'true' || value === '1');
+  const readTextFile = (file, what) => {
+    if (!file) return null;
+    try {
+      return fs.readFileSync(file, 'utf8');
+    } catch (e) {
+      console.warn(`Could not read GitLab approve ${what} file ${file}: ${e.message}`);
+      return null;
+    }
+  };
+  const approveOwnerList = [
+    ...(Array.isArray(rawApprove.owner_users)
+      ? rawApprove.owner_users
+      : typeof rawApprove.owner_users === 'string'
+        ? rawApprove.owner_users.split(/[\s,]+/)
+        : (process.env.TEAMS_GITLAB_APPROVE_OWNER_USERS || '').split(/[\s,]+/)),
+  ];
+  const approveOwnersFile =
+    getNullableString(rawApprove.owner_users_file) || process.env.TEAMS_GITLAB_APPROVE_OWNER_USERS_FILE || null;
+  const approveOwnersText = readTextFile(approveOwnersFile, 'owner users');
+  if (approveOwnersText) approveOwnerList.push(...approveOwnersText.split(/[\s,]+/));
+  const approveSecretFile =
+    getNullableString(rawApprove.proxy_secret_file) || process.env.TEAMS_GITLAB_APPROVE_PROXY_SECRET_FILE || null;
+  const approve = {
+    enable: Boolean(rawApprove.enable ?? envBool(process.env.TEAMS_GITLAB_APPROVE_ENABLE) ?? false),
+    host: getString(rawApprove.host) || process.env.TEAMS_GITLAB_APPROVE_HOST || '127.0.0.1',
+    port: Number(rawApprove.port ?? process.env.TEAMS_GITLAB_APPROVE_PORT ?? 3006),
+    base_url: (getString(rawApprove.base_url) || process.env.TEAMS_GITLAB_APPROVE_BASE_URL || '').trim(),
+    owner_users: [...new Set(approveOwnerList.map((u) => String(u ?? '').trim().toLowerCase()).filter(Boolean))],
+    user_header: getString(rawApprove.user_header) || process.env.TEAMS_GITLAB_APPROVE_USER_HEADER || 'Remote-User',
+    proxy_secret_file: approveSecretFile,
+    // The secret itself is only ever read from a file at runtime.
+    proxy_secret: (readTextFile(approveSecretFile, 'proxy secret') || '').trim(),
+    proxy_secret_header:
+      getString(rawApprove.proxy_secret_header) ||
+      process.env.TEAMS_GITLAB_APPROVE_PROXY_SECRET_HEADER ||
+      'X-Teams-Live-Proxy-Secret',
+    link_ttl_seconds: Number(rawApprove.link_ttl_seconds ?? process.env.TEAMS_GITLAB_APPROVE_LINK_TTL_SECONDS ?? 86400),
+  };
+  gitlab.approve = approve;
+
   const stateDir = process.env.XDG_STATE_HOME || path.join(process.cwd(), 'state');
   const homeDir = process.env.HOME;
   const overridePaths = [];

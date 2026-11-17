@@ -13,8 +13,9 @@
 // Layout of every card: a compact header with the logo of the service and a
 // label for the kind of entity (for example "GitLab - Merge request"), then the
 // title, an optional one-line subtitle and a few facts. Navigation uses inline
-// links (the title and the cross references), not buttons, so a card has no
-// bottom actions.
+// links (the title and the cross references), not buttons. The one exception
+// is the "Approve..." button of the merge request card (`approveUrl`), which
+// opens an authenticated confirmation page: it never approves by itself.
 
 import { SERVICE_ICONS } from './card-icons.mjs';
 
@@ -116,7 +117,7 @@ function header(service, kind) {
  * `style` is an Adaptive Card container style (`good`, `attention`,
  * `warning`, `accent`, `emphasis`) and conveys the state at a glance.
  * `badges` is a row of non-interactive status badges, `extraItems` are
- * appended after the facts.
+ * appended after the facts. `actions` are bottom buttons (Action.OpenUrl).
  */
 function assembleCard({
   service,
@@ -128,6 +129,7 @@ function assembleCard({
   badges = [],
   facts = [],
   extraItems = [],
+  actions = [],
   fallbackText,
 }) {
   const items = [
@@ -146,6 +148,11 @@ function assembleCard({
     msteams: { width: 'Full' },
     body: [{ type: 'Container', style, bleed: false, items }],
   };
+  const buttons = actions
+    .map((a) => ({ title: str(a?.title), url: safeHttpUrl(a?.url) }))
+    .filter((a) => a.title && a.url)
+    .map((a) => ({ type: 'Action.OpenUrl', title: a.title, url: a.url }));
+  if (buttons.length > 0) card.actions = buttons;
   if (fallbackText) card.fallbackText = str(fallbackText);
   return card;
 }
@@ -262,7 +269,9 @@ const tri = (value) => (value === true ? true : value === false ? false : null);
  * (unknown reads "Unknown (not retrieved)", never "no"). `pipelineKnown`
  * (true/false/undefined) tells "no pipeline" from a failed lookup. The rebase fact
  * appears only while a rebase is required. Merged and closed merge requests
- * keep the details that are known.
+ * keep the details that are known. `approveUrl` adds an "Approve..." button
+ * that opens a confirmation page (see src/approve.mjs); it never approves by
+ * itself.
  */
 export function buildMergeRequestCard(mr) {
   const state = mr.state || 'open';
@@ -333,6 +342,7 @@ export function buildMergeRequestCard(mr) {
       ['Target', mr.targetBranch],
       ['Jira', mdLink(jiraLabel, mr.jira?.url)],
     ].filter(Boolean),
+    actions: mr.approveUrl ? [{ title: 'Approve…', url: mr.approveUrl }] : [],
     fallbackText: mr.fallbackText,
   });
 }
