@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import crypto from 'node:crypto';
 
-import { ApproveServer, ApprovalStore, CsrfTokens, normalizeLinkTtlSeconds } from '../src/approve.mjs';
+import { ApproveServer, ApprovalStore, CsrfTokens, mergeBlockReason, normalizeLinkTtlSeconds } from '../src/approve.mjs';
 import { buildMergeRequestCard } from '../src/cards.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 
@@ -16,13 +16,14 @@ const PROJECT = 'group/app';
 const IID = 7;
 
 function makeGitlab(overrides = {}) {
-  const calls = { approve: [], reopen: [], getMr: 0, state: 0 };
+  const calls = { approve: [], reopen: [], merge: [], getMr: 0, state: 0 };
   const gitlab = {
     calls,
     mr: { state: 'opened', draft: false, sha: SHA, title: 'Example change' },
     userState: { known: true, user: { id: 1, username: 'owner' }, hasApproved: false, canApprove: true },
     approveError: null,
     reopenError: null,
+    mergeError: null,
     async getCurrentUser() {
       return { id: 1, username: 'owner' };
     },
@@ -30,6 +31,12 @@ function makeGitlab(overrides = {}) {
       calls.reopen.push({ project, iid });
       if (gitlab.reopenError) throw gitlab.reopenError;
       gitlab.mr = { ...gitlab.mr, state: 'opened' };
+      return gitlab.mr;
+    },
+    async mergeMrOnce(project, iid, opts) {
+      calls.merge.push({ project, iid, opts });
+      if (gitlab.mergeError) throw gitlab.mergeError;
+      gitlab.mr = { ...gitlab.mr, state: 'merged' };
       return gitlab.mr;
     },
     async getMr() {
@@ -50,7 +57,7 @@ function makeGitlab(overrides = {}) {
   return gitlab;
 }
 
-async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, now, linkTtlSeconds, action = 'approve' } = {}) {
+async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, now, linkTtlSeconds, action = 'approve', serverOpts = {} } = {}) {
   const server = new ApproveServer({
     gitlab,
     baseUrl: `${ORIGIN}/approve`,
@@ -59,6 +66,10 @@ async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, no
     refreshCards,
     now,
     linkTtlSeconds,
+    mergePollMs: 0,
+    mergePollAttempts: 3,
+    sleep: async () => {},
+    ...serverOpts,
   });
   await server.start();
   const base = `http://127.0.0.1:${server.port}`;
@@ -1413,4 +1424,486 @@ test('the watcher offers Reopen only on closed cards with the flow enabled in ri
   const url = (w) => /https:\/\/approve\.example\.com\/approve\/#[A-Za-z0-9_-]{43}/.exec(text(w, { state: 'closed' }))?.[0];
   assert.equal(url(rich), url(rich));
   assert.equal([...flow.store.records.values()].filter((r) => r.action === 'reopen').length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Merge action. Generic mocks only: nothing here talks to a real GitLab.
+// ---------------------------------------------------------------------------
+
+const mergeableGitlab = (overrides = {}) => {
+  const gitlab = makeGitlab(overrides);
+  gitlab.mr = { state: 'opened', draft: false, sha: SHA, title: 'Example change', detailed_merge_status: 'mergeable' };
+  return gitlab;
+};
+
+test('merge links are pinned to the head commit, independent of approve/reopen links and used up by a merge', () => {
+  const store = new ApprovalStore();
+  assert.equal(store.linkFor({ project: PROJECT, iid: IID, sha: null, action: 'merge' }), null, 'a merge needs a head');
+  const approve = store.linkFor({ project: PROJECT, iid: IID, sha: SHA });
+  const merge = store.linkFor({ project: PROJECT, iid: IID, sha: SHA, action: 'merge' });
+  assert.equal(merge.record.action, 'merge');
+  assert.notEqual(merge.token, approve.token);
+  assert.equal(store.linkFor({ project: PROJECT.toUpperCase(), iid: IID, sha: SHA, action: 'merge' }).token, merge.token, 'reused');
+  assert.equal(store.byId(approve.record.id).status, 'open', 'minting a merge link leaves the approval alone');
+
+  // An approval does not use up the merge link and suppresses nothing about it.
+  store.markApproved(PROJECT, IID, SHA);
+  assert.equal(store.byId(merge.record.id).status, 'open');
+  assert.equal(store.linkFor({ project: PROJECT, iid: IID, sha: SHA, action: 'merge' }).token, merge.token);
+
+  // A new head supersedes the merge link (and the approval).
+  const next = store.linkFor({ project: PROJECT, iid: IID, sha: 'b'.repeat(40), action: 'merge' });
+  assert.notEqual(next.token, merge.token);
+  assert.equal(store.byId(merge.record.id).status, 'stale');
+  assert.equal(next.record.status, 'open');
+  assert.equal(store.byId(approve.record.id).status !== 'used', true);
+
+  store.invalidate(PROJECT, IID);
+  assert.equal(store.byId(next.record.id).status, 'open', 'invalidating approvals keeps merge links');
+  store.invalidate(PROJECT, IID, 'merge');
+  assert.equal(store.byId(next.record.id).status, 'stale');
+
+  const fresh = store.linkFor({ project: PROJECT, iid: IID, sha: 'c'.repeat(40), action: 'merge' });
+  store.markMerged(PROJECT, IID);
+  assert.equal(store.byId(fresh.record.id).status, 'used');
+  assert.notEqual(store.linkFor({ project: PROJECT, iid: IID, sha: 'c'.repeat(40), action: 'merge' }).token, fresh.token, 'no memory of the merge');
+});
+
+test('the merge action and its used status survive a restart', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-merge-'));
+  const file = path.join(dir, 'approve.json');
+  try {
+    const store = new ApprovalStore({ file });
+    const open = store.linkFor({ project: PROJECT, iid: IID, sha: SHA, action: 'merge' });
+    const used = store.linkFor({ project: PROJECT, iid: 8, sha: SHA, action: 'merge' });
+    store.markMerged(PROJECT, 8);
+    const loaded = new ApprovalStore({ file });
+    loaded.load();
+    assert.equal(loaded.byId(open.record.id).action, 'merge');
+    assert.equal(loaded.byId(open.record.id).sha, SHA);
+    assert.equal(loaded.byId(used.record.id).status, 'used');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('mergeBlockReason maps what GitLab says about mergeability and lets the PUT decide when it says nothing', () => {
+  assert.equal(mergeBlockReason({ detailed_merge_status: 'mergeable' }), null);
+  assert.match(mergeBlockReason({ detailed_merge_status: 'not_approved' }), /approvals/);
+  assert.match(mergeBlockReason({ detailed_merge_status: 'ci_must_pass' }), /pipeline/);
+  assert.match(mergeBlockReason({ detailed_merge_status: 'ci_still_running' }), /running/);
+  assert.match(mergeBlockReason({ detailed_merge_status: 'need_rebase' }), /rebase/);
+  assert.match(mergeBlockReason({ detailed_merge_status: 'conflict' }), /conflicts/);
+  assert.match(mergeBlockReason({ detailed_merge_status: 'checking' }), /Reload/);
+  assert.match(mergeBlockReason({ detailed_merge_status: 'brand_new_status' }), /brand_new_status/, 'unknown statuses block too');
+  assert.match(mergeBlockReason({ has_conflicts: true }), /conflicts/);
+  assert.match(mergeBlockReason({ merge_status: 'cannot_be_merged' }), /not mergeable/);
+  assert.equal(mergeBlockReason({}), null);
+  assert.equal(mergeBlockReason(null), null);
+});
+
+test('a confirmed POST merges once, with only the head sha, uses the link up and refreshes the card', async () => {
+  const refreshes = [];
+  const ctx = await setup({
+    gitlab: mergeableGitlab(),
+    action: 'merge',
+    refreshCards: async (project, iid) => {
+      refreshes.push([project, iid]);
+      return { matched: 1, completed: 1, failed: 0 };
+    },
+  });
+  try {
+    // The entry page is generic; the confirmation page says what will happen and with which account.
+    const entry = await (await ctx.entry()).text();
+    assert.match(entry, /<h1>Opening link<\/h1>/);
+    assert.doesNotMatch(entry, /Merge merge request/);
+    const cookie = await ctx.open();
+    const res = await ctx.page(cookie);
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /<title>Merge merge request · teams-live<\/title>/);
+    assert.match(html, /<button class="btn" type="submit">Merge merge request<\/button>/);
+    assert.match(html, /Merge this merge request\?/);
+    assert.match(html, /configured GitLab account <code>owner<\/code>, not as you personally/);
+    assert.match(html, /not bypassed/);
+    assert.match(html, new RegExp(SHA.slice(0, 12)));
+    assert.equal(ctx.gitlab.calls.merge.length, 0, 'GET never merges');
+    assert.equal(ctx.gitlab.calls.approve.length, 0);
+    assert.equal(ctx.gitlab.calls.reopen.length, 0);
+
+    const posted = await ctx.post(cookie, { csrf: await ctx.csrfFrom(await ctx.page(cookie)) });
+    assert.equal(posted.status, 200);
+    const done = await posted.text();
+    assert.match(done, /Merged in GitLab/);
+    assert.match(done, /refresh was run/);
+    assert.deepEqual(ctx.gitlab.calls.merge, [{ project: PROJECT, iid: String(IID), opts: { sha: SHA } }]);
+    assert.deepEqual(ctx.gitlab.calls.approve, []);
+    assert.deepEqual(refreshes, [[PROJECT, String(IID)]]);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'used');
+
+    assert.equal((await ctx.bootstrap()).status, 410);
+    const replay = await ctx.page(cookie);
+    assert.equal(replay.status, 410);
+    assert.match(await replay.text(), /already used to merge/);
+    assert.equal(ctx.gitlab.calls.merge.length, 1, 'never merged twice');
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('merge checks CSRF and origin like the approval and does not merge without them', async () => {
+  const ctx = await setup({ gitlab: mergeableGitlab(), action: 'merge' });
+  try {
+    const cookie = await ctx.open();
+    const csrf = await ctx.csrfFrom(await ctx.page(cookie));
+    assert.equal((await ctx.post(cookie, { csrf }, { Origin: 'https://evil.example.com' })).status, 403);
+    const noCsrf = await ctx.post(cookie, { csrf: 'x' });
+    assert.equal(noCsrf.status, 403);
+    assert.match(await noCsrf.text(), /Nothing was merged/);
+    assert.equal((await ctx.post(null, { csrf })).status, 401);
+    // A GET with a (form-like) query changes nothing either.
+    assert.equal((await ctx.page(cookie)).status, 200);
+    assert.equal(ctx.gitlab.calls.merge.length, 0);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('the merge page blocks drafts, other states, moved heads and unmergeable states without a button or a PUT', async () => {
+  const cases = [
+    ['draft', { draft: true }, 409, /draft/, 'open'],
+    ['draft status', { detailed_merge_status: 'draft_status' }, 409, /draft/, 'open'],
+    ['not approved', { detailed_merge_status: 'not_approved' }, 409, /approvals/, 'open'],
+    ['pipeline', { detailed_merge_status: 'ci_must_pass' }, 409, /pipeline/, 'open'],
+    ['rebase needed', { detailed_merge_status: 'need_rebase' }, 409, /rebase/, 'open'],
+    ['conflicts', { detailed_merge_status: 'conflict' }, 409, /conflicts/, 'open'],
+    ['locked', { state: 'locked' }, 409, /merging this merge request right now/, 'open'],
+    ['closed', { state: 'closed' }, 409, /closed/, 'stale'],
+    ['new head', { sha: 'b'.repeat(40) }, 409, /changed after this card/, 'stale'],
+    ['merged elsewhere at another head', { state: 'merged', sha: 'b'.repeat(40) }, 409, /not at the head commit/, 'stale'],
+    ['no head', { sha: undefined }, 409, /head commit of the merge request is unknown/, 'open'],
+  ];
+  for (const [name, patch, status, pattern, link] of cases) {
+    const gitlab = mergeableGitlab();
+    gitlab.mr = { ...gitlab.mr, ...patch };
+    const ctx = await setup({ gitlab, action: 'merge' });
+    try {
+      const cookie = await ctx.open();
+      const page = await ctx.page(cookie);
+      assert.equal(page.status, status, name);
+      const html = await page.text();
+      assert.match(html, pattern, name);
+      assert.doesNotMatch(html, /<button/, name);
+      const posted = await ctx.post(cookie, { csrf: 'x' });
+      assert.equal(posted.status, 403, name);
+      assert.equal(gitlab.calls.merge.length, 0, name);
+      assert.equal(ctx.server.store.byId(ctx.record.id).status, link, name);
+    } finally {
+      await ctx.server.stop();
+    }
+  }
+});
+
+test('the POST re-evaluates fresh: a state change between page and click is not merged', async () => {
+  for (const [name, patch, status, pattern] of [
+    ['new commits', { sha: 'c'.repeat(40) }, 409, /changed after this card/],
+    ['pipeline failed', { detailed_merge_status: 'ci_must_pass' }, 409, /pipeline/],
+    ['became draft', { draft: true }, 409, /draft/],
+    ['closed', { state: 'closed' }, 409, /closed/],
+  ]) {
+    const gitlab = mergeableGitlab();
+    const ctx = await setup({ gitlab, action: 'merge' });
+    try {
+      const cookie = await ctx.open();
+      const csrf = await ctx.csrfFrom(await ctx.page(cookie));
+      gitlab.mr = { ...gitlab.mr, ...patch };
+      const res = await ctx.post(cookie, { csrf });
+      assert.equal(res.status, status, name);
+      assert.match(await res.text(), pattern, name);
+      assert.equal(gitlab.calls.merge.length, 0, name);
+    } finally {
+      await ctx.server.stop();
+    }
+  }
+});
+
+test('already merged at the expected head: nothing is sent and the link is used up', async () => {
+  const gitlab = mergeableGitlab();
+  const ctx = await setup({ gitlab, action: 'merge' });
+  try {
+    const cookie = await ctx.open();
+    const csrf = await ctx.csrfFrom(await ctx.page(cookie));
+    gitlab.mr = { ...gitlab.mr, state: 'merged' };
+    const res = await ctx.post(cookie, { csrf });
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /already merged in GitLab\. Nothing was sent/);
+    assert.equal(gitlab.calls.merge.length, 0);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'used');
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('a GitLab read failure blocks the merge page without leaking GitLab text', async () => {
+  const gitlab = mergeableGitlab({
+    async getMr() {
+      throw new Error('GitLab error (500): <script>alert(1)</script>');
+    },
+  });
+  const ctx = await setup({ gitlab, action: 'merge' });
+  try {
+    const page = await ctx.page(await ctx.open());
+    assert.equal(page.status, 409);
+    const html = await page.text();
+    assert.match(html, /could not be reached/);
+    assert.doesNotMatch(html, /<script>alert/);
+    assert.equal(gitlab.calls.merge.length, 0);
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('GitLab rejections of the merge are reported as is, never retried and never consume the link', async () => {
+  const run = async (error) => {
+    const gitlab = mergeableGitlab();
+    gitlab.mergeError = error;
+    const ctx = await setup({ gitlab, action: 'merge' });
+    try {
+      const res = await ctx.confirm();
+      return { status: res.status, html: await res.text(), sends: gitlab.calls.merge.length, link: ctx.server.store.byId(ctx.record.id).status };
+    } finally {
+      await ctx.server.stop();
+    }
+  };
+  for (const [code, status, pattern] of [
+    [401, 403, /Nothing was merged/],
+    [403, 403, /Nothing was merged/],
+    [404, 404, /could not find/],
+    [405, 409, /HTTP 405/],
+    [406, 409, /HTTP 406/],
+    [409, 409, /HTTP 409/],
+    [422, 409, /HTTP 422/],
+  ]) {
+    const r = await run(new Error(`GitLab error (${code}): rejected`));
+    assert.equal(r.status, status, String(code));
+    assert.match(r.html, pattern, String(code));
+    assert.match(r.html, /Nothing was merged/, String(code));
+    assert.equal(r.sends, 1, `${code}: sent once`);
+    assert.equal(r.link, 'open', `${code}: link kept`);
+  }
+});
+
+test('a lost or 5xx merge answer is read back: only a merge confirmed at the expected head counts', async () => {
+  const run = async ({ error, after, reads }) => {
+    const gitlab = mergeableGitlab();
+    gitlab.mergeError = error;
+    const send = gitlab.mergeMrOnce;
+    gitlab.mergeMrOnce = async (...args) => {
+      try {
+        return await send(...args);
+      } catch (err) {
+        if (after) gitlab.mr = { ...gitlab.mr, ...after };
+        throw err;
+      }
+    };
+    if (reads) {
+      const get = gitlab.getMr;
+      let n = 0;
+      gitlab.getMr = async (...a) => {
+        n++;
+        return reads(n, () => get(...a), gitlab);
+      };
+    }
+    const refreshes = [];
+    const ctx = await setup({
+      gitlab,
+      action: 'merge',
+      refreshCards: async (...a) => {
+        refreshes.push(a);
+        return { edited: 1 };
+      },
+    });
+    try {
+      const res = await ctx.confirm();
+      return { status: res.status, html: await res.text(), sends: gitlab.calls.merge.length, link: ctx.server.store.byId(ctx.record.id).status, refreshes: refreshes.length };
+    } finally {
+      await ctx.server.stop();
+    }
+  };
+  const lost = new Error('GitLab request failed (network)');
+  const bad = new Error('GitLab error (502): bad gateway');
+
+  // The answer is lost but GitLab merged it at our head: confirmed.
+  for (const error of [lost, bad]) {
+    const landed = await run({ error, after: { state: 'merged' } });
+    assert.equal(landed.status, 200);
+    assert.match(landed.html, /Merged in GitLab/);
+    assert.equal(landed.link, 'used');
+    assert.equal(landed.refreshes, 1);
+    assert.equal(landed.sends, 1, 'sent once');
+  }
+
+  // Not applied: still open. Nothing consumed, nothing refreshed, never resent.
+  const open = await run({ error: lost });
+  assert.equal(open.status, 502);
+  assert.match(open.html, /still open/);
+  assert.doesNotMatch(open.html, /Merged in GitLab/);
+  assert.equal(open.link, 'open');
+  assert.equal(open.refreshes, 0);
+  assert.equal(open.sends, 1);
+
+  // Merged, but at another head: not ours, so no false success.
+  const other = await run({ error: lost, after: { state: 'merged', sha: 'b'.repeat(40) } });
+  assert.equal(other.status, 409);
+  assert.match(other.html, /not at the head commit/);
+  assert.equal(other.link, 'stale');
+  assert.equal(other.refreshes, 0);
+
+  // Still being merged (locked) after every read: no success.
+  const locked = await run({ error: lost, after: { state: 'locked' } });
+  assert.equal(locked.status, 502);
+  assert.match(locked.html, /still merging/);
+  assert.equal(locked.link, 'open');
+  assert.equal(locked.refreshes, 0);
+
+  // Locked first, merged a moment later: the poll sees it.
+  const late = await run({
+    error: lost,
+    after: { state: 'locked' },
+    reads: async (n, get, gitlab) => {
+      if (n >= 4) gitlab.mr = { ...gitlab.mr, state: 'merged' };
+      return get();
+    },
+  });
+  assert.equal(late.status, 200);
+  assert.equal(late.link, 'used');
+  assert.equal(late.sends, 1);
+
+  // Closed meanwhile.
+  const closed = await run({ error: lost, after: { state: 'closed' } });
+  assert.equal(closed.status, 409);
+  assert.match(closed.html, /closed/);
+  assert.equal(closed.refreshes, 0);
+
+  // Unreadable: outcome unknown, link kept.
+  const unknown = await run({
+    error: lost,
+    reads: async (n, get) => {
+      if (n > 2) throw new Error('GitLab request failed (network)');
+      return get();
+    },
+  });
+  assert.equal(unknown.status, 502);
+  assert.match(unknown.html, /may or may not be merged/);
+  assert.equal(unknown.link, 'open');
+  assert.equal(unknown.refreshes, 0);
+  assert.equal(unknown.sends, 1);
+});
+
+test('a merge answer that is not "merged" at the expected head is read back and never counted as success', async () => {
+  const run = async (answer, after) => {
+    const gitlab = mergeableGitlab();
+    gitlab.mergeMrOnce = async (project, iid, opts) => {
+      gitlab.calls.merge.push({ project, iid, opts });
+      gitlab.mr = { ...gitlab.mr, ...after };
+      return answer;
+    };
+    const refreshes = [];
+    const ctx = await setup({
+      gitlab,
+      action: 'merge',
+      refreshCards: async (...a) => {
+        refreshes.push(a);
+        return { edited: 1 };
+      },
+    });
+    try {
+      const res = await ctx.confirm();
+      return { status: res.status, html: await res.text(), link: ctx.server.store.byId(ctx.record.id).status, refreshes: refreshes.length, sends: gitlab.calls.merge.length };
+    } finally {
+      await ctx.server.stop();
+    }
+  };
+
+  // Body says merged at our head: accepted.
+  const ok = await run({ state: 'merged', sha: SHA }, { state: 'merged' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.link, 'used');
+  assert.equal(ok.refreshes, 1);
+
+  // Body says merged but names another head and the readback does not confirm: no success.
+  const wrongHead = await run({ state: 'merged', sha: 'b'.repeat(40) }, { state: 'opened' });
+  assert.equal(wrongHead.status, 502);
+  assert.equal(wrongHead.link, 'open');
+  assert.equal(wrongHead.refreshes, 0);
+
+  // Odd or empty bodies are read back (still open): no success, sent once.
+  for (const answer of [null, {}, 'ok', { state: 'opened' }, { state: 'locked' }]) {
+    const odd = await run(answer, { state: 'opened' });
+    assert.equal(odd.status, 502, JSON.stringify(answer));
+    assert.equal(odd.link, 'open', JSON.stringify(answer));
+    assert.equal(odd.refreshes, 0, JSON.stringify(answer));
+    assert.equal(odd.sends, 1, JSON.stringify(answer));
+  }
+
+  // An odd body but the readback confirms the merge at our head: counts.
+  const confirmed = await run({}, { state: 'merged' });
+  assert.equal(confirmed.status, 200);
+  assert.match(confirmed.html, /Merged in GitLab/);
+  assert.equal(confirmed.link, 'used');
+  assert.equal(confirmed.sends, 1);
+
+  // An unexpected state is not success either.
+  const weird = await run({}, { state: 'weird' });
+  assert.equal(weird.status, 502);
+  assert.match(weird.html, /unexpected state/);
+  assert.equal(weird.link, 'open');
+});
+
+test('concurrent confirmed POSTs on one merge link send a single merge', async () => {
+  const gitlab = mergeableGitlab();
+  const send = gitlab.mergeMrOnce;
+  gitlab.mergeMrOnce = async (...args) => {
+    await new Promise((r) => setTimeout(r, 30));
+    return send(...args);
+  };
+  const ctx = await setup({ gitlab, action: 'merge' });
+  try {
+    const cookie = await ctx.open();
+    const csrf = await ctx.csrfFrom(await ctx.page(cookie));
+    const results = await Promise.all([ctx.post(cookie, { csrf }), ctx.post(cookie, { csrf }), ctx.post(cookie, { csrf })]);
+    assert.equal(gitlab.calls.merge.length, 1);
+    assert.deepEqual(results.map((r) => r.status).sort(), [200, 410, 410]);
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('mergeMrOnce sends one PUT with only the sha and never resends on a thrown fetch error', async () => {
+  const { GitLabClient } = await import('../src/gitlab.mjs');
+  const realFetch = globalThis.fetch;
+  const realTimeout = globalThis.setTimeout;
+  let calls = 0;
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    calls++;
+    seen.push({ url: String(url), method: init?.method, body: init?.body });
+    throw new TypeError('fetch failed', { cause: new Error('socket hang up') });
+  };
+  globalThis.setTimeout = (fn, _ms, ...args) => realTimeout(fn, 0, ...args);
+  try {
+    const client = new GitLabClient({ baseUrl: 'https://gitlab.example.com', token: 'test-token' });
+    await assert.rejects(() => client.mergeMrOnce('group/app', 7, { sha: SHA }), /GitLab request failed/);
+    assert.equal(calls, 1, 'merge is sent once');
+    assert.equal(seen[0].method, 'PUT');
+    assert.match(seen[0].url, /\/projects\/group%2Fapp\/merge_requests\/7\/merge$/);
+    assert.equal(seen[0].body, JSON.stringify({ sha: SHA }));
+    await assert.rejects(() => client.mergeMrOnce('group/app', 7, {}), /sha/i, 'a head is mandatory');
+    await assert.rejects(() => client.mergeMrOnce('group/app', 7), /sha/i);
+    assert.equal(calls, 1, 'nothing is sent without a head');
+  } finally {
+    globalThis.fetch = realFetch;
+    globalThis.setTimeout = realTimeout;
+  }
 });

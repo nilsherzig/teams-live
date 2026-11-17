@@ -361,6 +361,24 @@ export class GitLabClient {
     );
   }
 
+  /**
+   * The merge behind the web "Merge" action: an immediate merge guarded by the
+   * head commit and nothing else. Source-branch removal and squash are left to
+   * the merge request's own settings (no parameter is sent), and auto-merge when
+   * the pipeline succeeds is never requested: a merge that GitLab's rules do not
+   * allow right now (approvals, pipeline, protected branch, conflicts, discussions)
+   * is refused, there is no way to override them from here. Sent once, never
+   * resent: a first attempt that landed must not be followed by a blind second
+   * one, so an unanswered request is read back by the caller instead.
+   */
+  async mergeMrOnce(project, iid, { sha }) {
+    if (!sha) throw new Error('mergeMrOnce: the expected head commit (sha) is required');
+    return await this.request(
+      `projects/${encodeURIComponent(project)}/merge_requests/${iid}/merge`,
+      { method: 'PUT', body: { sha }, retry: false }
+    );
+  }
+
   async rebaseMr(project, iid, { skipCi = false } = {}) {
     return await this.request(
       `projects/${encodeURIComponent(project)}/merge_requests/${iid}/rebase`,
