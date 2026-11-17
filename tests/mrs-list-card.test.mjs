@@ -281,6 +281,8 @@ test('/mrs card: a long list drops the images, a very long one falls back to the
 
 test('/mrs card: a list too long for the CI icons keeps the state glyphs and writes the CI status as an emoji', () => {
   const w = newWatcher();
+  // The forms of the card itself, without the author pictures (see mrs-list-avatars.test.mjs).
+  w.avatarService = null;
   const list = (n) =>
     Array.from({ length: n }, (_, i) =>
       mr('app', 400 + i, `Example change number ${i} with a reasonably descriptive title`, { head_pipeline: { status: 'success' } })

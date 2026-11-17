@@ -5246,6 +5246,8 @@ export class MergeRequestWatcher {
         statusEmoji,
         author: mention,
         authorPerson: authorPersons?.get(mr) || null,
+        // Every human author gets a picture slot (the neutral placeholder when no photo is known).
+        avatarSlot: Boolean(authorPersons) && Boolean(mr.author) && typeof mr.author === 'object' && !isBotMr(mr),
         jira: jiraTicket ? { key: jiraTicket.key, url: jiraTicket.url } : null,
         badges: [approvalText, rebaseText, autoMerge ? '🔀 auto-merge' : ''].filter(Boolean),
       };
@@ -5378,38 +5380,45 @@ export class MergeRequestWatcher {
   }
 
   /**
-   * Adds the author pictures to a list card that already fits, as many as the
-   * wire limit leaves room for, in row order (a row without one keeps its name
-   * line). Never costs the list anything else: no picture is traded for an
-   * emoji, a row or a fact. Each picture is placed by measuring the real card
-   * with it (an estimate had to be padded, which left photos out that fit), and
-   * one that does not fit is skipped so a later, smaller one can still use the
-   * room. Returns the message with pictures, or null when there is none to show.
+   * The /mrs list card with an author picture on every human row: a bot has
+   * none. The neutral placeholder is in the baseline of every human row, so a
+   * photo that is missing (no unique identity, not fetched yet, no picture,
+   * failed lookup) or that does not fit shows the placeholder, never a name-only
+   * row. Then each real photo, in row order, replaces its placeholder when the
+   * measured wire size still fits (one that does not is skipped, so a smaller
+   * one after it can still use the room). Returns the message, or null when
+   * there is no human row or the card does not fit even with placeholders only
+   * (the caller then tries a lighter form).
    */
-  withMrsListAvatars(listing, message, { markdown, images, ciIcons }) {
+  withMrsListAvatars(listing, { markdown, images, ciIcons }) {
     if (!this.avatarService || this.suppressAvatars) return null;
-    const rows = listing.sections.flatMap((section) => section.rows).filter((row) => row.authorPerson);
-    const photos = new Map(rows.map((row) => [row, this.avatarService.peek(row.authorPerson, { size: MRS_LIST_AVATAR_SIZE })]));
-    let best = null;
+    const rows = listing.sections.flatMap((section) => section.rows);
+    const slots = rows.filter((row) => row.avatarSlot);
+    for (const row of rows) delete row.avatar;
+    if (slots.length === 0) return null;
+    const build = () => {
+      const card = buildMrListCard({ title: listing.headline, sections: listing.sections, images, ciIcons, avatars: true });
+      const message = card ? makeRichMessage(markdown, card) : null;
+      return message && richMessageWireBytes(message) <= MAX_CARD_BYTES ? message : null;
+    };
     try {
-      // Real pictures first (row order); the neutral placeholder only takes what they leave.
-      for (const real of [true, false]) {
-        for (const row of rows) {
-          if (row.avatar) continue;
-          const photo = photos.get(row);
-          if (isImageDataUri(photo) !== real) continue;
-          row.avatar = real ? photo : PLACEHOLDER_AVATAR;
-          const card = buildMrListCard({ title: listing.headline, sections: listing.sections, images, ciIcons, avatars: true });
-          const candidate = card ? makeRichMessage(markdown, card) : null;
-          if (candidate && richMessageWireBytes(candidate) <= MAX_CARD_BYTES) best = candidate;
-          else delete row.avatar;
-        }
+      for (const row of slots) row.avatar = PLACEHOLDER_AVATAR;
+      let best = build();
+      if (!best) return null;
+      for (const row of slots) {
+        if (!row.authorPerson) continue;
+        const photo = this.avatarService.peek(row.authorPerson, { size: MRS_LIST_AVATAR_SIZE });
+        if (!isImageDataUri(photo)) continue;
+        row.avatar = photo;
+        const candidate = build();
+        if (candidate) best = candidate;
+        else row.avatar = PLACEHOLDER_AVATAR;
       }
+      return best;
     } catch (e) {
       log(`building the picture list card failed: ${e.message}`);
       return null;
     }
-    return best;
   }
 
   /**
@@ -5424,13 +5433,21 @@ export class MergeRequestWatcher {
     const markdown = this.renderMrsListing(listing);
     if (!this.richMessages || listing.text) return markdown;
     // Heaviest form first: state glyphs and CI status icons, then the glyphs only, then emojis.
-    for (const { images, ciIcons } of [{ images: true, ciIcons: true }, { images: true, ciIcons: false }, { images: false, ciIcons: false }]) {
+    const forms = [{ images: true, ciIcons: true }, { images: true, ciIcons: false }, { images: false, ciIcons: false }];
+    // Every human row has a picture (see withMrsListAvatars), so a lighter form is
+    // preferred to a row without one; only a list that cannot carry them goes on without.
+    for (const form of forms) {
+      const withPictures = this.withMrsListAvatars(listing, { markdown, ...form });
+      if (withPictures) return withPictures;
+    }
+    if (listing.sections.some((section) => section.rows.some((row) => row.avatarSlot))) {
+      log('the /mrs list is too large for an author picture on every human row, sending it without pictures');
+    }
+    for (const { images, ciIcons } of forms) {
       const message = this.richMessage(markdown, () =>
         buildMrListCard({ title: listing.headline, sections: listing.sections, images, ciIcons })
       );
-      if (isRichMessage(message)) {
-        return this.withMrsListAvatars(listing, message, { markdown, images, ciIcons }) || message;
-      }
+      if (isRichMessage(message)) return message;
     }
     return markdown;
   }
