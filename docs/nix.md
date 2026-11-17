@@ -167,7 +167,9 @@ out for what the entity is:
 Every card starts with a compact header: the logo of the service (GitLab, Jira,
 OpsGenie or Confluence, embedded as a small PNG, no image fetch) and a label
 such as "GitLab · Merge request" or "Jira · Bug". Below it come the title, a
-one-line subtitle, a few facts and the link buttons.
+one-line subtitle, a few facts and the link buttons. Each button carries the
+logo of the service it opens (for example the GitLab logo on "Open merge
+request" and the Jira logo on the Jira cross-link).
 
 Replies, in-place updates and edits of the author's message behave as with
 regular messages: channel replies stay in the thread, chat replies quote the

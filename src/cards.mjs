@@ -28,9 +28,13 @@ function factSet(facts) {
   return entries.length > 0 ? { type: 'FactSet', facts: entries, spacing: 'Small' } : null;
 }
 
-function openUrl(title, url) {
+/** Link button; `service` picks the logo shown next to the label. */
+function openUrl(title, url, service) {
   const target = str(url);
-  return target ? { type: 'Action.OpenUrl', title, url: target } : null;
+  if (!target) return null;
+  const action = { type: 'Action.OpenUrl', title, url: target };
+  if (SERVICE_ICONS[service]) action.iconUrl = SERVICE_ICONS[service];
+  return action;
 }
 
 const SERVICES = {
@@ -180,9 +184,9 @@ export function buildMergeRequestCard(mr) {
       ['Jira', mr.jira?.key],
     ].filter(Boolean),
     actions: [
-      openUrl('Open merge request', mr.url),
-      openUrl('Open pipeline', mr.pipeline?.url),
-      openUrl(mr.jira?.key ? `Open ${mr.jira.key}` : 'Open Jira issue', mr.jira?.url),
+      openUrl('Open merge request', mr.url, 'gitlab'),
+      openUrl('Open pipeline', mr.pipeline?.url, 'gitlab'),
+      openUrl(mr.jira?.key ? `Open ${mr.jira.key}` : 'Open Jira issue', mr.jira?.url, 'jira'),
     ],
     fallbackText: mr.fallbackText,
   });
@@ -207,9 +211,9 @@ export function buildJobCard(job) {
       ['Merge request', job.mr?.iid ? `!${job.mr.iid}${job.mr.title ? ` ${job.mr.title}` : ''}` : ''],
     ].filter(Boolean),
     actions: [
-      openUrl('Open job', job.url),
-      openUrl('Open pipeline', job.pipeline?.url),
-      openUrl('Open merge request', job.mr?.url),
+      openUrl('Open job', job.url, 'gitlab'),
+      openUrl('Open pipeline', job.pipeline?.url, 'gitlab'),
+      openUrl('Open merge request', job.mr?.url, 'gitlab'),
     ],
     fallbackText: job.fallbackText,
   });
@@ -231,7 +235,7 @@ export function buildPipelineCard(pipeline) {
       ['YAML errors', pipeline.yamlErrors],
       ['Merge request', pipeline.mr?.iid ? `!${pipeline.mr.iid}${pipeline.mr.title ? ` ${pipeline.mr.title}` : ''}` : ''],
     ].filter(Boolean),
-    actions: [openUrl('Open pipeline', pipeline.url), openUrl('Open merge request', pipeline.mr?.url)],
+    actions: [openUrl('Open pipeline', pipeline.url, 'gitlab'), openUrl('Open merge request', pipeline.mr?.url, 'gitlab')],
     fallbackText: pipeline.fallbackText,
   });
 }
@@ -258,7 +262,7 @@ export function buildJiraIssueCard(issue) {
       ['Priority', issue.priority || 'None'],
       ['Assignee', issue.assignee || 'Unassigned'],
     ],
-    actions: [openUrl(`Open ${issue.key}`, issue.url)],
+    actions: [openUrl(`Open ${issue.key}`, issue.url, 'jira')],
     fallbackText: issue.fallbackText,
   });
 }
@@ -283,7 +287,7 @@ export function buildOpsGenieAlertCard(alert) {
       ['Status', `${alert.status || 'open'}, ${alert.acknowledged ? 'acknowledged' : 'unacknowledged'}`],
       ['Owner', alert.owner || 'Unassigned'],
     ],
-    actions: [openUrl('Open alert', alert.url)],
+    actions: [openUrl('Open alert', alert.url, 'opsgenie')],
     fallbackText: alert.fallbackText,
   });
 }
@@ -300,7 +304,7 @@ export function buildConfluencePageCard(page) {
       ['Space', space],
       ['Last edited by', page.author],
     ],
-    actions: [openUrl('Open page', page.url)],
+    actions: [openUrl('Open page', page.url, 'confluence')],
     fallbackText: page.fallbackText,
   });
 }

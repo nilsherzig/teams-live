@@ -9,6 +9,7 @@ import {
   buildConfluencePageCard,
   ciStatusInfo,
 } from '../src/cards.mjs';
+import { SERVICE_ICONS } from '../src/card-icons.mjs';
 
 const items = (card) => card.body[0].items;
 const facts = (card) => Object.fromEntries(items(card).find((i) => i.type === 'FactSet').facts.map((f) => [f.title, f.value]));
@@ -275,4 +276,59 @@ test('every card has a compact branded header: logo plus "Service - kind"', () =
   assert.equal(byService.size, 4);
   for (const set of byService.values()) assert.equal(set.size, 1);
   assert.equal(new Set([...byService.values()].map((set) => [...set][0])).size, 4);
+});
+
+test('link buttons carry the logo of the service they open', () => {
+  const iconOf = (card) => Object.fromEntries((card.actions || []).map((a) => [a.title, a.iconUrl]));
+
+  const mr = buildMergeRequestCard({
+    ...baseMr,
+    state: 'open',
+    pipeline: { id: 7, status: 'success', url: 'https://gitlab.example.com/group/project/-/pipelines/7' },
+    jira: { key: 'EX-123', url: 'https://jira.example.com/browse/EX-123' },
+  });
+  assert.deepEqual(iconOf(mr), {
+    'Open merge request': SERVICE_ICONS.gitlab,
+    'Open pipeline': SERVICE_ICONS.gitlab,
+    'Open EX-123': SERVICE_ICONS.jira,
+  });
+
+  const job = buildJobCard({
+    id: 5,
+    name: 'build',
+    status: 'failed',
+    url: 'https://gitlab.example.com/-/jobs/5',
+    pipeline: { id: 9, url: 'https://gitlab.example.com/-/pipelines/9' },
+    mr: { iid: 42, url: baseMr.url },
+  });
+  assert.deepEqual(iconOf(job), {
+    'Open job': SERVICE_ICONS.gitlab,
+    'Open pipeline': SERVICE_ICONS.gitlab,
+    'Open merge request': SERVICE_ICONS.gitlab,
+  });
+
+  const pipeline = buildPipelineCard({
+    id: 9,
+    status: 'success',
+    url: 'https://gitlab.example.com/-/pipelines/9',
+    mr: { iid: 42, url: baseMr.url },
+  });
+  assert.deepEqual(iconOf(pipeline), {
+    'Open pipeline': SERVICE_ICONS.gitlab,
+    'Open merge request': SERVICE_ICONS.gitlab,
+  });
+
+  assert.deepEqual(iconOf(buildJiraIssueCard({ key: 'EX-1', status: 'Open', url: 'https://jira.example.com/browse/EX-1' })), {
+    'Open EX-1': SERVICE_ICONS.jira,
+  });
+  assert.deepEqual(iconOf(buildOpsGenieAlertCard({ message: 'M', url: 'https://opsgenie.example.com/alert/1' })), {
+    'Open alert': SERVICE_ICONS.opsgenie,
+  });
+  assert.deepEqual(iconOf(buildConfluencePageCard({ title: 'T', url: 'https://confluence.example.com/pages/1' })), {
+    'Open page': SERVICE_ICONS.confluence,
+  });
+
+  // A Jira cross-link without a key keeps a clear label and the Jira logo.
+  const noKey = buildMergeRequestCard({ ...baseMr, state: 'open', jira: { url: 'https://jira.example.com/browse/EX-9' } });
+  assert.deepEqual(iconOf(noKey), { 'Open merge request': SERVICE_ICONS.gitlab, 'Open Jira issue': SERVICE_ICONS.jira });
 });
