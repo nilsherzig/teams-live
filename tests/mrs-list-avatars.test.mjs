@@ -224,6 +224,25 @@ test('/mrs list: a list near the size limit gets as many pictures as fit and nev
   assert.deepEqual(rowsWithPicture, mrs.slice(0, rowsWithPicture.length).map((m) => String(m.iid)));
 });
 
+test('/mrs list: pictures are placed by their measured cost, so no further picture would still fit', async () => {
+  for (const count of [8, 9, 10, 11]) {
+    const w = newWatcher({ extra: 700 });
+    const mrs = Array.from({ length: count }, (_, i) =>
+      mr(500 + i, i % 2 ? BOB_GL : ALICE_GL, `Example change number ${i} with a reasonably descriptive title`)
+    );
+    w.getOrFetchMrsData = async () => mrs;
+    const message = await w.getOrFetchMrsText({});
+    assert.ok(isRichMessage(message));
+    const bytes = richMessageWireBytes(message);
+    assert.ok(bytes <= MAX_CARD_BYTES);
+    const pictures = personsIn(message);
+    assert.ok(pictures.length > 0 && pictures.length < count, `${count} rows: some, not all, have a picture`);
+    // One more picture costs its data URI plus the column markup (about 220 bytes): less than that is left.
+    const uriLength = pictures[0].url.length;
+    assert.ok(MAX_CARD_BYTES - bytes < uriLength + 230, `${count} rows: ${MAX_CARD_BYTES - bytes} bytes left would still fit another picture`);
+  }
+});
+
 test('/mrs list: a list that only fits without pictures stays as it was', async () => {
   const w = newWatcher({ extra: 5000 });
   const mrs = Array.from({ length: 14 }, (_, i) =>

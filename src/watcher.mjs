@@ -91,8 +91,6 @@ const MRS_LIST_AVATAR_SIZE = 'HR24x24';
 // The leaderboard podium (top three) shows larger pictures than the rows below it.
 const leaderboardAvatarSize = (index) => (index < PODIUM_SIZE ? 'HR32x32' : 'HR24x24');
 const MRS_LIST_AVATAR_DEADLINE_MS = 2800;
-const MRS_LIST_AVATAR_MARGIN = 150;
-const MRS_LIST_AVATAR_ROW_OVERHEAD = 260; // measured: the avatar column adds about 220 bytes beyond the data URI
 
 const GITLAB_EMOJI_TRANSLATIONS = {
   // Common Teams reaction names / slugs
@@ -5383,38 +5381,35 @@ export class MergeRequestWatcher {
    * Adds the author pictures to a list card that already fits, as many as the
    * wire limit leaves room for, in row order (a row without one keeps its name
    * line). Never costs the list anything else: no picture is traded for an
-   * emoji, a row or a fact, and the result is measured again. Returns the
-   * message with pictures, or null when there is none to show.
+   * emoji, a row or a fact. Each picture is placed by measuring the real card
+   * with it (an estimate had to be padded, which left photos out that fit), and
+   * one that does not fit is skipped so a later, smaller one can still use the
+   * room. Returns the message with pictures, or null when there is none to show.
    */
   withMrsListAvatars(listing, message, { markdown, images, ciIcons }) {
     if (!this.avatarService || this.suppressAvatars) return null;
-    let room = MAX_CARD_BYTES - richMessageWireBytes(message) - MRS_LIST_AVATAR_MARGIN;
-    let shown = 0;
     const rows = listing.sections.flatMap((section) => section.rows).filter((row) => row.authorPerson);
     const photos = new Map(rows.map((row) => [row, this.avatarService.peek(row.authorPerson, { size: MRS_LIST_AVATAR_SIZE })]));
-    // Real pictures first (row order); the neutral placeholder only takes what they leave.
-    for (const real of [true, false]) {
-      for (const row of rows) {
-        if (row.avatar) continue;
-        const photo = photos.get(row);
-        if (isImageDataUri(photo) !== real) continue;
-        const uri = real ? photo : PLACEHOLDER_AVATAR;
-        const cost = Math.ceil(uri.length * 1.1) + MRS_LIST_AVATAR_ROW_OVERHEAD;
-        if (cost > room) continue;
-        room -= cost;
-        row.avatar = uri;
-        shown += 1;
-      }
-    }
-    if (shown === 0) return null;
+    let best = null;
     try {
-      const card = buildMrListCard({ title: listing.headline, sections: listing.sections, images, ciIcons, avatars: true });
-      const withPictures = card ? makeRichMessage(markdown, card) : null;
-      return withPictures && richMessageWireBytes(withPictures) <= MAX_CARD_BYTES ? withPictures : null;
+      // Real pictures first (row order); the neutral placeholder only takes what they leave.
+      for (const real of [true, false]) {
+        for (const row of rows) {
+          if (row.avatar) continue;
+          const photo = photos.get(row);
+          if (isImageDataUri(photo) !== real) continue;
+          row.avatar = real ? photo : PLACEHOLDER_AVATAR;
+          const card = buildMrListCard({ title: listing.headline, sections: listing.sections, images, ciIcons, avatars: true });
+          const candidate = card ? makeRichMessage(markdown, card) : null;
+          if (candidate && richMessageWireBytes(candidate) <= MAX_CARD_BYTES) best = candidate;
+          else delete row.avatar;
+        }
+      }
     } catch (e) {
       log(`building the picture list card failed: ${e.message}`);
       return null;
     }
+    return best;
   }
 
   /**
