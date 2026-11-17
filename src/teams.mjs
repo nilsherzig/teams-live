@@ -721,7 +721,8 @@ export async function updateReply(conversationId, serverMessageId, originalMessa
       sendReplyOnce(conversationId, originalMessage, message, { noUpdate: true })
     );
     if (!sent.ok) return sent;
-    const id = sent.value?.messageId;
+    // Edits address a message by its server id (the timestamp); the client message id is only a fallback.
+    const id = sent.value?.timestamp ?? sent.value?.messageId;
     if (id) entries[index] = { id: String(id), signature };
     else entries.length = Math.min(entries.length, index);
   }

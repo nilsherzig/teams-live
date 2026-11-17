@@ -1,6 +1,6 @@
 import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { prepareRichMessages, richMessageWireBytes, setRichMessages, updateReply } from '../src/teams.mjs';
+import { prepareRichMessages, richMessageWireBytes, setRichMessages, transport, updateReply } from '../src/teams.mjs';
 import { MAX_CARD_BYTES, splitMarkdownForCards } from '../src/cards.mjs';
 import { useStubbedTransport } from './stub-transport.mjs';
 
@@ -9,7 +9,17 @@ const ORIGINAL = { messageId: '1700000000000', from: 'Alice Example', fromMri: '
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 
 const calls = useStubbedTransport(beforeEach, afterEach);
-beforeEach(() => setRichMessages(true));
+// Teams answers a send with a client message id and a different server id (the timestamp): edits must use the latter.
+const clientId = (n) => `client-${n}`;
+const serverId = (n) => `17000000${String(n).padStart(5, '0')}`;
+beforeEach(() => {
+  setRichMessages(true);
+  transport.sendMessage = async (conversationId, html, options) => {
+    calls.sent.push({ conversationId, html, options });
+    const n = calls.sent.length;
+    return { ok: true, value: { id: clientId(n), messageId: clientId(n), timestamp: serverId(n) } };
+  };
+});
 afterEach(() => setRichMessages(false));
 
 const rows = (count, width, prefix = 'row') => Array.from({ length: count }, (_, i) => `- ${prefix} ${i} ${'w'.repeat(width)}`).join('\n');
@@ -82,10 +92,12 @@ test('repeated edits update the overflow cards in place instead of reposting the
   // Changed text: the changed overflow cards are edited in place, nothing is posted again.
   await updateReply(CONV, '1700000000005', ORIGINAL, `${text}\n- extra row`);
   assert.equal(calls.sent.length, overflow);
-  const sentIds = new Set(calls.sent.map((_, i) => `18000000000${i + 1}`));
+  const sentIds = new Set(calls.sent.map((_, i) => serverId(i + 1)));
   const editedIds = calls.edited.slice(2).map((c) => c.messageId);
   assert.ok(editedIds.includes('1700000000005'));
-  assert.ok(editedIds.some((id) => sentIds.has(id)), 'an overflow card was edited in place');
+  const overflowEdits = editedIds.filter((id) => id !== '1700000000005');
+  assert.ok(overflowEdits.length > 0, 'an overflow card was edited in place');
+  for (const id of overflowEdits) assert.ok(sentIds.has(id), `edit uses the server id (${id}), not the client message id`);
 });
 
 test('a longer text only posts the additional overflow cards', async () => {
