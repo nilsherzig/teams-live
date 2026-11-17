@@ -197,7 +197,7 @@ test('/mrs list: a list near the size limit gets as many pictures as fit and nev
 });
 
 test('/mrs list: a list that only fits without pictures stays as it was', async () => {
-  const w = newWatcher({ extra: 2300 });
+  const w = newWatcher({ extra: 5000 });
   const mrs = Array.from({ length: 14 }, (_, i) =>
     mr(300 + i, ALICE_GL, `Example change number ${i} with a reasonably descriptive title`)
   );
