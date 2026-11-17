@@ -193,8 +193,12 @@ test('MR card prefetches and shows the author with the picture, fetching it once
   await watcher.prefetchAvatars(watcher.mrCardPeopleData(mr, details));
   assert.deepEqual(fetched, [ALICE]);
   const row = authorOf(watcher.buildMrCard(mr, details));
-  assert.deepEqual(row.columns.map((c) => c.items[0].text ?? c.items[0].altText), ['Author', 'Alice Example', 'Alice Example']);
-  assert.match(row.columns[1].items[0].url, /^data:image\/jpeg;base64,/);
+  assert.equal(row.columns[0].items[0].text, 'Author');
+  assert.equal(row.columns[1].width, 'stretch', 'one stretch value column');
+  const [line, ...more] = row.columns[1].items;
+  assert.equal(more.length, 0, 'one person, one line');
+  assert.deepEqual(line.columns.map((c) => c.items[0].text ?? c.items[0].altText), ['Alice Example', 'Alice Example']);
+  assert.match(line.columns[0].items[0].url, /^data:image\/jpeg;base64,/);
 });
 
 test('MR card author: list entry object, then the last seen one when a refresh has none', async () => {
