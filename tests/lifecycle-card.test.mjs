@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { setRichMessages, transport } from '../src/teams.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 import { LIFECYCLE_KINDS, buildLifecycleCard, lifecycleMarkdown } from '../src/lifecycle-card.mjs';
-import { ADAPTIVE_CARD_VERSION } from '../src/cards.mjs';
+import { ADAPTIVE_CARD_VERSION, MAX_CARD_BYTES } from '../src/cards.mjs';
+import { SERVICE_ICONS } from '../src/card-icons.mjs';
+import { LIFECYCLE_ICONS, LIFECYCLE_ICONS_PX } from '../src/lifecycle-icons.mjs';
+import { richMessageWireBytes, makeRichMessage } from '../src/teams.mjs';
 
 beforeEach(() => setRichMessages(false));
 afterEach(() => setRichMessages(false));
@@ -44,6 +47,16 @@ const textsIn = (node) => {
   if (node.type === 'FactSet') return node.facts.flatMap((f) => [f.title, f.value]);
   return [...(node.body || []), ...(node.items || []), ...(node.columns || [])].flatMap(textsIn);
 };
+// The fact grid of a card: one row (ColumnSet) per fact, `{ icon, label, value }`. The warning block keeps its own FactSet.
+const gridRows = (card) =>
+  find(card, (n) => n.type === 'Container' && !n.style)
+    .flatMap((c) => c.items || [])
+    .filter((n) => n.type === 'ColumnSet')
+    .map((row) => {
+      const [icon, label, value] = row.columns;
+      return { icon: icon.items[0] || null, label: label.items[0].text, value: value.items[0].text, row };
+    });
+const gridFacts = (card) => Object.fromEntries(gridRows(card).map((r) => [r.label, r.value]));
 const find = (node, pred) => {
   if (!node || typeof node !== 'object') return [];
   const here = pred(node) ? [node] : [];
@@ -119,12 +132,11 @@ test('last-will card is red: attention container, red heading and icon, STOPPED 
 
 test('cards keep every fact of the regular message, code spans shown plainly, markdown escaped', () => {
   const card = buildLifecycleCard({ kind: 'startup', facts: STARTUP_FACTS });
-  const [set] = find(card, (n) => n.type === 'FactSet');
   assert.deepEqual(
-    set.facts.map((f) => f.title),
+    gridRows(card).map((r) => r.label),
     STARTUP_FACTS.map(([label]) => label)
   );
-  const byTitle = Object.fromEntries(set.facts.map((f) => [f.title, f.value]));
+  const byTitle = gridFacts(card);
   assert.equal(byTitle.Host, 'bot-host');
   assert.equal(byTitle.Runtime, 'Node.js v22.1.0 (linux x64)');
   // An underscore in a value is not read as emphasis.
@@ -152,8 +164,8 @@ test('token override warning becomes a warning container with the same informati
 test('the card is a dedicated layout, not the generic markdown wrapper', () => {
   const card = buildLifecycleCard({ kind: 'shutdown', facts: SHUTDOWN_FACTS });
   assert.ok(find(card, (n) => n.type === 'ColumnSet').length >= 1);
-  // No "service · kind" header of the entity cards and no buttons.
-  assert.equal(find(card, (n) => n.type === 'Image').length, 0);
+  // No "service · kind" header of the entity cards and no buttons; the only images are the fact icons.
+  assert.equal(find(card, (n) => n.type === 'Image').length, SHUTDOWN_FACTS.length);
   assert.equal(card.actions, undefined);
 });
 
@@ -182,6 +194,81 @@ test('the header has two columns only; the status word sits under the title (pho
     assert.equal(card.body[0].style, LIFECYCLE_KINDS[kind].style);
     assert.equal(set.columns.filter((c) => c.style).length, 0);
   }
+});
+
+test('fact rows: a 16px icon slot, the bold label, the value; real logos for services, neutral glyphs otherwise', () => {
+  const card = buildLifecycleCard({ kind: 'startup', facts: STARTUP_FACTS });
+  const rows = gridRows(card);
+  assert.equal(rows.length, STARTUP_FACTS.length);
+  const px = `${LIFECYCLE_ICONS_PX}px`;
+  assert.equal(px, '16px');
+  for (const { row, icon, label } of rows) {
+    // Same three columns in every row, so labels and values line up.
+    assert.deepEqual(
+      row.columns.map((c) => c.width),
+      [px, 5, 7],
+      label
+    );
+    assert.equal(row.columns[1].items[0].weight, 'Bolder', label);
+    assert.ok(icon, `${label} has an icon`);
+    assert.equal(icon.type, 'Image');
+    assert.equal(icon.width, px);
+    assert.equal(icon.height, px);
+    assert.match(icon.url, /^data:image\/png;base64,/);
+    assert.ok(icon.altText, `${label} icon has alt text`);
+  }
+  const iconOf = Object.fromEntries(rows.map((r) => [r.label, r.icon.url]));
+  // Real logos of the services, reused from the entity cards where they exist.
+  assert.equal(iconOf.GitLab, SERVICE_ICONS.gitlab);
+  assert.equal(iconOf.Jira, SERVICE_ICONS.jira);
+  assert.equal(iconOf.Runtime, LIFECYCLE_ICONS.node.url);
+  assert.equal(iconOf['Home Assistant (HR works)'], LIFECYCLE_ICONS.homeassistant.url);
+  // The glyphs are all different, so the rows are told apart at a glance.
+  const glyphs = ['Host', 'PID', 'Memory', 'Started', 'Watched Conversations', 'Precompute Cache'].map((l) => iconOf[l]);
+  assert.equal(new Set(glyphs).size, glyphs.length);
+  assert.equal(new Set(Object.values(iconOf)).size, Object.keys(iconOf).length, 'every row has its own icon');
+});
+
+test('fact rows: the shutdown facts have icons too, and no emoji sneaks into the grid', () => {
+  const card = buildLifecycleCard({ kind: 'shutdown', facts: SHUTDOWN_FACTS });
+  for (const { icon, label, value } of gridRows(card)) {
+    assert.ok(icon, `${label} has an icon`);
+    assert.doesNotMatch(`${label} ${value}`, /\p{Extended_Pictographic}/u);
+  }
+});
+
+test('fact rows: an unknown label keeps an empty icon slot, so the labels stay aligned', () => {
+  const card = buildLifecycleCard({ kind: 'startup', facts: [['Host', '`h`'], ['Something New', 'x']] });
+  const rows = gridRows(card);
+  assert.ok(rows[0].icon);
+  assert.equal(rows[1].icon, null);
+  assert.deepEqual(
+    rows[1].row.columns.map((c) => c.width),
+    ['16px', 5, 7]
+  );
+  assert.equal(rows[1].label, 'Something New');
+});
+
+test('fact rows: an empty value or label is left out, as in the FactSet before', () => {
+  const card = buildLifecycleCard({ kind: 'startup', facts: [['Host', ''], ['', 'x'], ['PID', '`1`']] });
+  assert.deepEqual(gridFacts(card), { PID: '1' });
+  assert.equal(find(buildLifecycleCard({ kind: 'startup', facts: [] }), (n) => n.type === 'Image').length, 0);
+});
+
+test('the lifecycle cards with icons keep headroom below the card size budget', () => {
+  for (const [kind, facts, notice] of [
+    ['startup', STARTUP_FACTS, NOTICE],
+    ['shutdown', SHUTDOWN_FACTS, null],
+  ]) {
+    const card = buildLifecycleCard({ kind, facts, notice });
+    const bytes = richMessageWireBytes(makeRichMessage(lifecycleMarkdown({ kind, facts, notice }), card));
+    // The GitLab and Jira logos reused from card-icons.mjs dominate the size; keep room for a longer notice or more facts.
+    assert.ok(bytes <= MAX_CARD_BYTES - 3000, `${kind}: ${bytes} bytes`);
+  }
+});
+
+test('the plain messages are unchanged by the icons: no image, no card data', () => {
+  assert.doesNotMatch(lifecycleMarkdown({ kind: 'startup', facts: STARTUP_FACTS, notice: NOTICE }), /data:image|!\[/);
 });
 
 // ---------------------------------------------------------------------------
@@ -245,9 +332,8 @@ test('rich mode: startup is the green lifecycle card with the regular text as fa
   const [call] = await announce(watcher, 'sendStartupAnnouncement');
   const card = cardOf(call[2]);
   assert.equal(card.body[0].style, 'good');
-  const [set] = find(card, (n) => n.type === 'FactSet');
   assert.deepEqual(
-    set.facts.map((f) => f.title),
+    gridRows(card).map((r) => r.label),
     ['Host', 'PID', 'Runtime', 'Memory', 'Started', 'Watched Conversations', 'GitLab', 'Jira', 'Home Assistant (HR works)', 'Precompute Cache']
   );
   assert.equal(find(card, (n) => n.style === 'warning').length, 0);
@@ -265,8 +351,7 @@ test('rich mode: shutdown is the red last-will card with signal and uptime', asy
   const [call] = await announce(watcher, 'sendShutdownAnnouncement', 'SIGTERM');
   const card = cardOf(call[2]);
   assert.equal(card.body[0].style, 'attention');
-  const [set] = find(card, (n) => n.type === 'FactSet');
-  const facts = Object.fromEntries(set.facts.map((f) => [f.title, f.value]));
+  const facts = gridFacts(card);
   assert.equal(facts.Signal, 'SIGTERM');
   assert.ok(facts.Uptime);
   assert.deepEqual(Object.keys(facts), ['Host', 'PID', 'Signal', 'Uptime', 'Time']);

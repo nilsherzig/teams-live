@@ -16,10 +16,18 @@
 // colored explicitly (`Good` / `Attention`), the status icon is an emoji and
 // the status line has a word ("ONLINE", "STOPPED").
 //
+// Each fact row has a small icon in front of its label (the real logo for a
+// service, a neutral gray glyph for the rest), so the grid reads at a glance.
+// The icon never carries the meaning alone: the label and the value are always
+// there. A fact without a known icon keeps an empty slot, so the labels stay
+// aligned.
+//
 // This module only depends on the card constants, so it stays independent of
 // the entity builders in cards.mjs.
 
 import { ADAPTIVE_CARD_SCHEMA, ADAPTIVE_CARD_VERSION } from './cards.mjs';
+import { SERVICE_ICONS } from './card-icons.mjs';
+import { LIFECYCLE_ICONS, LIFECYCLE_ICONS_PX } from './lifecycle-icons.mjs';
 
 export const LIFECYCLE_KINDS = Object.freeze({
   startup: Object.freeze({
@@ -81,6 +89,57 @@ function factSet(facts) {
   return entries.length > 0 ? { type: 'FactSet', facts: entries, spacing: 'Medium' } : null;
 }
 
+const px = `${LIFECYCLE_ICONS_PX}px`;
+
+/** The icon of a fact label: a service logo or a glyph of lifecycle-icons.mjs; null for an unknown label. */
+const FACT_ICONS = Object.freeze({
+  Host: LIFECYCLE_ICONS.host,
+  PID: LIFECYCLE_ICONS.pid,
+  Runtime: LIFECYCLE_ICONS.node,
+  Memory: LIFECYCLE_ICONS.memory,
+  Started: LIFECYCLE_ICONS.started,
+  'Watched Conversations': LIFECYCLE_ICONS.conversations,
+  GitLab: { alt: 'GitLab', url: SERVICE_ICONS.gitlab },
+  Jira: { alt: 'Jira', url: SERVICE_ICONS.jira },
+  'Home Assistant (HR works)': LIFECYCLE_ICONS.homeassistant,
+  'Precompute Cache': LIFECYCLE_ICONS.cache,
+  Signal: LIFECYCLE_ICONS.signal,
+  Uptime: LIFECYCLE_ICONS.uptime,
+  Time: LIFECYCLE_ICONS.time,
+});
+
+/**
+ * One fact as a row of three columns: a fixed 16px icon slot, the label and the
+ * value. The label and value columns are weighted (not `auto`) so every row
+ * lines up, and both wrap, so a long value or label stays inside a 308px phone
+ * card.
+ */
+function factRow({ label, value, icon }) {
+  return {
+    type: 'ColumnSet',
+    spacing: 'Small',
+    columns: [
+      {
+        type: 'Column',
+        width: px,
+        verticalContentAlignment: 'Center',
+        items: icon ? [{ type: 'Image', url: icon.url, altText: icon.alt, width: px, height: px }] : [],
+      },
+      { type: 'Column', width: 5, items: [textBlock(label, { weight: 'Bolder', spacing: 'None' })] },
+      { type: 'Column', width: 7, items: [textBlock(value, { spacing: 'None' })] },
+    ],
+  };
+}
+
+/** The fact grid of the card body: one icon row per fact, as one container so the grid keeps its spacing. */
+function factGrid(facts) {
+  const rows = facts
+    .map(([label, value]) => ({ label: cardText(label), value: cardText(value), icon: FACT_ICONS[str(label)] }))
+    .filter((f) => f.label && f.value)
+    .map(factRow);
+  return rows.length > 0 ? { type: 'Container', spacing: 'Medium', items: rows } : null;
+}
+
 /**
  * Icon beside the heading, with the status word as a compact second line under
  * it. Two columns only (auto icon, stretch text): a third column for the
@@ -130,7 +189,7 @@ function noticeContainer(notice) {
  */
 export function buildLifecycleCard({ kind, facts = [], notice = null, fallbackText } = {}) {
   const spec = kindOf(kind);
-  const items = [headerRow(spec), factSet(facts), notice ? noticeContainer(notice) : null].filter(Boolean);
+  const items = [headerRow(spec), factGrid(facts), notice ? noticeContainer(notice) : null].filter(Boolean);
   const card = {
     $schema: ADAPTIVE_CARD_SCHEMA,
     type: 'AdaptiveCard',
