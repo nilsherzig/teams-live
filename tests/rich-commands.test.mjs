@@ -100,7 +100,7 @@ test('MR status card: API approval and auto-merge data reach the initial card, d
     watcher.handleCiStatusComment(entry(), mrRef(), { id: 7, status: 'success' }, openDetails())
   );
   const facts = factsOf(cardOf(call.args[2]));
-  assert.equal(facts.Approval, '⏳ Not approved yet');
+  assert.equal(facts.Approval, 'Not approved yet');
   assert.equal(facts['Auto-merge'], '⏸️ Disabled');
   assert.equal(facts.Pipeline, 'Passed (#7)');
   assert.equal(facts.Rebase, undefined);
@@ -117,7 +117,7 @@ test('MR status card: approved without approver names and enabled auto-merge', a
     )
   );
   const facts = factsOf(cardOf(call.args[2]));
-  assert.equal(facts.Approval, '\u{1F44D} Approved');
+  assert.equal(facts.Approval, 'Approved');
   assert.equal(facts['Auto-merge'], '\u{1F500} Enabled by Alice Example');
 });
 
@@ -161,7 +161,7 @@ test('MR status card: in-place updates carry the new approval, auto-merge and re
   // Resolved: the line is gone, approval and auto-merge changed in place.
   const f = factsOf(resolved);
   assert.equal(f.Rebase, undefined);
-  assert.equal(f.Approval, '\u{1F44D} By Alice Example');
+  assert.equal(f.Approval, 'Approved Alice Example');
   assert.equal(f['Auto-merge'], '\u{1F500} Enabled');
 });
 
@@ -182,7 +182,7 @@ test('MR rebase comment: required keeps the reason, resolved is conflict-free an
   assert.equal(factsOf(required).Rebase, '⚠️ Required: behind target branch (status: need_rebase)');
   assert.equal(factsOf(resolved).Status, 'Open ✅ Rebased, up to date and conflict-free');
   assert.equal(factsOf(resolved).Rebase, undefined);
-  assert.equal(factsOf(resolved).Approval, '\u{1F44D} Approved');
+  assert.equal(factsOf(resolved).Approval, 'Approved');
 });
 
 test('MR merged and closed cards keep what is known', async () => {
@@ -196,7 +196,7 @@ test('MR merged and closed cards keep what is known', async () => {
   );
   const mergedFacts = factsOf(cardOf(merged[0].args[2]));
   assert.equal(mergedFacts.Status, 'Merged');
-  assert.equal(mergedFacts.Approval, '\u{1F44D} By Alice Example');
+  assert.equal(mergedFacts.Approval, 'Approved Alice Example');
   assert.equal(mergedFacts['Auto-merge'], '\u{1F500} Enabled');
 
   const closed = await run(() =>
@@ -209,7 +209,7 @@ test('MR merged and closed cards keep what is known', async () => {
   );
   const closedFacts = factsOf(cardOf(closed[0].args[2]));
   assert.equal(closedFacts.Status, 'Closed');
-  assert.equal(closedFacts.Approval, '\u{1F44D} Approved');
+  assert.equal(closedFacts.Approval, 'Approved');
   assert.equal(closedFacts['Auto-merge'], '\u{1F500} Enabled');
 });
 
