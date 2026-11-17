@@ -18,6 +18,7 @@
 // opens a capability-link confirmation page: it never approves by itself.
 
 import { SERVICE_ICONS } from './card-icons.mjs';
+import { GITLAB_ICONS } from './gitlab-icons.mjs';
 
 export const ADAPTIVE_CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json';
 export const ADAPTIVE_CARD_VERSION = '1.4';
@@ -86,12 +87,23 @@ const EMOJI_BRANDS = {
 };
 
 /** Compact integration header: small service logo (or emoji) plus "Service - kind". */
-function header(service, kind) {
+function header(service, kind, glyph = null) {
   const emojiBrand = EMOJI_BRANDS[service];
   const name = emojiBrand ? emojiBrand.name : SERVICES[service];
   const lead = emojiBrand
     ? textBlock(emojiBrand.emoji, { size: 'Small' })
     : { type: 'Image', url: SERVICE_ICONS[service], altText: name, width: '16px', height: '16px' };
+  const glyphColumn =
+    glyph && GITLAB_ICONS[glyph.icon]
+      ? [
+          {
+            type: 'Column',
+            width: 'auto',
+            verticalContentAlignment: 'Center',
+            items: [{ type: 'Image', url: GITLAB_ICONS[glyph.icon], altText: glyph.label, width: '16px', height: '16px' }],
+          },
+        ]
+      : [];
   return {
     type: 'ColumnSet',
     columns: [
@@ -101,6 +113,7 @@ function header(service, kind) {
         verticalContentAlignment: 'Center',
         items: [lead],
       },
+      ...glyphColumn,
       {
         type: 'Column',
         width: 'stretch',
@@ -122,6 +135,7 @@ function header(service, kind) {
 function assembleCard({
   service,
   kind,
+  glyph = null,
   style = 'emphasis',
   title,
   titleUrl,
@@ -134,7 +148,7 @@ function assembleCard({
   fallbackText,
 }) {
   const items = [
-    header(service, kind),
+    header(service, kind, glyph),
     textBlock(mdLink(title || subtitle || 'Update', titleUrl), { weight: 'Bolder', size: 'Medium' }),
     subtitle && title ? textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }) : null,
     diffStatsRow(stats),
@@ -227,6 +241,34 @@ export function ciStatusEmoji(status) {
     default:
       return '\ud83d\udd39';
   }
+}
+
+/** GitLab status icon (gitlab-icons.mjs) for a pipeline/job status, or null. */
+export function ciStatusGlyph(status) {
+  const s = str(status).toLowerCase();
+  const icon = {
+    success: 'status_success',
+    passed: 'status_success',
+    failed: 'status_failed',
+    running: 'status_running',
+    pending: 'status_pending',
+    waiting_for_resource: 'status_pending',
+    created: 'status_created',
+    preparing: 'status_created',
+    scheduled: 'status_created',
+    canceled: 'status_canceled',
+    cancelled: 'status_canceled',
+    skipped: 'status_skipped',
+    manual: 'status_manual',
+  }[s];
+  return icon ? { icon, label: `Pipeline ${s.replace(/_/g, ' ')}` } : null;
+}
+
+/** GitLab merge request state icon: open, merged or closed. */
+function mrGlyph(state) {
+  if (state === 'merged') return { icon: 'merge', label: 'Merged' };
+  if (state === 'closed') return { icon: 'merge-request-close', label: 'Closed' };
+  return { icon: 'merge-request-open', label: 'Open' };
 }
 
 /** Maps a GitLab pipeline/job status to a label and a container style. */
@@ -353,6 +395,7 @@ export function buildMergeRequestCard(mr) {
   return assembleCard({
     service: 'gitlab',
     kind: 'Merge request',
+    glyph: mrGlyph(state),
     style,
     title: mr.title || `Merge request !${mr.iid}`,
     titleUrl: mr.url,
@@ -378,6 +421,7 @@ export function buildJobCard(job) {
   return assembleCard({
     service: 'gitlab',
     kind: 'CI job',
+    glyph: ciStatusGlyph(job.status),
     style: info.style,
     title: job.name || `Job #${job.id}`,
     titleUrl: job.url,
@@ -401,6 +445,7 @@ export function buildPipelineCard(pipeline) {
   return assembleCard({
     service: 'gitlab',
     kind: 'Pipeline',
+    glyph: ciStatusGlyph(pipeline.status) || { icon: 'pipeline', label: 'Pipeline' },
     style: info.style,
     title: `Pipeline #${pipeline.id}`,
     titleUrl: pipeline.url,

@@ -22,7 +22,8 @@ const rawFacts = (card) => Object.fromEntries(items(card).find((i) => i.type ===
 const facts = (card) => Object.fromEntries(Object.entries(rawFacts(card)).map(([k, v]) => [k, plain(v)]));
 const style = (card) => card.body[0].style;
 const header = (card) => items(card)[0];
-const headerLabel = (card) => header(card).columns[1].items[0].text;
+const headerLabel = (card) => header(card).columns.at(-1).items[0].text;
+const headerGlyph = (card) => (header(card).columns.length === 3 ? header(card).columns[1].items[0] : null);
 const headerIcon = (card) => header(card).columns[0].items[0];
 const rawTitle = (card) => items(card)[1].text;
 const mainTitle = (card) => plain(rawTitle(card));
@@ -664,4 +665,50 @@ test('buildMarkdownCard: a nested bullet without an emoji gets an explicit sub-b
   const card = buildMarkdownCard(['Head', '', '- parent', '  - child'].join('\n'), { service: 'gitlab', kind: 'x' });
   const nested = bodyItems(card).find(isNestedRow);
   assert.equal(nested.columns[1].items[0].text, '\u25e6 child');
+});
+
+test('GitLab cards carry a state icon from the GitLab icon set next to the logo; emojis and labels stay', () => {
+  const dataPng = /^data:image\/png;base64,iVBOR/;
+  const mrCases = [
+    ['open', 'Open'],
+    ['rebase', 'Open'],
+    ['rebased', 'Open'],
+    ['merged', 'Merged'],
+    ['closed', 'Closed'],
+  ];
+  const glyphs = new Map();
+  for (const [state, alt] of mrCases) {
+    const card = buildMergeRequestCard({ ...baseMr, state });
+    assertValidCard(card);
+    const glyph = headerGlyph(card);
+    assert.equal(glyph.type, 'Image');
+    assert.equal(glyph.altText, alt);
+    assert.match(glyph.url, dataPng);
+    assert.ok(glyph.url.length < 10_000);
+    assert.equal(glyph.width, '16px');
+    glyphs.set(alt, glyph.url);
+    assert.equal(headerIcon(card).altText, 'GitLab', 'the brand logo stays first');
+    assert.equal(headerLabel(card), 'GitLab \u00b7 Merge request', 'the readable label stays');
+  }
+  assert.equal(new Set(glyphs.values()).size, 3, 'open, merged and closed look different');
+
+  const statuses = ['success', 'failed', 'running', 'pending', 'created', 'canceled', 'skipped', 'manual', 'waiting_for_resource'];
+  const seen = new Set();
+  for (const status of statuses) {
+    for (const card of [buildPipelineCard({ id: 9, status, project: 'group/project' }), buildJobCard({ id: 5, name: 'b', status })]) {
+      const glyph = headerGlyph(card);
+      assert.match(glyph.url, dataPng, status);
+      assert.match(glyph.altText, /^Pipeline /);
+      seen.add(glyph.url);
+    }
+  }
+  assert.ok(seen.size >= 7);
+  // The emoji status line is untouched.
+  const failed = buildPipelineCard({ id: 9, status: 'failed', project: 'group/project' });
+  assert.match(JSON.stringify(failed), /\u274c Failed/);
+
+  // An unknown job status has no status icon (the pipeline card falls back to the pipeline icon); other services have none.
+  assert.equal(headerGlyph(buildJobCard({ id: 5, name: 'b', status: 'weird' })), null);
+  assert.match(headerGlyph(buildPipelineCard({ id: 9, status: 'weird' })).altText, /^Pipeline$/);
+  assert.equal(headerGlyph(buildJiraIssueCard({ key: 'EX-1', summary: 'S', issueType: 'Story', status: 'Open' })), null);
 });
