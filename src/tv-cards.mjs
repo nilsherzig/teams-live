@@ -76,9 +76,12 @@ export const TV_AUDIO_TITLES = Object.freeze({
 
 // ---------------------------------------------------------------- artwork
 
-/** Pixel width asked of the artwork service: the picture is shown at 96 px (3x for sharpness). */
-const ARTWORK_WIDTH = 288;
-export const ARTWORK_DISPLAY_PX = Object.freeze({ width: 96, height: 54 });
+/**
+ * Pixel width asked of the artwork service. The picture is shown at the full width of the
+ * card (about 310 px on a phone, up to a few hundred on a desktop), so 960 px stays sharp
+ * at 3x. It is fetched by URL, never embedded: the card itself carries only the short link.
+ */
+const ARTWORK_WIDTH = 960;
 const MAX_ARTWORK_URL = 300;
 
 // The only hosts a programme picture may come from: the picture CDNs of the EPG sources.
@@ -154,45 +157,44 @@ function logoColumn(logo, name) {
   return { type: 'Column', width: 'auto', verticalContentAlignment: 'Center', items: [{ ...imageOf(logo), horizontalAlignment: 'Right' }] };
 }
 
+/** The width of the progress bar in cells: short enough to never wrap or clip on a phone. */
+const PROGRESS_CELLS = 8;
+
 /**
- * The running programme: title first, then the time with progress. A picture sits
- * beside it when there is one and the channel logo (`trailing`, a Column) at the
- * right edge, so the programme row doubles as the channel's heading.
+ * The running programme, laid out for a phone first. From top to bottom:
+ * - the picture at the full width of the card (16:9 as the source delivers it),
+ * - an info row: "NOW" with the time on a line of its own, the title and the subtitle on
+ *   the left, the channel logo (`trailing`, a Column) at the right edge, so the row doubles
+ *   as the channel's heading,
+ * - the progress on a line of its own that never wraps (`wrap: false`): a short bar and
+ *   the percentage, outside every column so it has the whole width.
+ * A programme without a usable picture simply starts at the info row (no empty frame).
  */
 function nowRow(programme, { now, timeZone, artwork }, trailing = null) {
   const pct = now ? progressPercent(programme, now) : null;
   const lines = [
-    textBlock(`NOW · ${programmeLine(programme, timeZone)}${pct === null ? '' : `  ${progressBar(pct, 8)} ${pct}%`}`, {
-      size: 'Small',
-      weight: 'Bolder',
-      isSubtle: true,
-      spacing: 'None',
-    }),
+    textBlock(`NOW · ${programmeLine(programme, timeZone)}`, { size: 'Small', weight: 'Bolder', isSubtle: true, spacing: 'None', wrap: false }),
     textBlock(cardText(programme.title), { weight: 'Bolder', spacing: 'None' }),
   ];
   if (programme.subtitle) lines.push(textBlock(cardText(programme.subtitle), { size: 'Small', isSubtle: true, spacing: 'None' }));
+  const items = [];
   const picture = artwork ? safeArtworkUrl(programme.image) : null;
-  if (!picture && !trailing) return { type: 'Container', spacing: 'Small', items: lines };
-  const columns = [];
   if (picture) {
-    columns.push({
-      type: 'Column',
-      width: 'auto',
-      items: [
-        {
-          type: 'Image',
-          url: picture,
-          altText: programme.title ? `Picture of ${cardText(programme.title)}` : 'Programme picture',
-          width: `${ARTWORK_DISPLAY_PX.width}px`,
-          height: `${ARTWORK_DISPLAY_PX.height}px`,
-          style: 'Default',
-        },
-      ],
+    items.push({
+      type: 'Image',
+      url: picture,
+      altText: programme.title ? `Picture of ${cardText(programme.title)}` : 'Programme picture',
+      size: 'Stretch',
+      style: 'Default',
     });
   }
-  columns.push({ type: 'Column', width: 'stretch', items: lines });
+  const columns = [{ type: 'Column', width: 'stretch', items: lines }];
   if (trailing) columns.push(trailing);
-  return { type: 'ColumnSet', spacing: 'Small', columns };
+  items.push({ type: 'ColumnSet', spacing: picture ? 'Small' : 'None', columns });
+  if (pct !== null) {
+    items.push(textBlock(`${progressBar(pct, PROGRESS_CELLS)} ${pct}%`, { size: 'Small', isSubtle: true, spacing: 'Small', wrap: false }));
+  }
+  return { type: 'Container', spacing: 'Small', items };
 }
 
 /** The next programme: one line, the start time first so the hierarchy reads time, then title. */
@@ -369,9 +371,9 @@ export function formatProgrammeText({ now, timezone, channels }) {
 
 /**
  * Adaptive Card of `/tv program`: one block per channel with no heading row of its
- * own. The running programme (its picture on the left when the source has one,
- * "NOW", title and subtitle in the middle) carries the channel logo at the right
- * edge, then the next programme follows. A channel whose source failed, or that
+ * own. The running programme (its picture at the full card width when the source has
+ * one, then "NOW" with the time, title and subtitle and the channel logo at the right
+ * edge, then the progress on a line of its own) comes first, then the next programme. A channel whose source failed, or that
  * has nothing on now, says so in a row that carries the logo the same way.
  */
 export function buildTvProgrammeCard({ now, timezone, channels }, { artwork = true } = {}) {

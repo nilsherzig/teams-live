@@ -43,12 +43,12 @@ const wire = (markdown, card) => richMessageWireBytes(makeRichMessage(markdown, 
 test('safeArtworkUrl: only https URLs of the EPG picture hosts, rebuilt without the source query', () => {
   assert.equal(
     safeArtworkUrl(ART_ARD),
-    'https://programm-api.ard.de/images/MjAyNi0wMS0xNQ==/64ff2f19fca76d00089981f2_1694445337959.jpg?w=288'
+    'https://programm-api.ard.de/images/MjAyNi0wMS0xNQ==/64ff2f19fca76d00089981f2_1694445337959.jpg?w=960'
   );
-  assert.equal(safeArtworkUrl(ART_MEDIATHEK), 'https://api.ardmediathek.de/image-service/images/urn:ard:image:47bcd77c9be3c359?w=288');
+  assert.equal(safeArtworkUrl(ART_MEDIATHEK), 'https://api.ardmediathek.de/image-service/images/urn:ard:image:47bcd77c9be3c359?w=960');
   assert.equal(
     safeArtworkUrl('https://api.ardmediathek.de/image-service/image-collections/urn:ard:image-collection:3c60299b82eebe9f/16x9?w={width}'),
-    'https://api.ardmediathek.de/image-service/image-collections/urn:ard:image-collection:3c60299b82eebe9f/16x9?w=288'
+    'https://api.ardmediathek.de/image-service/image-collections/urn:ard:image-collection:3c60299b82eebe9f/16x9?w=960'
   );
   // XMLTV icons come as http: upgraded, and a tracking query or fragment is dropped.
   assert.equal(safeArtworkUrl(ART_ZDF), 'https://img.tvspielfilm.de/f5/d4/c6/6ada2fde6b6f3b46dcc6d4f5.jpeg');
@@ -116,33 +116,32 @@ test('programme card: no heading row, no visible channel label, the logo sits ri
   const card = buildTvProgrammeCard(DATA);
   const all = texts(card);
   assert.ok(!all.includes('Das Erste') && !all.includes('ZDF'), 'the channel name is not shown as text');
-  // Each channel block is one programme row (+ the NEXT line); the logo is the last column of the NOW row.
+  // Each channel block is one programme Container (+ the NEXT line); the logo is the last column of its info row.
   const blocks = channelBlocks(card);
   assert.equal(blocks.length, 2);
   for (const [i, alt] of [[0, 'ARD'], [1, 'ZDF']]) {
     const [row, next, ...rest] = blocks[i].items;
-    assert.equal(row.type, 'ColumnSet', 'the programme row leads the block');
+    assert.equal(row.type, 'Container', 'the programme row leads the block');
     assert.equal(rest.length, 0);
     assert.equal(next.type, 'TextBlock');
     assert.ok(next.text.startsWith('NEXT'));
-    const cols = row.columns;
-    const last = cols[cols.length - 1];
-    assert.equal(last.width, 'auto');
-    const logo = find(last, (n) => n.type === 'Image')[0];
+    // Picture, then the info row (text + logo), then the progress line.
+    assert.deepEqual(row.items.map((n) => n.type), ['Image', 'ColumnSet', 'TextBlock']);
+    const cols = row.items[1].columns;
+    assert.deepEqual(cols.map((c) => c.width), ['stretch', 'auto']);
+    const logo = find(cols[1], (n) => n.type === 'Image')[0];
     assert.equal(logo.altText, alt);
     assert.equal(logo.horizontalAlignment, 'Right');
     assert.ok(logo.url.startsWith('data:image/png;base64,'));
-    assert.equal(cols.filter((c) => c.width === 'stretch').length, 1);
-    // Thumbnail first, then the text, then the logo.
-    assert.equal(find(cols[0], (n) => n.type === 'Image')[0].width, '96px');
-    assert.equal(cols[1].width, 'stretch');
   }
-  assert.ok(all.some((t) => t.startsWith('NOW · 13:00–14:00') && t.includes('50%') && t.includes('▰')));
+  // The time is on a line of its own (no percentage on it); the progress has its own line.
+  assert.ok(all.some((t) => t === 'NOW · 13:00–14:00'));
+  assert.ok(all.filter((t) => /▰/.test(t)).every((t) => /^[▰▱]+ 50%$/.test(t)));
   assert.ok(all.includes('Tagesschau') && all.includes('Folge 1'));
   assert.ok(all.some((t) => t === 'NEXT · **14:00**  Sportschau'));
   // No generic "TV programme" title wrapper, no duplicated title.
   assert.ok(!all.some((t) => /TV programme|Update/.test(t)));
-  const titles = all.filter((t) => !/^(NOW|NEXT) ·/.test(t));
+  const titles = all.filter((t) => !/^(NOW|NEXT) ·/.test(t) && !/^[▰▱]+ \d+%$/.test(t));
   assert.equal(new Set(titles).size, titles.length, 'no title is shown twice');
   const alts = images(card).map((i) => i.altText);
   assert.ok(alts.includes('ARD') && alts.includes('ZDF'), 'the logos carry alt text');
@@ -155,10 +154,11 @@ test('programme card: now-pictures only from the allowlist, never for the next p
   const card = buildTvProgrammeCard(DATA);
   const pics = images(card).filter((i) => !i.url.startsWith('data:'));
   assert.deepEqual(pics.map((i) => i.url), [
-    'https://programm-api.ard.de/images/MjAyNi0wMS0xNQ==/64ff2f19fca76d00089981f2_1694445337959.jpg?w=288',
+    'https://programm-api.ard.de/images/MjAyNi0wMS0xNQ==/64ff2f19fca76d00089981f2_1694445337959.jpg?w=960',
     'https://img.tvspielfilm.de/f5/d4/c6/6ada2fde6b6f3b46dcc6d4f5.jpeg',
   ]);
-  assert.ok(pics.every((i) => i.width === '96px' && i.height === '54px' && i.altText));
+  // Full card width: stretched, never a fixed pixel size, always with alt text.
+  assert.ok(pics.every((i) => i.size === 'Stretch' && i.width === undefined && i.height === undefined && i.altText));
 
   // A disallowed URL, a missing one and the opt-out all give the same card without a picture: no empty frame.
   const bad = { ...DATA, channels: CHANNELS.map((c) => ({ ...c, current: { ...c.current, image: 'https://evil.example/x.jpg' } })) };
@@ -206,15 +206,37 @@ test('programme card: source text is escaped, the card stays well under the byte
   assert.ok(wire('m', buildTvProgrammeCard(DATA)) < 12_000, 'regular card size');
 });
 
-test('programme card: at phone width (308px) the fixed columns leave the text room', () => {
+test('programme card: nothing in a programme row can wrap at phone width (308px)', () => {
   const card = buildTvProgrammeCard(DATA);
-  for (const set of find(card, (n) => n.type === 'ColumnSet')) {
-    const fixed = set.columns.reduce((sum, c) => {
-      const px = (find(c, (n) => n.type === 'Image').map((i) => parseInt(i.width, 10)))[0];
-      return sum + (px || 0);
-    }, 0);
-    assert.ok(fixed <= 132, `fixed width ${fixed}px`); // 96px picture + a logo of at most 34px: about 135px of text remain
-    assert.ok(set.columns.some((c) => c.width === 'stretch'), 'one column takes the rest');
+  for (const block of channelBlocks(card)) {
+    const [row] = block.items;
+    const progress = row.items.filter((n) => n.type === 'TextBlock');
+    // The progress line sits outside every column (the whole card width), is short and never wraps.
+    assert.equal(progress.length, 1);
+    assert.equal(progress[0].wrap, false);
+    assert.ok(progress[0].text.length <= 14, `progress is ${progress[0].text.length} characters`);
+    assert.match(progress[0].text, /^[▰▱]{8} \d{1,3}%$/);
+    // The NOW/time line never wraps either; the rest of the text may.
+    const [set] = row.items.filter((n) => n.type === 'ColumnSet');
+    const lines = set.columns[0].items;
+    assert.ok(lines[0].text.startsWith('NOW · ') && lines[0].wrap === false);
+    // Only the logo is fixed-width (auto), so the text column keeps the rest of the row.
+    assert.deepEqual(set.columns.map((c) => c.width), ['stretch', 'auto']);
+    assert.ok(find(set.columns[0], (n) => n.type === 'Image').length === 0);
+    assert.ok(find(set.columns[1], (n) => n.type === 'Image').every((i) => parseInt(i.width, 10) <= 40));
+    // The picture is the full width, not a column.
+    assert.equal(row.items[0].size, 'Stretch');
+  }
+  // No fixed pixel widths anywhere except the small logos.
+  const fixed = images(card).filter((i) => !i.url.startsWith('data:') && i.width);
+  assert.equal(fixed.length, 0);
+});
+
+test('programme card: a programme without a picture starts at the info row and keeps the progress line', () => {
+  const card = buildTvProgrammeCard({ ...DATA, channels: CHANNELS.map((c) => ({ ...c, current: { ...c.current, image: '' } })) });
+  for (const block of channelBlocks(card)) {
+    assert.deepEqual(block.items[0].items.map((n) => n.type), ['ColumnSet', 'TextBlock']);
+    assert.equal(block.items[0].items[1].wrap, false);
   }
 });
 
@@ -244,7 +266,7 @@ test('switch reply: "requested" until a readback confirmed it; the channel and t
 test('switch reply: the current programme with a time hierarchy, a picture only when it is safe', () => {
   const { card, markdown } = tvControlReply({ type: 'switch', target: 'ard', state: 'confirmed', programme: NOWPROG }, { now: NOW, timezone: TZ });
   const all = texts(card);
-  assert.ok(all.some((t) => t.startsWith('NOW · 13:00–14:00') && t.includes('50%')));
+  assert.ok(all.includes('NOW · 13:00–14:00') && all.some((t) => /^[▰▱]{8} 50%$/.test(t)));
   assert.ok(all.includes('Tagesschau'));
   assert.ok(all.includes('NEXT · **14:00**  Sportschau'));
   assert.match(markdown, /- Now: \*\*Tagesschau\*\* \(13:00–14:00\)/);
