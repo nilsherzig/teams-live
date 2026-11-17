@@ -31,7 +31,7 @@ src="$work/pkg/package/dist/sprite_icons"
 # hue, which keeps WCAG AA contrast (4.5:1) on the tinted background.
 badges=(
   "open:Open:merge-request-open:#0b5a4b:#c5ece3:#7fcab8:#0b5a4b"
-  "merged:Merged:merge:#0b3f7a:#d3e6fa:#9ec3ec:#0b3f7a"
+  "merged:Merged:merge:#0a2f5c:#9fc5f2:#5b98e0:#0a2f5c"
   "closed:Closed:merge-request-close:#8a2415:#fbe5e1:#f0a79b:#8a2415"
   "draft:Draft:merge-request:#4a4950:#ececef:#bfbfc3:#4a4950"
 )

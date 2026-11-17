@@ -121,3 +121,24 @@ test('badge colours: open teal, merged light blue (not purple), closed red, draf
   // Dark glyph and text on every fill.
   for (const badge of Object.values(MR_BADGES)) assert.ok(has(badge, (r, g, b) => r + g + b < 330), badge.alt);
 });
+
+test('merged badge: a saturated GitLab blue fill (not washed out) with an accessible dark text', () => {
+  const png = Buffer.from(MR_BADGES.merged.url.split(',')[1], 'base64');
+  const at = png.indexOf('PLTE');
+  const length = png.readUInt32BE(at - 4);
+  const colours = [];
+  for (let i = 0; i < length; i += 3) colours.push([...png.subarray(at + 4 + i, at + 7 + i)]);
+  const luminance = ([r, g, b]) => {
+    const [lr, lg, lb] = [r, g, b].map((v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+  };
+  const near = (c, [r, g, b]) => Math.abs(c[0] - r) + Math.abs(c[1] - g) + Math.abs(c[2] - b) <= 12;
+  const fill = colours.find((c) => near(c, [0x9f, 0xc5, 0xf2]));
+  assert.ok(fill, 'the fill is #9fc5f2');
+  const saturation = (Math.max(...fill) - Math.min(...fill)) / Math.max(...fill);
+  assert.ok(saturation >= 0.3, `saturation ${saturation.toFixed(2)}`);
+  const dark = colours.reduce((a, c) => (luminance(c) < luminance(a) ? c : a));
+  const contrast = (luminance(fill) + 0.05) / (luminance(dark) + 0.05);
+  assert.ok(contrast >= 7, `text contrast ${contrast.toFixed(1)}:1`);
+  assert.ok(colours.some((c) => near(c, [0x5b, 0x98, 0xe0])), 'a deeper blue outline');
+});
