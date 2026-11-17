@@ -2392,8 +2392,17 @@ export class MergeRequestWatcher {
       approvedBy =
         approved && mr.lastReportedApprovedBy ? String(mr.lastReportedApprovedBy).split(', ') : [];
     }
+    // Line totals: this check's, else the last known ones for the same head commit
+    // (a failed lookup must not drop them from an in-place refresh).
+    let diffStats = mrDetails?.diffStats ?? null;
+    if (diffStats) {
+      mr.lastDiffStats = { ...diffStats, sha: mrDetails.sha ?? null };
+    } else if (mr.lastDiffStats && mr.lastDiffStats.sha === (mrDetails?.sha ?? null)) {
+      diffStats = mr.lastDiffStats;
+    }
     return buildMergeRequestCard({
       state,
+      diffStats,
       approveUrl: this.mrApproveUrl(mr, mrDetails, { state, approved }),
       iid: mr.iid,
       project: mr.project,

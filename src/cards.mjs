@@ -127,6 +127,7 @@ function assembleCard({
   titleUrl,
   subtitle,
   badges = [],
+  stats = null,
   facts = [],
   extraItems = [],
   actions = [],
@@ -136,6 +137,7 @@ function assembleCard({
     header(service, kind),
     textBlock(mdLink(title || subtitle || 'Update', titleUrl), { weight: 'Bolder', size: 'Medium' }),
     subtitle && title ? textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }) : null,
+    diffStatsRow(stats),
     badgeRow(badges),
     factSet(facts),
     ...extraItems,
@@ -155,6 +157,28 @@ function assembleCard({
   if (buttons.length > 0) card.actions = buttons;
   if (fallbackText) card.fallbackText = str(fallbackText);
   return card;
+}
+
+/**
+ * Compact "+added -removed" line counts: adjacent coloured runs (Good and
+ * Attention) that also carry a textual sign, so the meaning does not depend on
+ * colour. Only exact totals are shown: null, missing or malformed counts give
+ * no row at all instead of a made-up zero.
+ */
+function diffStatsRow(stats) {
+  const isCount = (v) => Number.isInteger(v) && v >= 0;
+  if (!stats || !isCount(stats.additions) || !isCount(stats.deletions)) return null;
+  const run = (text, extra = {}) => ({ type: 'TextRun', text, size: 'Small', ...extra });
+  return {
+    type: 'RichTextBlock',
+    spacing: 'None',
+    inlines: [
+      run(`+${stats.additions}`, { color: 'Good', weight: 'Bolder' }),
+      run(' '),
+      run(`\u2212${stats.deletions}`, { color: 'Attention', weight: 'Bolder' }),
+      run(' lines', { isSubtle: true }),
+    ],
+  };
 }
 
 /**
@@ -333,6 +357,7 @@ export function buildMergeRequestCard(mr) {
     title: mr.title || `Merge request !${mr.iid}`,
     titleUrl: mr.url,
     subtitle: `!${mr.iid}${mr.project ? ` in ${mr.project}` : ''}`,
+    stats: mr.diffStats,
     facts: [
       ['Status', statusLabel],
       ['Approval', approval],

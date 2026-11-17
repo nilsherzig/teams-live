@@ -195,6 +195,14 @@ while a rebase is required (with the reason, merge conflicts when known, and the
 GitLab status) and disappears once it is resolved. Merged and closed cards keep
 the last known approval, auto-merge and rebase state.
 
+Merge request cards show the size of the change as `+added -removed lines`
+(green and red, with textual signs). The totals come from GitLab's GraphQL
+`diffStatsSummary` for the exact head commit (the REST `changes_count` counts
+files, not lines, and is not used). They are looked up once per head commit with
+a short timeout, cached, and reused by in-place refreshes of the same commit.
+When GitLab does not report usable numbers (older instance, error, timeout) the
+row is simply left out; totals are never guessed or summed from partial data.
+
 OpsGenie priority and status badges are textual (P1, OPEN, ACK'D, CLOSED) and use
 the closest Teams card colours (good, attention, warning, accent); Teams does
 not allow arbitrary colours, so the shades are approximate, not pixel-exact.

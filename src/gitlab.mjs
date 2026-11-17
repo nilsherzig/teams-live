@@ -549,6 +549,57 @@ export class GitLabClient {
   /**
    * Retrieves combined MR status, rebase/conflict status, and latest pipeline state.
    */
+  /**
+   * Exact line totals of a merge request: `{additions, deletions, files}`, or
+   * null when GitLab does not report them. The REST merge request has no line
+   * totals (`changes_count` counts files), so this asks the GraphQL
+   * `diffStatsSummary`, which is the `git diff --numstat` total of the whole
+   * merge request. Anything that is not a pair of non-negative integers
+   * (an error, a missing field, an older GitLab) is unknown: a total is never
+   * guessed or summed from partial diffs. Results are cached per head commit
+   * and base; failures are remembered briefly so a poll does not retry them.
+   */
+  async getMrDiffStats(project, iid, { sha = null, baseSha = null } = {}) {
+    const key = `${String(project).toLowerCase()}!${iid}@${sha || ''}@${baseSha || ''}`;
+    const cache = (this.diffStatsCache ??= new Map());
+    const hit = cache.get(key);
+    if (hit && (hit.stats || hit.until > Date.now())) return hit.stats;
+    // One lookup per head commit at a time: concurrent card builds share it.
+    const inflight = (this.diffStatsInflight ??= new Map());
+    if (inflight.has(key)) return inflight.get(key);
+
+    const lookup = (async () => {
+      let stats = null;
+      try {
+        const res = await this.request('../graphql', {
+          method: 'POST',
+          timeoutMs: 8000,
+          body: {
+            query:
+              'query($path: ID!, $iid: String!) { project(fullPath: $path) { mergeRequest(iid: $iid) { diffStatsSummary { additions deletions fileCount } } } }',
+            variables: { path: String(project), iid: String(iid) },
+          },
+        });
+        const summary = res?.data?.project?.mergeRequest?.diffStatsSummary;
+        const isCount = (v) => Number.isInteger(v) && v >= 0;
+        if (!res?.errors?.length && summary && isCount(summary.additions) && isCount(summary.deletions)) {
+          stats = {
+            additions: summary.additions,
+            deletions: summary.deletions,
+            files: isCount(summary.fileCount) ? summary.fileCount : null,
+          };
+        }
+      } catch {
+        stats = null;
+      }
+      if (cache.size >= 200) cache.delete(cache.keys().next().value);
+      cache.set(key, { stats, until: Date.now() + 10 * 60 * 1000 });
+      return stats;
+    })().finally(() => inflight.delete(key));
+    inflight.set(key, lookup);
+    return lookup;
+  }
+
   async getMrStatus(project, iid) {
     const mr = await this.getMr(project, iid);
     const state = mr.state; // 'opened' | 'merged' | 'closed'
@@ -620,6 +671,10 @@ export class GitLabClient {
       source_branch: mr.source_branch,
       // Head commit of the merge request (what an approval is bound to).
       sha: mr.sha || mr.diff_refs?.head_sha || null,
+      diffStats: await this.getMrDiffStats(project, iid, {
+        sha: mr.sha || mr.diff_refs?.head_sha || null,
+        baseSha: mr.diff_refs?.base_sha || null,
+      }),
       draft: isDraft,
       web_url: mr.web_url,
       target_branch: mr.target_branch,
