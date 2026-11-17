@@ -288,6 +288,35 @@ test('the pages are styled self-contained: state pills, tones, dark mode, no ext
   }
 });
 
+test('the button keeps WCAG AA contrast (normal and hover) in light and dark mode', async () => {
+  const ctx = await setup();
+  try {
+    const html = await (await ctx.page(await ctx.open())).text();
+    const css = /<style>([\s\S]*?)<\/style>/.exec(html)[1];
+    const lum = (hex) => {
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+      const lin = (c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+      return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    };
+    const contrast = (a, b) => {
+      const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const [light, dark] = css.split('@media (prefers-color-scheme:dark)');
+    assert.ok(dark, 'dark-mode block present');
+    const vars = (block) => Object.fromEntries([...block.matchAll(/--([a-z-]+):(#[0-9a-f]{6})/g)].map((m) => [m[1], m[2]]));
+    const lightVars = vars(light);
+    const darkVars = { ...lightVars, ...vars(dark) };
+    for (const [mode, v] of [['light', lightVars], ['dark', darkVars]]) {
+      // The button text is white.
+      assert.ok(contrast('#ffffff', v.btn) >= 4.5, `${mode} button ${contrast('#ffffff', v.btn).toFixed(2)}`);
+      assert.ok(contrast('#ffffff', v['btn-h']) >= 4.5, `${mode} hover ${contrast('#ffffff', v['btn-h']).toFixed(2)}`);
+    }
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
 test('a confirmed POST approves once with the displayed head SHA, uses the link up and refreshes the card', async () => {
   const refreshes = [];
   const ctx = await setup({
