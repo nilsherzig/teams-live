@@ -80,7 +80,7 @@ test('the card is valid and shows stats, ranked rows with medals, counts and sha
   const card = buildLeaderboardCard({ entries: people(5), fallbackText: 'x' });
   assertValidCard(card);
   const t = texts(card);
-  assert.ok(t.includes('Bot interaction leaderboard'));
+  assert.deepEqual(t.filter((x) => /leaderboard/i.test(x)), ['Leaderboard \u00b7 Bot interactions'], 'one heading: the header');
   assert.ok(t.includes('interactions') && t.includes('users') && t.includes('most used'));
   for (const medal of ['\u{1F947}', '\u{1F948}', '\u{1F949}']) assert.ok(t.includes(medal), medal);
   assert.ok(t.includes('#4') && t.includes('#5'));
@@ -218,7 +218,7 @@ test('rich mode: /leaderboard sends one card with pictures for the ranked users,
   assertValidCard(card);
   assert.equal(images(card).length, 5);
   assert.deepEqual(images(card).slice(0, 3).map((i) => i.width), ['28px', '28px', '28px']);
-  assert.ok(texts(card).includes('Bot interaction leaderboard'));
+  assert.ok(!texts(card).some((x) => /interaction leaderboard/i.test(x)));
 });
 
 test('rich mode keeps the text a plain-text reader needs in the markdown part', () => {

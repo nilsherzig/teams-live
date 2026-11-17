@@ -4,7 +4,7 @@
  * Pure data in, card JSON out (the watcher fetches the profile pictures and
  * measures the card, see `executeLeaderboardCommand`). Layout:
  *
- * - header and title, then three stat tiles (interactions, users, top command);
+ * - the header ("Leaderboard · Bot interactions", no second heading), then three stat tiles (interactions, users, top command);
  * - a podium: the top three with a medal, a larger picture, the name, their
  *   most used commands, a bar relative to the leader and the count with its
  *   share of all interactions; the leader's bar and count are gold;
@@ -134,7 +134,7 @@ function row({ entry, rank, share, leaderCount, podium, withPictures }) {
  */
 export function buildLeaderboardCard({ entries, fallbackText } = {}) {
   const { ranked, total, topCommand } = rankLeaderboard(entries);
-  const base = { service: 'leaderboard', kind: 'Bot interactions', style: 'emphasis', title: 'Bot interaction leaderboard', fallbackText };
+  const base = { service: 'leaderboard', kind: 'Bot interactions', style: 'emphasis', title: null, fallbackText };
   if (ranked.length === 0) {
     return assembleCard({ ...base, extraItems: [textBlock('No interactions recorded yet. Send a command to get on the board.', { isSubtle: true })] });
   }

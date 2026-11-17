@@ -276,7 +276,8 @@ export function assembleCard({
 }) {
   const items = [
     header(service, kind, glyph, ref),
-    textBlock(mdLink(title || subtitle || 'Update', titleUrl), { weight: 'Bolder', size: 'Medium' }),
+    // `title: null` is a card whose header already names it (no second heading).
+    title === null ? null : textBlock(mdLink(title || subtitle || 'Update', titleUrl), { weight: 'Bolder', size: 'Medium' }),
     subtitle && title ? textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }) : null,
     diffStatsRow(stats),
     badgeRow(badges),
