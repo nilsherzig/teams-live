@@ -1111,57 +1111,111 @@ export function buildReplyCard(markdown, { part = null, fallbackText } = {}) {
  * measures the card on the wire). Lines are packed greedily; a part ends at a
  * blank line when one is close, a code block cut in two is closed and reopened
  * so each part stays well-formed, and a single line too long for a card is cut
- * into pieces. At most `maxParts` parts are returned: the rest is dropped with
- * a note on the last part (the one case where text is not shown in full).
+ * into pieces (never inside a surrogate pair). At most `maxParts` parts are
+ * returned: the rest is dropped with a note on the last part (the one case
+ * where text is not shown in full); that part is measured with the note, so it
+ * still fits.
+ *
+ * The size of a part is found by doubling then bisecting the number of lines
+ * (about 2 log n `fits` calls per part), and the text after the last part is
+ * only counted, never measured: the work is bounded by the output kept, not by
+ * the size of the input.
  */
 export function splitMarkdownForCards(markdown, fits, { maxParts = 10 } = {}) {
-  const queue = String(markdown ?? '').trim().split('\n');
-  const parts = [];
-  let cur = [];
-  let fenced = false; // a code block is open at the end of `cur`
-  const render = (lines, open) => (open ? [...lines, '```'] : lines).join('\n');
+  const lines = String(markdown ?? '').trim().split('\n');
   const isFence = (line) => /^\s*```/.test(line);
+  // parity[j]: a code block is open before line j.
+  let parity = [];
+  const recomputeParity = (from) => {
+    for (let j = from; j < lines.length; j += 1) parity[j + 1] = parity[j] !== isFence(lines[j]);
+  };
+  parity = [false];
+  recomputeParity(0);
+  const hasContent = (list) => list.some((l) => l.trim() && !isFence(l));
 
-  while (queue.length > 0) {
-    const line = queue.shift();
-    const nextFenced = isFence(line) ? !fenced : fenced;
-    const candidate = [...cur, line];
-    if (fits(render(candidate, nextFenced))) {
-      cur = candidate;
-      fenced = nextFenced;
-      continue;
+  // Markdown of lines [from, from + count): reopens a block open at `from`, closes one open at the end.
+  const render = (from, count, last = lines[from + count - 1]) => {
+    const body = lines.slice(from, from + count - 1);
+    body.push(last);
+    const open = isFence(last) ? !parity[from + count - 1] : parity[from + count - 1];
+    return [...(parity[from] ? ['```'] : []), ...body, ...(open ? ['```'] : [])].join('\n');
+  };
+  const largestFit = (from, measure) => {
+    const max = lines.length - from;
+    let good = 0;
+    let probe = 1;
+    while (probe <= max && measure(from, probe)) {
+      good = probe;
+      probe *= 2;
     }
-    const hasContent = cur.some((l) => l.trim() && l !== '```');
-    if (!hasContent) {
+    let bad = Math.min(probe, max + 1);
+    while (bad - good > 1) {
+      const mid = (good + bad) >> 1;
+      if (measure(from, mid)) good = mid;
+      else bad = mid;
+    }
+    return good;
+  };
+  // Longest prefix of `text` that fits, cut between code points (never inside a surrogate pair).
+  const largestHead = (text, measure) => {
+    const points = Array.from(text);
+    let good = 0;
+    let bad = points.length + 1;
+    while (bad - good > 1) {
+      const mid = (good + bad) >> 1;
+      if (measure(points.slice(0, mid).join(''))) good = mid;
+      else bad = mid;
+    }
+    return points.slice(0, good).join('').length;
+  };
+
+  const parts = [];
+  let i = 0;
+  while (i < lines.length && parts.length < maxParts) {
+    const lastPart = parts.length === maxParts - 1;
+    // The last part is measured with the note it may need (an upper bound of it).
+    const measure = (from, count) => fits(render(from, count) + (lastPart && from + count < lines.length ? truncationNote(lines.length - from) : ''));
+    let count = largestFit(i, measure);
+    if (count === 0) {
       // The line alone is too long: keep the largest head that fits, queue the rest.
-      let n = line.length;
-      while (n > 1 && !fits(render([...cur, line.slice(0, n)], fenced))) n = Math.floor(n / 2);
-      parts.push(render([...cur, line.slice(0, n)], fenced));
-      cur = fenced ? ['```'] : [];
-      if (line.length > n) queue.unshift(line.slice(n));
+      const line = lines[i];
+      const head = largestHead(line, (text) => fits(render(i, 1, text) + (lastPart ? truncationNote(lines.length - i) : '')));
+      if (head === 0) {
+        // Not even one character fits (pathological fits): stop instead of looping forever.
+        break;
+      }
+      parts.push(render(i, 1, line.slice(0, head)));
+      if (head < line.length) {
+        lines[i] = line.slice(head);
+        recomputeParity(i);
+      } else {
+        i += 1;
+      }
       continue;
     }
-    let cut = cur.length;
-    if (!fenced) {
-      for (let k = cur.length - 1; k >= Math.max(1, cur.length - 8); k -= 1) {
-        if (!cur[k].trim()) {
-          cut = k;
+    let skip = 0;
+    if (i + count < lines.length && !parity[i + count]) {
+      // Prefer to end at a blank line when one is close.
+      for (let k = count - 1; k >= Math.max(1, count - 8); k -= 1) {
+        if (!lines[i + k].trim()) {
+          count = k;
+          skip = 1;
           break;
         }
       }
     }
-    parts.push(render(cur.slice(0, cut), fenced));
-    const carry = cur.slice(cut).filter((l, idx) => idx > 0 || l.trim());
-    cur = fenced ? ['```', ...carry] : carry;
-    queue.unshift(line);
+    const text = render(i, count);
+    if (hasContent(lines.slice(i, i + count))) parts.push(text);
+    i += count + skip;
+    // The blank lines at the start of the next part are dropped.
+    while (i < lines.length && !lines[i].trim() && !parity[i]) i += 1;
   }
-  if (cur.some((l) => l.trim() && l !== '```')) parts.push(render(cur, fenced));
-
-  if (parts.length > maxParts) {
-    const dropped = parts.length - maxParts;
-    const kept = parts.slice(0, maxParts);
-    kept[maxParts - 1] += `\n\n_Output truncated: ${dropped} more part${dropped === 1 ? '' : 's'} not shown._`;
-    return kept;
+  if (i < lines.length && parts.length > 0) {
+    parts[parts.length - 1] += truncationNote(lines.length - i);
   }
   return parts;
+}
+
+function truncationNote(n) {
+  return `\n\n_Output truncated: ${n} more line${n === 1 ? '' : 's'} not shown._`;
 }

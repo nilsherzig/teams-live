@@ -418,8 +418,12 @@ export function prepareRichMessages(message) {
       return text;
     }
   };
-  const single = asMessage(markdown, null);
-  if (isRichMessage(single) && richMessageWireBytes(single) <= MAX_CARD_BYTES) return [single];
+  // The fallback text alone is in the message: a markdown over the budget never fits one card, so
+  // do not build (a slow, pointless) card of it.
+  if (Buffer.byteLength(markdown) <= MAX_CARD_BYTES) {
+    const single = asMessage(markdown, null);
+    if (isRichMessage(single) && richMessageWireBytes(single) <= MAX_CARD_BYTES) return [single];
+  }
 
   const texts = splitMarkdownForCards(markdown, (text) => {
     const candidate = asMessage(text, [2, 2]);
@@ -666,20 +670,60 @@ async function sendReplyOnce(conversationId, originalMessage, replyMarkdown, opt
   return result;
 }
 
+// Overflow cards posted for an edited reply, by conversation and message id: later edits update
+// them in place instead of posting them again. Bounded: the oldest entries are forgotten first
+// (an edit of a forgotten message then reposts its overflow, as before).
+const OVERFLOW_TRACKED_MAX = 200;
+const overflowCards = new Map();
+
+const messageSignature = (message) => (typeof message === 'string' ? message : JSON.stringify(message));
+
+function trackOverflow(key) {
+  let entries = overflowCards.get(key);
+  if (entries) {
+    overflowCards.delete(key); // re-insert: most recently used last
+  } else {
+    entries = [];
+  }
+  overflowCards.set(key, entries);
+  while (overflowCards.size > OVERFLOW_TRACKED_MAX) overflowCards.delete(overflowCards.keys().next().value);
+  return entries;
+}
+
 /**
  * Updates an existing reply message in-place.
+ *
+ * A text that no longer fits one card keeps the first card in the message; the rest is posted as
+ * further replies once, and later edits update those in place (and skip the unchanged ones).
  */
 export async function updateReply(conversationId, serverMessageId, originalMessage, replyMarkdown) {
   const [head, ...rest] = prepareRichMessages(replyMarkdown);
   const result = await withCardFallback(head, (message) =>
     updateReplyOnce(conversationId, serverMessageId, originalMessage, message)
   );
-  // A text that no longer fits one card: the message keeps the first card, the rest follows as new replies.
-  for (const part of result.ok ? rest : []) {
+  if (!result.ok || rest.length === 0) return result;
+
+  const entries = trackOverflow(`${conversationId}\n${serverMessageId}`);
+  for (const [index, part] of rest.entries()) {
+    const signature = messageSignature(part);
+    const known = entries[index];
+    if (known?.signature === signature) continue;
+    if (known) {
+      const edited = await withCardFallback(part, (message) =>
+        updateReplyOnce(conversationId, known.id, originalMessage, message)
+      );
+      if (edited.ok) {
+        known.signature = signature;
+        continue;
+      }
+    }
     const sent = await withCardFallback(part, (message) =>
       sendReplyOnce(conversationId, originalMessage, message, { noUpdate: true })
     );
     if (!sent.ok) return sent;
+    const id = sent.value?.messageId;
+    if (id) entries[index] = { id: String(id), signature };
+    else entries.length = Math.min(entries.length, index);
   }
   return result;
 }
