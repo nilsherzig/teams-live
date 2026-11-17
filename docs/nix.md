@@ -271,8 +271,12 @@ not allow arbitrary colours, so the shades are approximate, not pixel-exact.
 
 Every card starts with a compact header: the logo of the service (GitLab, Jira,
 OpsGenie or Confluence, embedded as a small PNG, no image fetch) and a label
-such as "GitLab · Merge request" or "Jira · Bug". Below it come the title, a
-one-line subtitle and a few facts. Navigation is done with inline links, not
+such as "GitLab · Merge request" or "Jira · Bug". Merge requests, jobs,
+pipelines and Jira issues also show their reference at the top right, large,
+bold and linked: `!123`, `#456`, or the issue key. A GitLab reference is shown
+only when the numeric id is known (never guessed from other ids), and the
+reference is not repeated as a subtitle. Below the header come the full title,
+a one-line subtitle and a few facts. Navigation is done with inline links, not
 buttons: the title links to the entity, and cross references inside the card are
 linked too (the pipeline and Jira key of a merge request, and the pipeline and
 merge request of a job or pipeline). A link is only added for a valid http(s)

@@ -22,12 +22,35 @@ const rawFacts = (card) => Object.fromEntries(items(card).find((i) => i.type ===
 const facts = (card) => Object.fromEntries(Object.entries(rawFacts(card)).map(([k, v]) => [k, plain(v)]));
 const style = (card) => card.body[0].style;
 const header = (card) => items(card)[0];
-const headerLabel = (card) => header(card).columns.at(-1).items[0].text;
-const headerGlyph = (card) => (header(card).columns.length === 3 ? header(card).columns[1].items[0] : null);
+const headerLabel = (card) => header(card).columns.find((c) => c.width === 'stretch').items[0].text;
+const headerGlyph = (card) => {
+  const column = header(card).columns.slice(1).find((c) => c.width === 'auto' && c.items[0].type === 'Image');
+  return column ? column.items[0] : null;
+};
+// The identifier slot: the right-aligned auto column after the label ('' when there is none).
+const headerRef = (card) => {
+  const column = header(card).columns.find((c) => c.items[0].horizontalAlignment === 'Right');
+  return column ? column.items[0].text : '';
+};
+const headerRefBlock = (card) => header(card).columns.find((c) => c.items[0].horizontalAlignment === 'Right')?.items[0];
 const headerIcon = (card) => header(card).columns[0].items[0];
 const rawTitle = (card) => items(card)[1].text;
 const mainTitle = (card) => plain(rawTitle(card));
 const subtitle = (card) => items(card).find((i) => i.type === 'TextBlock' && i.isSubtle && i !== header(card))?.text;
+
+// Text a reader sees: link targets removed, every text block and fact value joined.
+function visibleText(nodes) {
+  const out = [];
+  const walk = (n) => {
+    if (Array.isArray(n)) return n.forEach(walk);
+    if (!n || typeof n !== 'object') return;
+    if (typeof n.text === 'string') out.push(plain(n.text));
+    if (n.type === 'FactSet') for (const f of n.facts) out.push(plain(f.title), plain(f.value));
+    Object.values(n).forEach((v) => typeof v === 'object' && walk(v));
+  };
+  walk(nodes);
+  return out.join('\n');
+}
 
 function assertValidCard(card) {
   assert.equal(card.type, 'AdaptiveCard');
@@ -160,11 +183,14 @@ test('pipeline card', () => {
     mr: { iid: 42, title: 'Add example feature', url: baseMr.url },
   });
   assertValidCard(card);
-  assert.equal(mainTitle(card), 'Pipeline #7');
+  // The project is the title (a pipeline has no name); the ID is the linked header reference.
+  assert.equal(mainTitle(card), 'project');
+  assert.equal(headerRef(card), '[#7](https://gitlab.example.com/group/project/-/pipelines/7)');
+  assert.equal(subtitle(card), undefined);
   assert.equal(style(card), 'accent');
   assert.equal(facts(card).Status, '\u23f3 Running');
   assert.equal(facts(card)['YAML errors'], 'jobs:build config should be a hash');
-  assert.equal(rawTitle(card), '[Pipeline #7](https://gitlab.example.com/group/project/-/pipelines/7)');
+  assert.equal(rawTitle(card), '[project](https://gitlab.example.com/group/project/-/pipelines/7)');
   assert.equal(rawFacts(card)['Merge request'], `[!42 Add example feature](${baseMr.url})`);
 });
 
@@ -183,7 +209,10 @@ test('jira issue card styles by status and shows assignee/priority', () => {
   assertValidCard(card);
   assert.equal(mainTitle(card), 'Something is broken');
   assert.equal(headerLabel(card), 'Jira \u00b7 \u{1F41B} Bug');
-  assert.equal(subtitle(card), 'EX-1');
+  // The key is in the header slot, once; no small repeat under the title.
+  assert.equal(headerRef(card), `[EX-1](${issue.url})`);
+  assert.equal(subtitle(card), undefined);
+  assert.ok(!visibleText(items(card).slice(1)).includes('EX-1'));
   assert.equal(style(card), 'accent');
   assert.deepEqual(facts(card), { Status: '\u{1F7E1} In Progress', Priority: '\u{1F534} High', Assignee: 'Alice Example' });
   assert.equal(rawTitle(card), `[Something is broken](${issue.url})`);
@@ -292,10 +321,10 @@ test('cards never contain empty facts', () => {
 
 test('every card has a compact branded header: logo plus "Service - kind"', () => {
   const cases = [
-    [buildMergeRequestCard({ ...baseMr, state: 'open' }), 'GitLab', 'GitLab \u00b7 Merge request', '!42 in group/project'],
-    [buildJobCard({ id: 5, name: 'build', status: 'failed', project: 'group/project' }), 'GitLab', 'GitLab \u00b7 CI job', '#5 in group/project'],
-    [buildPipelineCard({ id: 9, status: 'success', project: 'group/project' }), 'GitLab', 'GitLab \u00b7 Pipeline', 'group/project'],
-    [buildJiraIssueCard({ key: 'EX-1', summary: 'S', issueType: 'Story', status: 'Open' }), 'Jira', 'Jira \u00b7 \u{1F4D6} Story', 'EX-1'],
+    [buildMergeRequestCard({ ...baseMr, state: 'open' }), 'GitLab', 'GitLab \u00b7 Merge request', 'group/project'],
+    [buildJobCard({ id: 5, name: 'build', status: 'failed', project: 'group/project' }), 'GitLab', 'GitLab \u00b7 CI job', 'group/project'],
+    [buildPipelineCard({ id: 9, status: 'success', project: 'group/project' }), 'GitLab', 'GitLab \u00b7 Pipeline', undefined],
+    [buildJiraIssueCard({ key: 'EX-1', summary: 'S', issueType: 'Story', status: 'Open' }), 'Jira', 'Jira \u00b7 \u{1F4D6} Story', undefined],
     [buildOpsGenieAlertCard({ message: 'M', tinyId: '7' }), 'OpsGenie', 'OpsGenie \u00b7 Alert', '#7'],
     [buildConfluencePageCard({ title: 'T', spaceKey: 'EX' }), 'Confluence', 'Confluence \u00b7 Page', undefined],
   ];
@@ -383,7 +412,7 @@ test('card titles link to the entity URL', () => {
   const cases = [
     [buildMergeRequestCard({ ...baseMr, state: 'open' }), 'Add example feature', baseMr.url],
     [buildJobCard({ id: 5, name: 'build', status: 'failed', url: 'https://gitlab.example.com/-/jobs/5' }), 'build', 'https://gitlab.example.com/-/jobs/5'],
-    [buildPipelineCard({ id: 9, status: 'success', url: 'https://gitlab.example.com/-/pipelines/9' }), 'Pipeline #9', 'https://gitlab.example.com/-/pipelines/9'],
+    [buildPipelineCard({ id: 9, status: 'success', project: 'group/project', url: 'https://gitlab.example.com/-/pipelines/9' }), 'group/project', 'https://gitlab.example.com/-/pipelines/9'],
     [buildJiraIssueCard({ key: 'EX-1', summary: 'Broken', url: 'https://jira.example.com/browse/EX-1' }), 'Broken', 'https://jira.example.com/browse/EX-1'],
     [buildOpsGenieAlertCard({ message: 'Disk full', url: 'https://opsgenie.example.com/alert/1' }), 'Disk full', 'https://opsgenie.example.com/alert/1'],
     [buildConfluencePageCard({ title: 'Runbook', url: 'https://confluence.example.com/pages/1' }), 'Runbook', 'https://confluence.example.com/pages/1'],
@@ -711,4 +740,81 @@ test('GitLab cards carry a state icon from the GitLab icon set next to the logo;
   assert.equal(headerGlyph(buildJobCard({ id: 5, name: 'b', status: 'weird' })), null);
   assert.match(headerGlyph(buildPipelineCard({ id: 9, status: 'weird' })).altText, /^Pipeline$/);
   assert.equal(headerGlyph(buildJiraIssueCard({ key: 'EX-1', summary: 'S', issueType: 'Story', status: 'Open' })), null);
+});
+
+test('header identifier slot: large bold right-aligned linked reference per entity, shown once', () => {
+  const issueUrl = 'https://jira.example.com/browse/APP-123';
+  const pipelineUrl = 'https://gitlab.example.com/group/project/-/pipelines/456';
+  const jobUrl = 'https://gitlab.example.com/group/project/-/jobs/789';
+  const cases = [
+    [buildJiraIssueCard({ key: 'APP-123', summary: 'Broken thing', url: issueUrl, status: 'Open' }), 'APP-123', issueUrl, 'Broken thing'],
+    [buildMergeRequestCard({ ...baseMr, iid: 123, url: 'https://gitlab.example.com/group/project/-/merge_requests/123' }), '!123', 'https://gitlab.example.com/group/project/-/merge_requests/123', 'Add example feature'],
+    [buildPipelineCard({ id: 456, status: 'success', project: 'group/project', url: pipelineUrl }), '#456', pipelineUrl, 'group/project'],
+    [buildJobCard({ id: 789, name: 'lint', status: 'failed', project: 'group/project', url: jobUrl }), '#789', jobUrl, 'lint'],
+  ];
+  for (const [card, ref, url, title] of cases) {
+    assertValidCard(card);
+    assert.equal(headerRef(card), `[${ref}](${url})`);
+    const block = headerRefBlock(card);
+    assert.equal(block.size, 'Large');
+    assert.equal(block.weight, 'Bolder');
+    // Responsive layout from ColumnSet widths only: a stretching label next to an auto-sized reference.
+    const columns = header(card).columns;
+    assert.equal(columns.at(-1).width, 'auto');
+    assert.equal(columns.filter((c) => c.width === 'stretch').length, 1);
+    assert.ok(columns.indexOf(columns.find((c) => c.width === 'stretch')) < columns.length - 1);
+    assert.ok(!JSON.stringify(card).includes('"position"'), 'no absolute positioning');
+    // The full title stays below, and the identifier is not repeated anywhere else.
+    assert.equal(mainTitle(card), title);
+    const rest = JSON.stringify(items(card).slice(1));
+    assert.ok(!rest.includes(`"${ref}"`) && !rest.includes(`${ref} `) && !rest.includes(`in ${ref}`), rest);
+  }
+});
+
+test('header identifier slot: semantic context stays when the repeated identifier subtitle goes', () => {
+  const mr = buildMergeRequestCard({ ...baseMr, state: 'open', targetBranch: 'main', pipeline: { id: 7, status: 'success' } });
+  assert.equal(subtitle(mr), 'group/project');
+  assert.equal(facts(mr).Target, 'main');
+  assert.equal(facts(mr).Pipeline, '✅ Passed (#7)');
+  const job = buildJobCard({ id: 5, name: 'build', status: 'failed', project: 'group/project', stage: 'test', ref: 'main' });
+  assert.equal(subtitle(job), 'group/project');
+  assert.equal(facts(job).Stage, 'test');
+  assert.equal(facts(job).Ref, 'main');
+  const pipeline = buildPipelineCard({ id: 9, status: 'failed', project: 'group/project', ref: 'main' });
+  assert.equal(mainTitle(pipeline), 'group/project');
+  assert.equal(facts(pipeline).Ref, 'main');
+});
+
+test('header identifier slot: a missing or invalid ID leaves the slot out and never guesses', () => {
+  const url = 'https://gitlab.example.com/group/project/-/merge_requests/1';
+  for (const iid of [undefined, null, '', 'abc', '12x', 'gid://gitlab/MergeRequest/99', -1, 1.5]) {
+    const card = buildMergeRequestCard({ title: 'T', project: 'group/project', url, iid });
+    assertValidCard(card);
+    assert.equal(headerRef(card), '', String(iid));
+    assert.ok(header(card).columns.every((c) => c.items[0].horizontalAlignment !== 'Right'));
+    // Title and its link survive.
+    assert.equal(rawTitle(card), `[T](${url})`);
+  }
+  assert.equal(headerRef(buildJobCard({ name: 'j', status: 'failed' })), '');
+  assert.equal(headerRef(buildPipelineCard({ status: 'failed', project: 'group/project' })), '');
+  assert.equal(mainTitle(buildMergeRequestCard({ project: 'group/project' })), 'Merge request');
+  assert.equal(mainTitle(buildPipelineCard({ status: 'failed' })), 'Pipeline');
+  // Numeric strings are fine (API payloads often carry them).
+  assert.match(headerRef(buildMergeRequestCard({ iid: '42', title: 'T' })), /^!42$/);
+  assert.match(headerRef(buildPipelineCard({ id: '9', status: 'success' })), /^#9$/);
+});
+
+test('jira header key: missing key falls back, the issue URL stays on the title; unusable URL is plain', () => {
+  const url = 'https://jira.example.com/browse/APP-123';
+  const noKey = buildJiraIssueCard({ summary: 'Only a summary', url, status: 'Open' });
+  assertValidCard(noKey);
+  assert.equal(headerRef(noKey), '');
+  assert.equal(rawTitle(noKey), `[Only a summary](${url})`);
+  assert.equal(mainTitle(buildJiraIssueCard({ url })), 'Jira issue');
+  // Key without a usable URL is shown as plain text, not as a broken link.
+  const plainKey = buildJiraIssueCard({ key: 'APP-123', summary: 'S', url: 'javascript:alert(1)' });
+  assert.equal(headerRef(plainKey), 'APP-123');
+  // The key is visible once across the whole card.
+  const card = buildJiraIssueCard({ key: 'APP-123', summary: 'Summary', url, status: 'Open' });
+  assert.equal(visibleText(card.body[0].items).split('APP-123').length - 1, 1, 'visible once');
 });

@@ -88,8 +88,38 @@ const EMOJI_BRANDS = {
   bot: { emoji: '🧢', name: 'teams-live' },
 };
 
-/** Compact integration header: small service logo (or emoji) plus "Service - kind". */
-function header(service, kind, glyph = null) {
+/**
+ * Identifier slot of the header: the entity's own reference ("!42", "#7",
+ * "APP-123") as a larger bold, right-aligned column, linked to the entity when
+ * its URL is usable. Returns null without a usable reference, so an unknown ID
+ * is simply left out and never guessed. The column is `auto` wide next to the
+ * `stretch` label column: on a narrow card the label wraps instead of the two
+ * overlapping.
+ */
+function referenceColumn(ref) {
+  const text = str(ref?.text);
+  if (!text || text.length > 40) return null;
+  return {
+    type: 'Column',
+    width: 'auto',
+    verticalContentAlignment: 'Center',
+    items: [
+      textBlock(mdLink(text, ref.url), { size: 'Large', weight: 'Bolder', horizontalAlignment: 'Right', spacing: 'None' }),
+    ],
+  };
+}
+
+/** Numeric ID with its sigil ("!" merge request, "#" pipeline or job), or null when it is not a plain number. */
+function numericReference(sigil, id, url) {
+  const digits = str(id);
+  return /^\d+$/.test(digits) ? { text: `${sigil}${digits}`, url } : null;
+}
+
+/**
+ * Compact integration header: small service logo (or emoji), "Service - kind"
+ * and, right-aligned, the optional identifier of the entity (see referenceColumn).
+ */
+function header(service, kind, glyph = null, ref = null) {
   const emojiBrand = EMOJI_BRANDS[service];
   const name = emojiBrand ? emojiBrand.name : SERVICES[service];
   const lead = emojiBrand
@@ -122,13 +152,16 @@ function header(service, kind, glyph = null) {
         verticalContentAlignment: 'Center',
         items: [textBlock(kind ? `${name} · ${kind}` : name, { size: 'Small', weight: 'Bolder', isSubtle: true })],
       },
+      ...(referenceColumn(ref) ? [referenceColumn(ref)] : []),
     ],
   };
 }
 
 /**
  * Wraps the entity body in a coloured container and assembles the card.
- * `titleUrl` turns the title into a hyperlink to the entity.
+ * `titleUrl` turns the title into a hyperlink to the entity. `ref` is the
+ * entity's identifier (`{ text, url }`) shown large at the right of the header,
+ * so the title and subtitle do not repeat it.
  * `style` is an Adaptive Card container style (`good`, `attention`,
  * `warning`, `accent`, `emphasis`) and conveys the state at a glance.
  * `badges` is a row of non-interactive status badges, `extraItems` are
@@ -141,6 +174,7 @@ function assembleCard({
   style = 'emphasis',
   title,
   titleUrl,
+  ref = null,
   subtitle,
   badges = [],
   stats = null,
@@ -150,7 +184,7 @@ function assembleCard({
   fallbackText,
 }) {
   const items = [
-    header(service, kind, glyph),
+    header(service, kind, glyph, ref),
     textBlock(mdLink(title || subtitle || 'Update', titleUrl), { weight: 'Bolder', size: 'Medium' }),
     subtitle && title ? textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }) : null,
     diffStatsRow(stats),
@@ -399,9 +433,10 @@ export function buildMergeRequestCard(mr) {
     kind: 'Merge request',
     glyph: mrGlyph(state),
     style,
-    title: mr.title || `Merge request !${mr.iid}`,
+    title: mr.title || 'Merge request',
     titleUrl: mr.url,
-    subtitle: `!${mr.iid}${mr.project ? ` in ${mr.project}` : ''}`,
+    ref: numericReference('!', mr.iid, mr.url),
+    subtitle: mr.project,
     stats: mr.diffStats,
     facts: [
       ['Status', statusLabel],
@@ -425,9 +460,10 @@ export function buildJobCard(job) {
     kind: 'CI job',
     glyph: ciStatusGlyph(job.status),
     style: info.style,
-    title: job.name || `Job #${job.id}`,
+    title: job.name || 'CI job',
     titleUrl: job.url,
-    subtitle: `#${job.id}${job.project ? ` in ${job.project}` : ''}`,
+    ref: numericReference('#', job.id, job.url),
+    subtitle: job.project,
     facts: [
       ['Status', `${ciStatusEmoji(job.status)} ${info.label}`],
       ['Stage', job.stage],
@@ -449,9 +485,10 @@ export function buildPipelineCard(pipeline) {
     kind: 'Pipeline',
     glyph: ciStatusGlyph(pipeline.status) || { icon: 'pipeline', label: 'Pipeline' },
     style: info.style,
-    title: `Pipeline #${pipeline.id}`,
+    // A pipeline has no name of its own: its project is the title, the ID sits in the header.
+    title: pipeline.project || 'Pipeline',
     titleUrl: pipeline.url,
-    subtitle: pipeline.project,
+    ref: numericReference('#', pipeline.id, pipeline.url),
     facts: [
       ['Status', `${ciStatusEmoji(pipeline.status)} ${info.label}`],
       ['Ref', pipeline.ref],
@@ -510,9 +547,9 @@ export function buildJiraIssueCard(issue) {
     service: 'jira',
     kind: `${typeIcon} ${type}`,
     style,
-    title: issue.summary || issue.key,
+    title: issue.summary || 'Jira issue',
     titleUrl: issue.url,
-    subtitle: issue.key,
+    ref: str(issue.key) ? { text: issue.key, url: issue.url } : null,
     facts: [
       ['Status', status ? `${jiraStatusIcon(status, category)} ${status}` : ''],
       ['Priority', `${jiraPriorityIcon(issue.priority)} ${priority}`],
