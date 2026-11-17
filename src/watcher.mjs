@@ -25,6 +25,7 @@ import {
   resolveProfiles,
   escapeHtml,
   makeRichMessage,
+  isRichMessage,
   richMessageWireBytes,
   setRichMessages,
 } from './teams.mjs';
@@ -36,6 +37,8 @@ import {
   buildOpsGenieAlertCard,
   buildConfluencePageCard,
   buildMarkdownCard,
+  buildMrListCard,
+  mrListState,
   MAX_CARD_BYTES,
   opsGeniePriorityBadge,
   ciStatusEmoji as getCiStatusEmoji,
@@ -4775,9 +4778,14 @@ export class MergeRequestWatcher {
     return await this.mrsCache.loading;
   }
 
-  formatMrsText(mrs, opts = {}) {
+  /**
+   * The /mrs list as data: the headline and the sections (heading, rows, note),
+   * each row with its regular markdown line and the facts the list card shows
+   * (see buildMrListCard). `text` instead is a reply without a list.
+   */
+  collectMrsListing(mrs, opts = {}) {
     if (!mrs || mrs.length === 0) {
-      return '📋 No open merge requests found.';
+      return { text: '📋 No open merge requests found.' };
     }
 
     const { mode = 'default', userFilter = null, userFilterLabel = null, rich = false } =
@@ -4787,7 +4795,7 @@ export class MergeRequestWatcher {
       ? new RegExp(`^${this.config.gitlab.group}/?`)
       : null;
 
-    const formatMrLine = (mr) => {
+    const formatMrRow = (mr) => {
       const fullRef = mr.references?.full || mr.references?.relative || `!${mr.iid}`;
       const displayRef = groupPrefix ? fullRef.replace(groupPrefix, '') : fullRef;
       const mention = this.userDirectory.formatMention(mr.author);
@@ -4802,12 +4810,16 @@ export class MergeRequestWatcher {
           mr.should_be_rebased === true);
 
       let rebaseBadge = '';
+      let rebaseText = '';
       if (mr.rebase_in_progress) {
         rebaseBadge = ' 🔄 _rebase in progress_';
+        rebaseText = '🔄 rebase in progress';
       } else if (mr.has_conflicts || mr.detailed_merge_status === 'conflict') {
         rebaseBadge = ' 💥 _conflicts_';
+        rebaseText = '💥 conflicts';
       } else if (needsRebase) {
         rebaseBadge = ' ⚠️ _rebase!_';
+        rebaseText = '⚠️ rebase!';
       }
 
       // Rich lists also carry the approval (when it was retrieved) and honour the
@@ -4815,20 +4827,38 @@ export class MergeRequestWatcher {
       const autoMerge = rich ? mr.merge_when_pipeline_succeeds || mr.auto_merge_enabled : mr.merge_when_pipeline_succeeds;
       const autoMergeBadge = autoMerge ? ' 🔀 _auto-merge_' : '';
       let approvalBadge = '';
+      let approvalText = '';
       if (rich && mr.approval_summary?.known) {
         approvalBadge = mr.approval_summary.approved ? ' 👍 _approved_' : ' ⏳ _not approved_';
+        approvalText = mr.approval_summary.approved ? '👍 approved' : '⏳ not approved';
       }
 
-      return `- ${statusEmoji} [${displayRef}](${mr.web_url})${jiraBadge}: ${mr.title} (${mention})${approvalBadge}${rebaseBadge}${autoMergeBadge}`;
+      const refMatch = /^(.*?)(!\d+)$/.exec(displayRef);
+      return {
+        line: `- ${statusEmoji} [${displayRef}](${mr.web_url})${jiraBadge}: ${mr.title} (${mention})${approvalBadge}${rebaseBadge}${autoMergeBadge}`,
+        project: refMatch ? refMatch[1].replace(/\/$/, '') : '',
+        ref: refMatch ? refMatch[2] : displayRef,
+        url: mr.web_url,
+        title: mr.title,
+        state: mrListState({ state: mr.state, draft: mr.draft || mr.work_in_progress }),
+        ciStatus: mr.head_pipeline?.status || mr.pipeline_status || mr.pipeline?.status || null,
+        statusEmoji,
+        author: mention,
+        jira: jiraTicket ? { key: jiraTicket.key, url: jiraTicket.url } : null,
+        badges: [approvalText, rebaseText, autoMerge ? '🔀 auto-merge' : ''].filter(Boolean),
+      };
     };
 
     if (mode === 'user' && userFilter) {
       const filtered = sortMrs(mrs.filter((mr) => this.userDirectory.matchesUser(mr.author, userFilter)));
       const label = userFilterLabel || (typeof userFilter === 'object' ? userFilter.displayName : userFilter);
       if (filtered.length === 0) {
-        return `📋 No open merge requests found for **${label}**.`;
+        return { text: `📋 No open merge requests found for **${label}**.` };
       }
-      return `📋 **Open Merge Requests by ${label}** (${filtered.length} open):\n\n${filtered.map(formatMrLine).join('\n')}`;
+      return {
+        headline: `📋 **Open Merge Requests by ${label}** (${filtered.length} open):`,
+        sections: [{ heading: null, rows: filtered.map(formatMrRow), note: null }],
+      };
     }
 
     const humanMrs = sortMrs(mrs.filter((mr) => !isBotMr(mr)));
@@ -4836,31 +4866,58 @@ export class MergeRequestWatcher {
 
     if (mode === 'bots') {
       if (botMrs.length === 0) {
-        return '🤖 No open renovate or bot merge requests found.';
+        return { text: '🤖 No open renovate or bot merge requests found.' };
       }
-      return `🤖 **Renovate / Bot Updates** (${botMrs.length}):\n\n${botMrs.map(formatMrLine).join('\n')}`;
+      return {
+        headline: `🤖 **Renovate / Bot Updates** (${botMrs.length}):`,
+        sections: [{ heading: null, rows: botMrs.map(formatMrRow), note: null }],
+      };
     }
 
     const sections = [];
     if (humanMrs.length > 0) {
-      sections.push(`👤 **Human Merge Requests** (${humanMrs.length}):\n\n${humanMrs.map(formatMrLine).join('\n')}`);
+      sections.push({
+        heading: `👤 **Human Merge Requests** (${humanMrs.length}):`,
+        rows: humanMrs.map(formatMrRow),
+        note: null,
+      });
     }
 
     if (botMrs.length > 0) {
       if (mode === 'all' || botMrs.length <= 5) {
-        sections.push(`🤖 **Renovate / Bot Updates** (${botMrs.length}):\n\n${botMrs.map(formatMrLine).join('\n')}`);
+        sections.push({
+          heading: `🤖 **Renovate / Bot Updates** (${botMrs.length}):`,
+          rows: botMrs.map(formatMrRow),
+          note: null,
+        });
       } else {
         const displayed = botMrs.slice(0, 5);
         const remaining = botMrs.length - 5;
-        sections.push(
-          `🤖 **Renovate / Bot Updates** (${botMrs.length}, showing top 5 ready/recent):\n\n` +
-          `${displayed.map(formatMrLine).join('\n')}\n\n` +
-          `_...and ${remaining} more bot MRs (use \`/mrs all\` to view all, or \`/mrs bots\` for only bot MRs)_`
-        );
+        sections.push({
+          heading: `🤖 **Renovate / Bot Updates** (${botMrs.length}, showing top 5 ready/recent):`,
+          rows: displayed.map(formatMrRow),
+          note: `_...and ${remaining} more bot MRs (use \`/mrs all\` to view all, or \`/mrs bots\` for only bot MRs)_`,
+        });
       }
     }
 
-    return `📋 **Open Merge Requests** (${mrs.length} total: ${humanMrs.length} human, ${botMrs.length} bot):\n\n${sections.join('\n\n')}`;
+    return {
+      headline: `📋 **Open Merge Requests** (${mrs.length} total: ${humanMrs.length} human, ${botMrs.length} bot):`,
+      sections,
+    };
+  }
+
+  /** The regular markdown of a listing (see collectMrsListing). */
+  renderMrsListing(listing) {
+    if (listing.text) return listing.text;
+    const parts = listing.sections.map((sec) =>
+      [sec.heading, sec.rows.map((row) => row.line).join('\n'), sec.note].filter(Boolean).join('\n\n')
+    );
+    return [listing.headline, ...parts].join('\n\n');
+  }
+
+  formatMrsText(mrs, opts = {}) {
+    return this.renderMrsListing(this.collectMrsListing(mrs, opts));
   }
 
   async getOrFetchMrsText({ force = false, ...parsed } = {}) {
@@ -4875,12 +4932,23 @@ export class MergeRequestWatcher {
     return this.formatMrsMessage(data, parsed);
   }
 
-  /** The /mrs reply: regular markdown, or with rich messages the list card. */
+  /**
+   * The /mrs reply: regular markdown, or with rich messages the list card
+   * (see buildMrListCard). The card shows the GitLab state glyph images; a
+   * list too long for that is tried again with emojis, and one still too long
+   * falls back to the full markdown (which is sent as several cards).
+   */
   formatMrsMessage(mrs, parsed = {}) {
-    return this.richCommandMessage(this.formatMrsText(mrs, { ...parsed, rich: this.richMessages }), {
-      service: 'gitlab',
-      kind: 'Merge requests',
-    });
+    const listing = this.collectMrsListing(mrs, { ...parsed, rich: this.richMessages });
+    const markdown = this.renderMrsListing(listing);
+    if (!this.richMessages || listing.text) return markdown;
+    for (const images of [true, false]) {
+      const message = this.richMessage(markdown, () =>
+        buildMrListCard({ title: listing.headline, sections: listing.sections, images })
+      );
+      if (isRichMessage(message)) return message;
+    }
+    return markdown;
   }
 
   async executeCachedCommand(event, { name, getOrFetch, getCached, errorLabel }) {

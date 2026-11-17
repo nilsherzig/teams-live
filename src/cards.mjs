@@ -19,6 +19,7 @@
 
 import { SERVICE_ICONS } from './card-icons.mjs';
 import { GITLAB_ICONS } from './gitlab-icons.mjs';
+import { GITLAB_ICONS_SMALL } from './gitlab-icons-small.mjs';
 
 export const ADAPTIVE_CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json';
 export const ADAPTIVE_CARD_VERSION = '1.4';
@@ -834,6 +835,157 @@ function markdownBodyItems(lines, from) {
     i += 1;
   }
   return { items, bullets };
+}
+
+// ---------------------------------------------------------------------------
+// Merge request list (/mrs)
+// ---------------------------------------------------------------------------
+
+// State of a listed merge request: the compact GitLab glyph (gitlab-icons-small.mjs),
+// the readable label and, for the image-free variant, an emoji.
+const MR_LIST_STATES = {
+  open: { icon: 'merge-request-open', label: 'Open', emoji: '\u{1F7E2}' },
+  draft: { icon: 'merge-request', label: 'Draft', emoji: '\u{1F4DD}' },
+  merged: { icon: 'merge', label: 'Merged', emoji: '\u{1F7E3}' },
+  closed: { icon: 'merge-request-close', label: 'Closed', emoji: '\u{1F6AB}' },
+};
+
+// Merge readiness that no other element of a row shows (CI has its icon,
+// rebase and conflicts their badges): ready to merge, needs review, checking.
+const MR_LIST_READINESS = {
+  '✅': 'ready to merge',
+  '\u{1F440}': 'needs review',
+  '\u{1F504}': 'checking',
+};
+
+/** State of a listed merge request. Draft never masks a merged or closed one. */
+export function mrListState({ state, draft } = {}) {
+  const s = str(state).toLowerCase();
+  if (s === 'merged') return 'merged';
+  if (s === 'closed') return 'closed';
+  return draft ? 'draft' : 'open';
+}
+
+/** Escapes what a TextBlock would read as markdown in plain text (titles). */
+function escapeMarkdownText(text) {
+  return text.replace(/[\\*_`[\]]/g, (c) => `\\${c}`);
+}
+
+const LIST_ICON_PX = '16px';
+
+/** One image (or, without images, one emoji) in a fixed-width column; an empty one keeps the columns aligned. */
+function listIconColumn(glyph, { images, emoji }) {
+  const item =
+    images && glyph && GITLAB_ICONS_SMALL[glyph.icon]
+      ? { type: 'Image', url: GITLAB_ICONS_SMALL[glyph.icon], altText: glyph.label, width: LIST_ICON_PX, height: LIST_ICON_PX }
+      : textBlock(images ? ' ' : emoji || ' ', { size: 'Small', spacing: 'None' });
+  return { type: 'Column', width: images ? LIST_ICON_PX : 'auto', items: [item] };
+}
+
+/**
+ * One merge request as a compact row: the GitLab state glyph (an emoji
+ * without images), the linked reference and title, and one meta line. The CI
+ * status is the emoji of the other cards ("passed", "failed"...) with its
+ * label.
+ */
+function mrListRow(row, { images }) {
+  const state = MR_LIST_STATES[row.state] || MR_LIST_STATES.open;
+  const ciLabel = row.ciStatus ? `CI ${ciStatusInfo(row.ciStatus).label.toLowerCase()}` : '';
+  const readiness = MR_LIST_READINESS[row.statusEmoji];
+  const author = cardText(row.author || '').replace(/\*\*/g, '');
+  const jira = row.jira?.key ? `\u{1F3AB} ${mdLink(row.jira.key, row.jira.url)}` : '';
+  const meta = [
+    state.label,
+    author,
+    ciLabel && `${ciStatusEmoji(row.ciStatus)} ${ciLabel}`,
+    jira,
+    ...(row.badges || []).map((b) => cardText(b)),
+    readiness && `${row.statusEmoji} ${readiness}`,
+  ].filter(Boolean);
+
+  const title = `${mdLink(row.ref, row.url)} ${escapeMarkdownText(str(row.title))}`.trim();
+  return {
+    type: 'ColumnSet',
+    spacing: 'Small',
+    columns: [
+      listIconColumn({ icon: state.icon, label: state.label }, { images, emoji: state.emoji }),
+      {
+        type: 'Column',
+        width: 'stretch',
+        items: [
+          textBlock(title, { weight: 'Bolder' }),
+          textBlock(meta.join(' · '), { size: 'Small', isSubtle: true, spacing: 'None' }),
+        ],
+      },
+    ],
+  };
+}
+
+/** Rows grouped by project, in order of first appearance. */
+function groupRowsByProject(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const key = str(row.project);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  return [...groups].map(([project, items]) => ({ project, rows: items }));
+}
+
+/**
+ * Card for the merge request list (`/mrs`): a title, then per section a
+ * heading and, per project, a project heading with its merge requests
+ * indented below it (a spacer column, not whitespace). Each row shows the
+ * GitLab state glyph (open, draft, merged, closed), the linked reference and
+ * title, and one meta line with the readable state, author, CI status, Jira
+ * ticket and the approval, rebase and auto-merge badges of the regular list. Nothing is left out: the sections,
+ * rows and notes are the ones of the regular markdown list.
+ *
+ * `images: false` swaps the state glyph images for emojis: a list repeats
+ * the glyph once per row, and a card is limited in size (MAX_CARD_BYTES), so a
+ * long list needs the lighter form.
+ *
+ * `title`/`heading`/`note` are the markdown of the regular list. Returns null
+ * without any row.
+ */
+export function buildMrListCard({ title, sections, images = true, fallbackText } = {}) {
+  const usable = (sections || []).filter((sec) => (sec.rows || []).length > 0);
+  if (usable.length === 0) return null;
+  const clean = (text) =>
+    cardText(text)
+      .replace(/\*\*/g, '')
+      .replace(/:\s*$/, '')
+      .trim();
+  const headTitle = clean(title).replace(/^[^\p{L}\p{N}[(#@!]+/u, '');
+
+  const items = [];
+  for (const sec of usable) {
+    if (sec.heading) items.push(textBlock(`**${clean(sec.heading)}**`, { spacing: 'Medium' }));
+    for (const group of groupRowsByProject(sec.rows)) {
+      const rows = group.rows.map((row) => mrListRow(row, { images }));
+      if (!group.project) {
+        items.push(...rows);
+        continue;
+      }
+      items.push(textBlock(`**${escapeMarkdownText(group.project)}**`, { size: 'Small', spacing: 'Medium' }));
+      items.push({
+        type: 'ColumnSet',
+        spacing: 'None',
+        columns: [
+          { type: 'Column', width: '16px', items: [textBlock(' ', { size: 'Small', spacing: 'None' })] },
+          { type: 'Column', width: 'stretch', items: rows },
+        ],
+      });
+    }
+    if (sec.note) items.push(textBlock(cardText(sec.note), { isSubtle: true, size: 'Small', spacing: 'Small' }));
+  }
+  return assembleCard({
+    service: 'gitlab',
+    kind: 'Merge requests',
+    title: headTitle,
+    extraItems: items,
+    fallbackText,
+  });
 }
 
 // Kind label and container colour of a generic reply, from its leading emoji.

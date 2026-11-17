@@ -234,7 +234,7 @@ link, count or truncation note is lost:
 
 | Command | Card |
 | --- | --- |
-| `/mrs` | List card, one row per merge request with approval, auto-merge, draft and rebase/conflict badges |
+| `/mrs` | Dedicated list card: project headings with indented rows, a GitLab state icon (open, draft, merged, closed) with a readable label, linked `!N` and title, CI status, approval, auto-merge and rebase/conflict badges. Falls back to emoji state markers, then to the markdown list, when the card would exceed the size limit |
 | `/alerts`, `/oncall` | OpsGenie list and on-call card |
 | `/sprint`, `/issue`, `/doc` | Jira sprint, issue and Confluence page cards |
 | `/status <MR>` | Merge request card (open, merged or closed) |

@@ -55,10 +55,9 @@ const factsOf = (card) =>
       .find((i) => i.type === 'FactSet')
       .facts.map((f) => [f.title, f.value.replace(/\[((?:\\.|[^\]\\])*)\]\([^)]*\)/g, '$1')])
   );
-const rowsOf = (card) =>
-  card.body[0].items.flatMap((i) =>
-    i.type === 'TextBlock' ? [i.text] : i.type === 'ColumnSet' ? i.columns.flatMap((c) => c.items.map((t) => t.text)) : []
-  );
+const textsIn = (i) =>
+  i.type === 'TextBlock' ? [i.text] : i.type === 'ColumnSet' ? i.columns.flatMap((c) => c.items.flatMap(textsIn)) : [];
+const rowsOf = (card) => card.body[0].items.flatMap(textsIn);
 
 async function run(fn) {
   const rec = recordTransport();
@@ -252,11 +251,12 @@ test('/mrs: regular markdown by default, list card with approval, auto-merge and
   const rich = on.formatMrsMessage(groupMrs, {});
   assert.equal(isRichMessage(rich), true);
   const rows = rowsOf(rich.card).join('\n');
-  assert.ok(rows.includes('[app!1](https://gitlab.example.com/group/app/-/merge_requests/1)'));
-  assert.ok(rows.includes('_not approved_'));
-  assert.ok(rows.includes('_rebase!_'));
-  assert.ok(rows.includes('_auto-merge_'));
-  assert.ok(rows.includes('_approved_'));
+  assert.ok(rows.includes('[!1](https://gitlab.example.com/group/app/-/merge_requests/1)'));
+  assert.ok(JSON.stringify(rich.card).includes('**app**'));
+  assert.ok(rows.includes('not approved'));
+  assert.ok(rows.includes('rebase!'));
+  assert.ok(rows.includes('auto-merge'));
+  assert.ok(rows.includes('approved'));
   // The card text never carries mention markup; mentions stay in the markdown (see renderReplyContent).
   assert.ok(!JSON.stringify(rich.card).includes('8:orgid'));
   assert.ok(messageMarkdown(rich).includes('Open Merge Requests'));
