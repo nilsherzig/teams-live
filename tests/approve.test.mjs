@@ -618,7 +618,8 @@ test('the merge request card has the Approve button only when a link is present'
   const withLink = card({ approveUrl: `${ORIGIN}/approve/#${'A'.repeat(43)}` });
   const text = JSON.stringify(withLink);
   assert.match(text, /"type":"Action.OpenUrl"/);
-  assert.match(text, /Approve…/);
+  assert.ok(JSON.stringify(withLink.actions ?? withLink).includes("✅ Approve"), "the button reads exactly the check mark and Approve");
+  assert.doesNotMatch(text, /Approve…|Approve\.\.\.|\bApprove -|- Approve/);
   assert.doesNotMatch(JSON.stringify(card({})), /Action\.OpenUrl/);
   assert.doesNotMatch(JSON.stringify(card({ approveUrl: 'javascript:alert(1)' })), /Action\.OpenUrl/);
 });

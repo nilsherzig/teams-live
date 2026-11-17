@@ -14,7 +14,7 @@
 // label for the kind of entity (for example "GitLab - Merge request"), then the
 // title, an optional one-line subtitle and a few facts. Navigation uses inline
 // links (the title and the cross references), not buttons. The one exception
-// is the "Approve..." button of the merge request card (`approveUrl`), which
+// is the "✅ Approve" button of the merge request card (`approveUrl`), which
 // opens a capability-link confirmation page: it never approves by itself.
 
 import { SERVICE_ICONS } from './card-icons.mjs';
@@ -445,7 +445,7 @@ const tri = (value) => (value === true ? true : value === false ? false : null);
  * (unknown reads "Unknown (not retrieved)", never "no"). `pipelineKnown`
  * (true/false/undefined) tells "no pipeline" from a failed lookup. The rebase fact
  * appears only while a rebase is required. Merged and closed merge requests
- * keep the details that are known. `approveUrl` adds an "Approve..." button
+ * keep the details that are known. `approveUrl` adds an "✅ Approve" button
  * that opens a confirmation page (see src/approve.mjs); it never approves by
  * itself.
  */
@@ -525,7 +525,7 @@ export function buildMergeRequestCard(mr) {
       ['Target', mr.targetBranch],
       logoFact('Jira', mdLink(jiraLabel, mr.jira?.url), 'jira'),
     ].filter(Boolean),
-    actions: mr.approveUrl ? [{ title: 'Approve…', url: mr.approveUrl }] : [],
+    actions: mr.approveUrl ? [{ title: '✅ Approve', url: mr.approveUrl }] : [],
     fallbackText: mr.fallbackText,
   });
 }

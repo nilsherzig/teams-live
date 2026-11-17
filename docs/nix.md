@@ -296,7 +296,7 @@ linked too (the pipeline and Jira key of a merge request, and the pipeline and
 merge request of a job or pipeline). A link is only added for a valid http(s)
 URL; without one the text stays plain, and brackets in titles are escaped so
 they cannot break the link. Cards carry no bottom buttons, except the optional
-"Approve..." button of a merge request card (see
+"✅ Approve" button of a merge request card (see
 [Approving from a card](#approving-from-a-card)).
 
 Status lines keep the emojis of the regular messages: approval, pipeline,
@@ -330,7 +330,7 @@ The script uses generic fixture data and refuses channel conversations.
 ### Approving from a card
 
 With `teams.rich_messages` on and the approval flow enabled, an open merge
-request card gets an "Approve..." button. The button opens a confirmation page;
+request card gets an "✅ Approve" button. The button opens a confirmation page;
 it never approves by itself.
 
 The link is a capability: **anyone who has the link can approve that one merge
