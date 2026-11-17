@@ -57,18 +57,14 @@ import {
 } from './users.mjs';
 import { SnakeGame } from './snake.mjs';
 import {
-  TV_AUDIO_LABELS,
-  TV_AUDIO_UNVERIFIED,
   TV_CONTROL_ACTIONS,
-  TV_SWITCH_LABELS,
   TV_USAGE,
   TvProgrammeService,
   TvSwitch,
-  buildProgrammeCard,
-  formatProgrammeText,
   normalizeTvConfig,
   parseTvArgs,
 } from './tv.mjs';
+import { TV_CHANNEL_LABELS, buildTvProgrammeCard, formatProgrammeText, tvControlReply } from './tv-cards.mjs';
 import { AvatarService } from './avatars.mjs';
 import { PLACEHOLDER_AVATAR } from './placeholder-avatar.mjs';
 import { collectCardPeople, isImageDataUri } from './card-user-row.mjs';
@@ -4763,11 +4759,27 @@ export class MergeRequestWatcher {
     }
   }
 
+  /** Whether the TV cards show programme pictures (`tv.artwork`, on by default). */
+  tvArtwork() {
+    return this.tv.config?.artwork !== false;
+  }
+
   /** The `/tv program` reply: regular markdown, or with rich messages the programme card. */
   formatTvProgrammeMessage(data) {
     const markdown = formatProgrammeText(data);
     if (!this.richMessages) return markdown;
-    return this.richMessage(markdown, () => buildProgrammeCard(data));
+    return this.richMessage(markdown, () => buildTvProgrammeCard(data, { artwork: this.tvArtwork() }));
+  }
+
+  /** The reply of a `/tv` control (see tvControlReply): regular markdown, or with rich messages its compact card. */
+  tvControlMessage(outcome) {
+    const { markdown, card } = tvControlReply(outcome, {
+      now: this.tv.now(),
+      timezone: this.tv.config.timezone,
+      artwork: this.tvArtwork(),
+    });
+    if (!this.richMessages) return markdown;
+    return this.richMessage(markdown, () => card);
   }
 
   async executeTvCommand(event, args = []) {
@@ -4813,17 +4825,14 @@ export class MergeRequestWatcher {
       return;
     }
     const name = action.replace('_', ' ');
+    const command = `/tv ${name}`;
     if (!this.tvSwitch.canRun(action)) {
-      log(`/tv ${name}: not configured`);
-      await sendReply(
-        event.conversationId,
-        event,
-        `\u26A0\uFE0F \`/tv ${name}\` is not configured on this daemon (\`tv.switch\`).`
-      );
+      log(`${command}: not configured`);
+      await sendReply(event.conversationId, event, this.tvControlMessage({ type: 'unconfigured', command }));
       react('warning');
       return;
     }
-    log(`Admin /tv ${name} issued by ${event.from || event.fromMri} in ${event.conversationId}`);
+    log(`Admin ${command} issued by ${event.from || event.fromMri} in ${event.conversationId}`);
     let result;
     let doing;
     if (action === 'next' || action === 'prev') {
@@ -4836,29 +4845,45 @@ export class MergeRequestWatcher {
       doing = 'Changing the volume';
       result = await this.tvSwitch.volumeStep(action === 'volume_up' ? 'up' : 'down');
     } else {
-      doing = `Switching to ${TV_SWITCH_LABELS[action]}`;
+      doing = `Switching to ${action === 'off' ? 'off (brb)' : TV_CHANNEL_LABELS[action]}`;
       result = await this.tvSwitch.switchTo(action);
     }
     if (result.noop) {
       // The scene gate refused: nothing was sent, which is not a failure of the daemon.
-      log(`/tv ${name}: nothing to do (${result.error})`);
-      await sendReply(event.conversationId, event, `\u26A0\uFE0F \`/tv ${name}\` did nothing: ${result.error}.`);
+      log(`${command}: nothing to do (${result.error})`);
+      await sendReply(event.conversationId, event, this.tvControlMessage({ type: 'noop', command, reason: result.error }));
       react('warning');
       return;
     }
     if (!result.ok) {
-      log(`/tv ${name} failed: ${result.error}`);
-      await sendReply(event.conversationId, event, `\u274C ${doing} failed: ${result.error}`);
+      log(`${command} failed: ${result.error}`);
+      await sendReply(event.conversationId, event, this.tvControlMessage({ type: 'failed', doing, error: result.error }));
       react('failure');
       return;
     }
-    if (TV_AUDIO_LABELS[action]) {
+    if (result.requested) {
       // A webhook cannot prove OBS acted: say "requested", never "done".
-      await sendReply(event.conversationId, event, `\uD83D\uDCFA ${TV_AUDIO_LABELS[action]} ${TV_AUDIO_UNVERIFIED}`);
+      await sendReply(
+        event.conversationId,
+        event,
+        this.tvControlMessage({ type: 'audio', action, channel: result.channel, level: result.level })
+      );
       react('success');
       return;
     }
-    await sendReply(event.conversationId, event, `\uD83D\uDCFA Switched to ${TV_SWITCH_LABELS[result.target || action]}.`);
+    // The webhook only queued the switch. The readback of the scene (when there is one) decides between
+    // "confirmed" and "requested", and the programme is a best effort next to it: both are bounded, run
+    // side by side, and neither can turn the accepted switch into an error.
+    const target = result.target || action;
+    const [confirmed, programme] = await Promise.all([
+      this.tvSwitch.confirm(target).catch(() => false),
+      target === 'off' ? null : this.tv.channelNow(target).catch(() => null),
+    ]);
+    await sendReply(
+      event.conversationId,
+      event,
+      this.tvControlMessage({ type: 'switch', target, state: confirmed ? 'confirmed' : 'requested', programme })
+    );
     react('success');
   }
 

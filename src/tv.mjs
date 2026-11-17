@@ -8,7 +8,6 @@
  */
 
 import zlib from 'node:zlib';
-import { ADAPTIVE_CARD_SCHEMA, ADAPTIVE_CARD_VERSION } from './cards.mjs';
 
 const str = (value) => (value === undefined || value === null ? '' : String(value).trim());
 
@@ -69,6 +68,8 @@ export function normalizeTvConfig(raw = {}, { baseUrl = '', token = '' } = {}) {
   return {
     timezone: validTimeZone(str(input.timezone)) ? str(input.timezone) : DEFAULT_TIMEZONE,
     cache_ttl_seconds: Number.isFinite(ttl) && ttl >= 0 ? ttl : 300,
+    // Programme pictures in the rich cards (only from the allowlisted EPG hosts, see tv-cards.mjs).
+    artwork: input.artwork !== false,
     channels,
     switch: normalizeSwitchConfig(input.switch, { baseUrl, token }),
   };
@@ -173,6 +174,12 @@ function xmlField(body, tag) {
   return m ? decodeXml(m[1]).replace(/\s+/g, ' ').trim() : '';
 }
 
+/** The `<icon src>` of a programme (the raw URL; the cards only show what passes `safeArtworkUrl`). */
+function xmlIcon(body) {
+  const m = /<icon\b[^>]*\bsrc="([^"]*)"/.exec(body);
+  return m ? decodeXml(m[1]).trim() : '';
+}
+
 /** Programmes of one channel from an XMLTV document, sorted by start. */
 export function parseXmltv(xml, channelId) {
   const wanted = str(channelId);
@@ -188,7 +195,14 @@ export function parseXmltv(xml, channelId) {
     const end = parseXmltvTime(/\bstop="([^"]*)"/.exec(attrs)?.[1]);
     const title = xmlField(m[2], 'title');
     if (!start || !end || !title) continue;
-    out.push({ start, end, title, subtitle: xmlField(m[2], 'sub-title'), description: xmlField(m[2], 'desc') });
+    out.push({
+      start,
+      end,
+      title,
+      subtitle: xmlField(m[2], 'sub-title'),
+      description: xmlField(m[2], 'desc'),
+      image: xmlIcon(m[2]),
+    });
   }
   return out.sort((a, b) => a.start - b.start);
 }
@@ -214,6 +228,7 @@ export function parseArdProgram(json, channelId) {
           title,
           subtitle: str(item.subline || item.coreSubline),
           description: str(item.synopsis).replace(/\s+/g, ' '),
+          image: str(item.images?.aspect16x9?.src),
         });
       }
     }
@@ -298,6 +313,22 @@ export class TvProgrammeService {
     this.fetchImpl = fetchImpl;
     this.now = now;
     this.cache = new Map();
+    this.inflight = new Map();
+  }
+
+  /** One load per channel at a time: a second caller joins the first one's request. */
+  load(key, source, now) {
+    let run = this.inflight.get(key);
+    if (!run) {
+      run = loadProgrammes(source, { fetchImpl: this.fetchImpl, now, timeZone: this.config.timezone })
+        .then((programmes) => {
+          this.cache.set(key, { at: now.getTime(), programmes });
+          return programmes;
+        })
+        .finally(() => this.inflight.delete(key));
+      this.inflight.set(key, run);
+    }
+    return run;
   }
 
   async channelData(key, { force = false } = {}) {
@@ -309,8 +340,7 @@ export class TvProgrammeService {
     let error = null;
     if (!programmes) {
       try {
-        programmes = await loadProgrammes(source, { fetchImpl: this.fetchImpl, now, timeZone: this.config.timezone });
-        this.cache.set(key, { at: now.getTime(), programmes });
+        programmes = await this.load(key, source, now);
       } catch (err) {
         error = err.message;
         // A stale list still answers "what is on" when the source is down.
@@ -322,116 +352,34 @@ export class TvProgrammeService {
     return { key, name: source.name, current, next, error };
   }
 
+  /**
+   * What is on one channel, for a control reply: `{ current, next }`, or null
+   * when the channel has no programme source here, the data is missing or stale,
+   * the source failed, or it did not answer within `timeoutMs`. It never throws
+   * and never waits longer than the bound; a lookup that is still running goes
+   * on and fills the cache for the next call.
+   */
+  async channelNow(key, { timeoutMs = 2500 } = {}) {
+    if (!Object.hasOwn(this.config.channels, key)) return null;
+    let timer;
+    const bound = new Promise((resolve) => {
+      timer = setTimeout(resolve, timeoutMs, null);
+    });
+    try {
+      const data = await Promise.race([this.channelData(key).catch(() => null), bound]);
+      if (!data || data.error || (!data.current && !data.next)) return null;
+      return { current: data.current, next: data.next };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** `{ now, timezone, channels: [{ key, name, current, next, error }] }`; one channel failing does not hide the other. */
   async getProgramme(opts = {}) {
     const now = this.now();
     const channels = await Promise.all(TV_CHANNEL_KEYS.map((key) => this.channelData(key, opts)));
     return { now, timezone: this.config.timezone, channels };
   }
-}
-
-// ---------------------------------------------------------------- formatting
-
-function clock(date, timeZone) {
-  return new Intl.DateTimeFormat('de-DE', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date);
-}
-
-/** Escapes what would be read as markdown or HTML in text from a programme source. */
-function plain(text) {
-  return str(text).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]).replace(/([\\`*_[\]])/g, '\\$1');
-}
-
-function progressPercent(programme, now) {
-  const total = programme.end - programme.start;
-  if (!(total > 0)) return null;
-  return Math.max(0, Math.min(100, Math.round(((now - programme.start) / total) * 100)));
-}
-
-function programmeLine(programme, timeZone) {
-  return `${clock(programme.start, timeZone)}–${clock(programme.end, timeZone)}`;
-}
-
-/** Regular (markdown) reply of `/tv program`. */
-export function formatProgrammeText({ now, timezone, channels }) {
-  const lines = [`\u{1F4FA} **TV programme** (${clock(now, timezone)})`, ''];
-  for (const ch of channels) {
-    lines.push(`**${plain(ch.name)}**`);
-    if (ch.error) {
-      lines.push(`- ⚠️ ${plain(ch.error)}`);
-    } else {
-      if (ch.current) {
-        const pct = progressPercent(ch.current, now);
-        const sub = ch.current.subtitle ? ` — ${plain(ch.current.subtitle)}` : '';
-        lines.push(`- Now: **${plain(ch.current.title)}** (${programmeLine(ch.current, timezone)}${pct === null ? '' : `, ${pct}%`})${sub}`);
-      }
-      if (ch.next) {
-        lines.push(`- Next: ${clock(ch.next.start, timezone)} **${plain(ch.next.title)}**`);
-      }
-    }
-    lines.push('');
-  }
-  return lines.join('\n').trimEnd();
-}
-
-const tb = (text, extra = {}) => ({ type: 'TextBlock', text, wrap: true, ...extra });
-
-/** Progress as a text bar (colour independent), e.g. `▰▰▰▱▱`. */
-function progressBar(pct, width = 10) {
-  const filled = Math.round((pct / 100) * width);
-  return '▰'.repeat(filled) + '▱'.repeat(width - filled);
-}
-
-function programmeRow(label, programme, timeZone, { now = null } = {}) {
-  const pct = now ? progressPercent(programme, now) : null;
-  const rows = [
-    {
-      type: 'ColumnSet',
-      spacing: 'Small',
-      columns: [
-        { type: 'Column', width: '64px', items: [tb(label, { weight: 'Bolder', size: 'Small', isSubtle: true })] },
-        {
-          type: 'Column',
-          width: 'stretch',
-          items: [
-            tb(plain(programme.title), { weight: 'Bolder' }),
-            programme.subtitle ? tb(plain(programme.subtitle), { isSubtle: true, size: 'Small', spacing: 'None' }) : null,
-            tb(
-              `${programmeLine(programme, timeZone)}${pct === null ? '' : `  ${progressBar(pct)} ${pct}%`}`,
-              { size: 'Small', spacing: 'None', isSubtle: true }
-            ),
-          ].filter(Boolean),
-        },
-      ],
-    },
-  ];
-  return rows;
-}
-
-/** Adaptive Card of `/tv program`: one block per channel, running programme first, then the next. */
-export function buildProgrammeCard({ now, timezone, channels }) {
-  if (!channels || channels.length === 0) return null;
-  const items = [
-    tb('\u{1F4FA} TV programme', { weight: 'Bolder', size: 'Medium' }),
-    tb(`as of ${clock(now, timezone)}`, { isSubtle: true, size: 'Small', spacing: 'None' }),
-  ];
-  for (const ch of channels) {
-    const inner = [tb(plain(ch.name), { weight: 'Bolder', color: 'Accent' })];
-    if (ch.error) {
-      inner.push(tb(`⚠️ ${plain(ch.error)}`, { color: 'Attention', size: 'Small' }));
-    } else {
-      if (ch.current) inner.push(...programmeRow('NOW', ch.current, timezone, { now }));
-      if (ch.next) inner.push(...programmeRow('NEXT', ch.next, timezone));
-    }
-    items.push({ type: 'Container', style: 'default', spacing: 'Medium', bleed: false, items: inner });
-  }
-  return {
-    $schema: ADAPTIVE_CARD_SCHEMA,
-    type: 'AdaptiveCard',
-    version: ADAPTIVE_CARD_VERSION,
-    msteams: { width: 'Full' },
-    body: [{ type: 'Container', style: 'emphasis', bleed: false, items }],
-    fallbackText: formatProgrammeText({ now, timezone, channels }).replace(/\\([\\`*_[\]])/g, '$1'),
-  };
 }
 
 // ---------------------------------------------------------------- command
@@ -493,14 +441,12 @@ export const TV_USAGE =
 // ---------------------------------------------------------------- switching
 
 // Home Assistant webhooks are fire and forget: a 2xx proves the request was
-// queued, not that OBS did anything. The wording must not claim more.
-export const TV_AUDIO_LABELS = {
-  mute: 'Mute requested.',
-  volume_up: 'Volume increase requested.',
-  volume_down: 'Volume decrease requested.',
-};
-export const TV_AUDIO_UNVERIFIED = 'Home Assistant accepted the request; the result is not verified.';
-export const TV_SWITCH_LABELS = { ard: 'ARD', zdf: 'ZDF', tagesschau: 'Tagesschau', off: 'off (brb)' };
+// queued, not that OBS did anything. The replies (src/tv-cards.mjs) must not
+// claim more: a switch is "requested" until `confirm()` reads it back.
+
+/** How long, and how often, `confirm()` waits for the scene readback to show a switch. */
+const CONFIRM_SETTLE_MS = 700;
+const CONFIRM_ATTEMPTS = 3;
 
 /** How long a successful switch outranks a readback that still shows the previous channel. */
 const RECENT_SWITCH_MS = 5000;
@@ -515,10 +461,15 @@ const RECENT_SWITCH_MS = 5000;
  * overlap: a `/tv next` always reads the channel the previous one left.
  */
 export class TvSwitch {
-  constructor(config, { fetchImpl = (...args) => globalThis.fetch(...args), now = () => Date.now() } = {}) {
+  constructor(
+    config,
+    { fetchImpl = (...args) => globalThis.fetch(...args), now = () => Date.now(), settleMs = CONFIRM_SETTLE_MS, attempts = CONFIRM_ATTEMPTS } = {}
+  ) {
     this.config = config;
     this.fetchImpl = fetchImpl;
     this.now = now;
+    this.settleMs = settleMs;
+    this.attempts = attempts;
     // The last successful switch and when it happened: a readback that still
     // shows the previous channel right after it is Home Assistant lagging.
     this.recentSwitch = null;
@@ -622,6 +573,26 @@ export class TvSwitch {
       this.recentSwitch = { channel: this.lastKnown, at: this.now() };
     }
     return { ok: true };
+  }
+
+  /**
+   * Whether the readback of the scene shows `target` (a channel key, or `'off'`)
+   * after a switch that the webhook accepted: `true` only when it does. A
+   * webhook only says the request was queued, so the scene is read again a few
+   * times (Home Assistant lags a little). No readback, a failing or unrecognized
+   * one, or another scene all give `false`, which the reply words as "requested":
+   * never as a failure, since the switch may well have worked. It does not use
+   * the "recent switch" memory, which would only confirm the daemon to itself.
+   */
+  async confirm(target) {
+    if (!this.hasReadback()) return false;
+    const wanted = target === 'off' ? null : target;
+    for (let attempt = 0; attempt < this.attempts; attempt++) {
+      if (this.settleMs > 0) await new Promise((resolve) => setTimeout(resolve, this.settleMs));
+      const read = await this.readChannel();
+      if (read.ok && read.channel === wanted) return true;
+    }
+    return false;
   }
 
   /** `{ ok: true }` or `{ ok: false, error }` with a short error that is safe to show. */

@@ -3,12 +3,11 @@ import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
 import { setRichMessages, transport } from '../src/teams.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
+import { buildTvProgrammeCard as buildProgrammeCard, formatProgrammeText } from '../src/tv-cards.mjs';
 import {
   TvProgrammeService,
   TvSwitch,
-  buildProgrammeCard,
   currentAndNext,
-  formatProgrammeText,
   loadProgrammes,
   normalizeTvConfig,
   parseArdProgram,
@@ -446,7 +445,7 @@ async function runSwitch(action, { as = OWNER_MRI, tv = switchConfig(), handler,
   watcher.selfMri = OWNER_MRI;
   watcher.selfOid = '00000000-0000-0000-0000-000000000001';
   const fetched = recordingFetch(handler);
-  watcher.tvSwitch = new TvSwitch(tv.switch, { fetchImpl: fetched.impl });
+  watcher.tvSwitch = new TvSwitch(tv.switch, { fetchImpl: fetched.impl, settleMs: 0 });
   const logged = [];
   const origError = console.error;
   console.error = (...a) => logged.push(a.join(' '));
@@ -465,7 +464,9 @@ test('/tv ard|zdf|off: the owner switches; off asks for the brb scene', async ()
     const r = await runSwitch(action);
     assert.equal(r.requests.length, 1, action);
     assert.ok(r.requests[0].url.endsWith(`-${action}`));
-    assert.match(r.replies, /Switched to/);
+    // No readback is configured: the webhook was accepted, nothing more is known.
+    assert.match(r.replies, /Switch to (ARD|ZDF|off \(brb\)) requested\./);
+    assert.doesNotMatch(r.replies, /Switched to/);
     assert.match(r.reactions[0], /whiteheavycheckmark/);
   }
   const off = await runSwitch('off');
