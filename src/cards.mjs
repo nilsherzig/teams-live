@@ -226,8 +226,13 @@ export function ciStatusInfo(status) {
 }
 
 /** "Status (#id)" fact for a pipeline, with the same emoji as the regular messages. */
-function pipelineFact(pipeline) {
-  if (!pipeline) return null;
+function pipelineFact(pipeline, known) {
+  if (!pipeline) {
+    // No pipeline: say "none" when GitLab was asked, "unknown" when the lookup failed, nothing when not asked.
+    if (known === true) return ['Pipeline', '\ud83c\udfd7\ufe0f None'];
+    if (known === false) return ['Pipeline', '\u2754 Unknown (not retrieved)'];
+    return null;
+  }
   const status = str(pipeline.status);
   const id = pipeline.id ? `#${pipeline.id}` : '';
   if (!status) {
@@ -254,7 +259,8 @@ const tri = (value) => (value === true ? true : value === false ? false : null);
  *
  * `approved` and `autoMerge` are tri-state: true, false, or null/undefined
  * when the value was not retrieved. An open merge request always shows both
- * (unknown reads "Unknown (not retrieved)", never "no"). The rebase fact
+ * (unknown reads "Unknown (not retrieved)", never "no"). `pipelineKnown`
+ * (true/false/undefined) tells "no pipeline" from a failed lookup. The rebase fact
  * appears only while a rebase is required. Merged and closed merge requests
  * keep the details that are known.
  */
@@ -321,7 +327,7 @@ export function buildMergeRequestCard(mr) {
     facts: [
       ['Status', statusLabel],
       ['Approval', approval],
-      pipelineFact(mr.pipeline),
+      pipelineFact(mr.pipeline, mr.pipelineKnown),
       ['Rebase', rebase],
       ['Auto-merge', autoMergeText],
       ['Target', mr.targetBranch],
@@ -514,7 +520,11 @@ export function buildConfluencePageCard(page) {
 // reaches the card and the regular output stays untouched.
 // ---------------------------------------------------------------------------
 
-/** Largest card payload (bytes of JSON) sent; a bigger one falls back to the full markdown. */
+/**
+ * Largest rich message (bytes on the wire, including the fallback copy of the
+ * markdown and the escaping of the `cards` property, see richMessageWireBytes);
+ * a bigger one falls back to the full regular markdown.
+ */
 export const MAX_CARD_BYTES = 24000;
 
 /**
@@ -536,6 +546,23 @@ function cardText(markdown) {
 const BULLET_RE = /^(\s*)(?:([-•*])|(\d+)\.)\s+(.*)$/;
 const FACT_RE = /^(?:([^\s[\]*_`A-Za-z0-9]+)\s+)?\*\*([^*]+)\*\*:\s*(.*)$/;
 const LEADING_EMOJI_RE = /^[\p{Extended_Pictographic}[]/u;
+
+/**
+ * A nested row: a fixed-width spacer column next to the content, so the
+ * hierarchy does not depend on leading spaces (which Teams collapses). The
+ * explicit sub-bullet marker keeps it readable even without the spacer.
+ */
+function indentedRow(block, indent) {
+  const level = Math.min(3, Math.max(1, Math.round(indent / 2)));
+  return {
+    type: 'ColumnSet',
+    spacing: 'None',
+    columns: [
+      { type: 'Column', width: `${level * 16}px`, items: [{ type: 'TextBlock', text: '\u00a0', size: 'Small', spacing: 'None' }] },
+      { type: 'Column', width: 'stretch', items: [block] },
+    ],
+  };
+}
 
 function parseBullet(line) {
   const m = BULLET_RE.exec(line);
@@ -618,9 +645,10 @@ export function buildMarkdownCard(markdown, { service, kind, style = 'emphasis',
     const body = cardText(bullet.body);
     let text;
     if (bullet.ordered) text = `${bullet.number}. ${body}`;
-    else text = LEADING_EMOJI_RE.test(body) ? body : `• ${body}`;
+    else if (bullet.indent > 0) text = LEADING_EMOJI_RE.test(body) ? body : `\u25e6 ${body}`;
+    else text = LEADING_EMOJI_RE.test(body) ? body : `\u2022 ${body}`;
     if (bullet.indent > 0) {
-      items.push(textBlock(`    ${text}`, { spacing: 'None', size: 'Small' }));
+      items.push(indentedRow(textBlock(text, { size: 'Small', spacing: 'None' }), bullet.indent));
     } else {
       items.push(textBlock(text, { spacing: 'Small' }));
     }

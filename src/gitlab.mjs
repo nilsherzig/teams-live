@@ -570,8 +570,11 @@ export class GitLabClient {
     );
 
     let latestPipeline = null;
+    // true when the pipelines were retrieved (an empty list means "none"), false when the lookup failed.
+    let pipelineKnown = false;
     try {
       const pipelines = await this.getPipelines(project, iid);
+      pipelineKnown = Array.isArray(pipelines);
       if (Array.isArray(pipelines) && pipelines.length > 0) {
         latestPipeline = {
           id: pipelines[0].id,
@@ -603,6 +606,7 @@ export class GitLabClient {
       hasConflicts,
       needsRebase,
       pipeline: latestPipeline,
+      pipelineKnown,
       // `merge_when_pipeline_succeeds` is deprecated in favour of
       // `auto_merge_enabled`; null when GitLab reports neither.
       autoMerge:

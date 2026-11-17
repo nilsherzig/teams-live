@@ -570,6 +570,7 @@ test('pipeline with an id but no status reads Unknown', () => {
 // ---------------------------------------------------------------------------
 
 const bodyItems = (card) => card.body[0].items;
+const isNestedRow = (i) => i.type === 'ColumnSet' && /^\d+px$/.test(i.columns[0]?.width ?? '');
 
 test('buildMarkdownCard: head line, fact bullets and list rows', () => {
   const card = buildMarkdownCard(
@@ -641,8 +642,26 @@ test('buildMarkdownCard: ordered and indented rows keep their structure', () => 
     ['\u{1F50D} **Multiple contacts**:', '1. \u{1F464} **Alice Example**', '   - \u{1F4E7} alice@example.com', '2. \u{1F464} **Bob Example**'].join('\n'),
     { service: 'directory', kind: 'Search results' }
   );
-  const rows = bodyItems(card).filter((i) => i.type === 'TextBlock').map((i) => i.text);
+  const items = bodyItems(card);
+  const rows = items.filter((i) => i.type === 'TextBlock').map((i) => i.text);
   assert.ok(rows.includes('1. \u{1F464} **Alice Example**'));
-  assert.ok(rows.some((t) => t.trim() === '\u{1F4E7} alice@example.com' || t.trim().endsWith('alice@example.com')));
   assert.ok(rows.includes('2. \u{1F464} **Bob Example**'));
+  // The nested row is structural (spacer column + content column), not leading spaces,
+  // and keeps its own emoji marker.
+  const nested = items.find(isNestedRow);
+  assert.ok(nested);
+  assert.match(nested.columns[0].width, /^\d+px$/);
+  assert.equal(nested.columns[1].width, 'stretch');
+  assert.equal(nested.columns[1].items[0].text, '\u{1F4E7} alice@example.com');
+  assert.ok(!/^\s/.test(nested.columns[1].items[0].text));
+  // Order is kept: parent, child, next parent.
+  const order = items.map((i) => (isNestedRow(i) ? 'nested' : i.text));
+  assert.ok(order.indexOf('1. \u{1F464} **Alice Example**') < order.indexOf('nested'));
+  assert.ok(order.indexOf('nested') < order.indexOf('2. \u{1F464} **Bob Example**'));
+});
+
+test('buildMarkdownCard: a nested bullet without an emoji gets an explicit sub-bullet marker', () => {
+  const card = buildMarkdownCard(['Head', '', '- parent', '  - child'].join('\n'), { service: 'gitlab', kind: 'x' });
+  const nested = bodyItems(card).find(isNestedRow);
+  assert.equal(nested.columns[1].items[0].text, '\u25e6 child');
 });

@@ -24,6 +24,7 @@ import {
   resolveProfiles,
   escapeHtml,
   makeRichMessage,
+  richMessageWireBytes,
 } from './teams.mjs';
 import {
   buildMergeRequestCard,
@@ -2268,12 +2269,14 @@ export class MergeRequestWatcher {
     try {
       const card = buildCard(markdown);
       if (!card) return markdown;
-      const size = Buffer.byteLength(JSON.stringify(card));
+      const message = makeRichMessage(markdown, card);
+      // Measure what is actually sent: the card with its fallback copy of the markdown, escaped.
+      const size = richMessageWireBytes(message);
       if (size > MAX_CARD_BYTES) {
         log(`Adaptive Card too large (${size} bytes), using regular message`);
         return markdown;
       }
-      return makeRichMessage(markdown, card);
+      return message;
     } catch (e) {
       log(`building Adaptive Card failed, using regular message: ${e.message}`);
       return markdown;
@@ -2361,6 +2364,11 @@ export class MergeRequestWatcher {
       autoMerge: typeof mrDetails?.autoMerge === 'boolean' ? mrDetails.autoMerge : null,
       autoMergeUser: mrDetails?.autoMergeUser,
       pipeline,
+      // "none"/"unknown" only when this card's details are the ones that found no pipeline.
+      pipelineKnown:
+        typeof mrDetails?.pipelineKnown === 'boolean' && !(mrDetails.pipeline && !pipeline)
+          ? mrDetails.pipelineKnown
+          : undefined,
       jira: jiraTicket ? { key: jiraTicket.key, url: jiraTicket.url } : null,
     });
   }

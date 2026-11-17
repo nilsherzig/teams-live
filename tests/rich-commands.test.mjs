@@ -53,7 +53,10 @@ const factsOf = (card) =>
       .find((i) => i.type === 'FactSet')
       .facts.map((f) => [f.title, f.value.replace(/\[((?:\\.|[^\]\\])*)\]\([^)]*\)/g, '$1')])
   );
-const rowsOf = (card) => card.body[0].items.filter((i) => i.type === 'TextBlock').map((i) => i.text);
+const rowsOf = (card) =>
+  card.body[0].items.flatMap((i) =>
+    i.type === 'TextBlock' ? [i.text] : i.type === 'ColumnSet' ? i.columns.flatMap((c) => c.items.map((t) => t.text)) : []
+  );
 
 async function run(fn) {
   const rec = recordTransport();
@@ -378,4 +381,43 @@ test('error and acknowledgement replies stay plain even with rich messages', asy
     watcher.executeWhoisCommand({ conversationId: CONV, messageId: '1700000000000', from: 'Alice Example' }, ['nobody'])
   );
   assert.equal(calls[0].args[1].includes(CARD_TAG), false);
+});
+
+test('size budget counts the fallback copy of the markdown, not just the bare card', () => {
+  const on = newWatcher({ rich_messages: true });
+  const markdown = `Head\n\n${'- row with some text to fill the message\n'.repeat(300)}`;
+  const card = (size) => ({
+    type: 'AdaptiveCard',
+    version: '1.4',
+    body: [{ type: 'TextBlock', text: 'x'.repeat(size) }],
+  });
+  // The bare card alone is well under the limit...
+  assert.ok(Buffer.byteLength(JSON.stringify(card(14000))) < 24000);
+  // ...but with the markdown copy and the wire escaping it is over: the full markdown is sent.
+  const big = on.richMessage(markdown, () => card(14000));
+  assert.equal(big, markdown);
+  // A card that fits including its fallback copy stays a card.
+  const small = on.richMessage('Head\n\n- one', () => card(500));
+  assert.equal(isRichMessage(small), true);
+  assert.equal(messageMarkdown(small), 'Head\n\n- one');
+});
+
+test('/status card: "none" when the MR has no pipeline, "unknown" when the lookup failed', async () => {
+  const on = newWatcher({ rich_messages: true });
+  const facts = (mrState) => {
+    const card = on.buildMrCard({ project: 'group/app', iid: 42, title: 'Add example feature' }, mrState, { state: 'open', pipeline: null }).body;
+    return card;
+  };
+  const base = { state: 'opened', approved: false, approvalKnown: true, status: 'pending', autoMerge: false, pipeline: null };
+  const pipelineOf = (mrState) =>
+    JSON.stringify(facts(mrState)).match(/"title":"Pipeline","value":"([^"]*)"/)?.[1] ?? null;
+  assert.equal(pipelineOf({ ...base, pipelineKnown: true }), '\u{1F3D7}️ None');
+  assert.equal(pipelineOf({ ...base, pipelineKnown: false }), '❔ Unknown (not retrieved)');
+  // Callers that did not ask GitLab keep the previous behaviour (no pipeline fact).
+  assert.equal(pipelineOf(base), null);
+  // A pipeline known to exist elsewhere is never reported as "none".
+  assert.equal(
+    pipelineOf({ ...base, pipelineKnown: true, pipeline: { id: 5, status: 'success' } }),
+    null
+  );
 });

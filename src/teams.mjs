@@ -349,6 +349,18 @@ export function buildCardAttachment(message) {
 }
 
 /**
+ * Size in bytes of what a rich message puts on the wire as a card: the card
+ * with its fallback text (see buildCardAttachment), JSON-escaped once more as
+ * the `cards` string property, plus the HTML body. The size limit applies to
+ * this number, not to the bare card.
+ */
+export function richMessageWireBytes(message) {
+  const attachment = buildCardAttachment(message);
+  const html = `${attachment.tag}<span style="display:none">${BOT_WATERMARK}</span>`;
+  return Buffer.byteLength(JSON.stringify({ content: html, properties: { cards: attachment.cards } }));
+}
+
+/**
  * Renders a message to Teams HTML plus its mention and card properties.
  *
  * A rich message is sent as an Adaptive Card only when its text has no
