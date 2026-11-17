@@ -44,6 +44,7 @@ import {
   ciStatusEmoji as getCiStatusEmoji,
 } from './cards.mjs';
 import { LEADERBOARD_MAX_ENTRIES, PODIUM_SIZE, buildLeaderboardCard, rankLeaderboard } from './card-leaderboard.mjs';
+import { buildLifecycleCard, lifecycleMarkdown } from './lifecycle-card.mjs';
 import {
   UserDirectory,
   normalizeName,
@@ -1391,7 +1392,7 @@ export class MergeRequestWatcher {
     const memRss = Math.round(process.memoryUsage().rss / 1024 / 1024);
 
     const isWhListening = Boolean(this.webhookServer?.listening);
-    let gitlabStatusLine = '';
+    let gitlabFact;
     if (isWhListening) {
       const targetGroup = this.webhookSetupStatus?.group || this.config.gitlab?.group || this.gitlab?.group;
       let setupDetail = '';
@@ -1400,34 +1401,39 @@ export class MergeRequestWatcher {
       } else {
         setupDetail = `listening on :${this.webhookServer.port}, `;
       }
-      gitlabStatusLine = `- **GitLab**: Webhooks active (${setupDetail}fallback poll every ${this.pollIntervalMs / 1000}s)\n`;
+      gitlabFact = ['GitLab', `Webhooks active (${setupDetail}fallback poll every ${this.pollIntervalMs / 1000}s)`];
     } else {
-      gitlabStatusLine = `- **GitLab**: Polling every ${this.pollIntervalMs / 1000}s\n`;
+      gitlabFact = ['GitLab', `Polling every ${this.pollIntervalMs / 1000}s`];
     }
 
-    let msg =
-      '🟢 **teams-live started**\n\n' +
-      `- **Host**: \`${hostname}\`\n` +
-      `- **PID**: \`${pid}\`\n` +
-      `- **Runtime**: Node.js \`${version}\` (${platform})\n` +
-      `- **Memory**: ${memRss} MB\n` +
-      `- **Started**: ${startTime}\n` +
-      `- **Watched Conversations**: ${this.watchedConversations.size} (${convNames})\n` +
-      gitlabStatusLine +
-      `- **Jira**: ${this.jira?.isConfigured() ? 'Active (CKS)' : 'Not configured'}\n` +
-      `- **Home Assistant (HR works)**: ${this.hrworks?.isConfigured() ? 'Active' : 'Not configured'}\n` +
-      `- **Precompute Cache**: Active (every ${this.precomputeIntervalMs / 60000}m)`;
+    const facts = [
+      ['Host', `\`${hostname}\``],
+      ['PID', `\`${pid}\``],
+      ['Runtime', `Node.js \`${version}\` (${platform})`],
+      ['Memory', `${memRss} MB`],
+      ['Started', startTime],
+      ['Watched Conversations', `${this.watchedConversations.size} (${convNames})`],
+      gitlabFact,
+      ['Jira', this.jira?.isConfigured() ? 'Active (CKS)' : 'Not configured'],
+      ['Home Assistant (HR works)', this.hrworks?.isConfigured() ? 'Active' : 'Not configured'],
+      ['Precompute Cache', `Active (every ${this.precomputeIntervalMs / 60000}m)`],
+    ];
 
+    let notice = null;
     if (this.config.gitlab?.is_token_override) {
-      msg +=
-        '\n\n⚠️ **WARNING: GitLab Token Override is Active!**\n' +
-        `- **Override File**: \`${this.config.gitlab.override_token_path}\`\n` +
-        '- The configured secret file was read-only; please update the rotated token in your host configuration/SOPS (`nixos-config-private`) so it persists:\n' +
-        `  \`cat ${this.config.gitlab.override_token_path}\``;
+      const overridePath = this.config.gitlab.override_token_path;
+      notice = {
+        title: 'WARNING: GitLab Token Override is Active!',
+        facts: [['Override File', `\`${overridePath}\``]],
+        body:
+          'The configured secret file was read-only; please update the rotated token in your host configuration/SOPS (`nixos-config-private`) so it persists:',
+        command: `cat ${overridePath}`,
+      };
     }
 
+    const spec = { kind: 'startup', facts, notice };
     log(`Sending startup announcement to ${adminConv}...`);
-    await sendDirectMessage(adminConv, msg);
+    await sendDirectMessage(adminConv, this.richMessage(lifecycleMarkdown(spec), () => buildLifecycleCard(spec)));
   }
 
   async sendShutdownAnnouncement(signal = 'SIGTERM') {
@@ -1443,16 +1449,18 @@ export class MergeRequestWatcher {
     const uptimeStr = `${hours > 0 ? `${hours}h ` : ''}${minutes}m ${seconds}s`;
     const shutdownTime = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
 
-    const msg =
-      '🛑 **teams-live shutting down**\n\n' +
-      `- **Host**: \`${hostname}\`\n` +
-      `- **PID**: \`${pid}\`\n` +
-      `- **Signal**: \`${signal}\`\n` +
-      `- **Uptime**: ${uptimeStr}\n` +
-      `- **Time**: ${shutdownTime}`;
-
+    const spec = {
+      kind: 'shutdown',
+      facts: [
+        ['Host', `\`${hostname}\``],
+        ['PID', `\`${pid}\``],
+        ['Signal', `\`${signal}\``],
+        ['Uptime', uptimeStr],
+        ['Time', shutdownTime],
+      ],
+    };
     log(`Sending shutdown announcement (${signal}) to ${adminConv}...`);
-    await sendDirectMessage(adminConv, msg);
+    await sendDirectMessage(adminConv, this.richMessage(lifecycleMarkdown(spec), () => buildLifecycleCard(spec)));
   }
 
   /** True while a watched Jira issue we could not read is still in its retry back-off. */

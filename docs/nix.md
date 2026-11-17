@@ -227,6 +227,7 @@ out for what the entity is:
 | Jira issue | Summary, type, status, priority, assignee |
 | OpsGenie alert | Message, priority badge (P1 red to P5 subdued), OPEN / ACK'D / CLOSED badge, owner |
 | Confluence page | Title, space, author |
+| Startup and shutdown ("last will") announcements to the admin chat | Green card (container style `good`, green heading and 🟢, ONLINE pill) for the start, red card (`attention`, red heading and 🛑, STOPPED pill) for the shutdown, with every fact of the regular message; the token override warning is a yellow block. The heading, icon and pill carry the colour for clients that ignore container styles. |
 
 Command replies use the same gate. Commands that return structured data answer
 with a card built from the very same markdown as the regular reply, so no fact,
@@ -327,7 +328,7 @@ even for a payload it does not render (the message shows as a blank bubble), so
 try it in your own notes chat first:
 
 ```bash
-node src/smoke-rich.mjs <your-notes-conversation-id> --mode both --kind mr,jira   # --mode regular|rich sends only that kind of message and reply
+node src/smoke-rich.mjs <your-notes-conversation-id> --mode both --kind mr,jira,startup,shutdown   # --mode regular|rich sends only that kind of message and reply
 node src/smoke-rich.mjs <conversation-id> --dry-run   # print the payloads only
 ```
 

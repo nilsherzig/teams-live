@@ -9,7 +9,7 @@
 // Usage:
 //   node src/smoke-rich.mjs <conversationId> [--mode regular|rich|both] [--kind <kind>[,<kind>...]|all] [--dry-run]
 //
-// Kinds: mr, mr-merged, mr-rebase, job, pipeline, jira, opsgenie, confluence.
+// Kinds: mr, mr-merged, mr-rebase, job, pipeline, jira, opsgenie, confluence, startup, shutdown.
 // --dry-run prints the payloads instead of sending them (no Teams session needed).
 // It needs the same auth state as the daemon (HOME, XDG_STATE_HOME, ...).
 import {
@@ -27,6 +27,7 @@ import {
   buildOpsGenieAlertCard,
   buildPipelineCard,
 } from './cards.mjs';
+import { buildLifecycleCard, lifecycleMarkdown } from './lifecycle-card.mjs';
 
 const BASE = 'https://example.com';
 
@@ -39,6 +40,12 @@ const mrBase = {
   jira: { key: 'EX-1', url: `${BASE}/jira/browse/EX-1` },
   pipeline: { id: 7, status: 'success', url: `${BASE}/gitlab/example-group/example-project/-/pipelines/7` },
 };
+
+const lifecycle = (spec) => ({ markdown: lifecycleMarkdown(spec), card: buildLifecycleCard(spec) });
+const LIFECYCLE_HOST_FACTS = [
+  ['Host', '`example-host`'],
+  ['PID', '`4242`'],
+];
 
 const FIXTURES = {
   mr: () => ({
@@ -115,6 +122,33 @@ const FIXTURES = {
       url: `${BASE}/confluence/pages/1`,
     }),
   }),
+  startup: () =>
+    lifecycle({
+      kind: 'startup',
+      facts: [
+        ...LIFECYCLE_HOST_FACTS,
+        ['Runtime', 'Node.js `v22.0.0` (linux x64)'],
+        ['Memory', '80 MB'],
+        ['Started', '2026-01-01 10:00:00 UTC'],
+        ['GitLab', 'Polling every 60s'],
+      ],
+      notice: {
+        title: 'WARNING: GitLab Token Override is Active!',
+        facts: [['Override File', '`/run/example/override-token`']],
+        body: 'The configured secret file was read-only; please update the rotated token so it persists:',
+        command: 'cat /run/example/override-token',
+      },
+    }),
+  shutdown: () =>
+    lifecycle({
+      kind: 'shutdown',
+      facts: [
+        ...LIFECYCLE_HOST_FACTS,
+        ['Signal', '`SIGTERM`'],
+        ['Uptime', '1h 2m 3s'],
+        ['Time', '2026-01-01 11:02:03 UTC'],
+      ],
+    }),
 };
 
 function parseArgs(argv) {
