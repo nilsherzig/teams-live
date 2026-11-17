@@ -115,9 +115,9 @@ test('merge request card: open, approved, green pipeline, auto-merge', () => {
   assert.equal(style(card), 'good');
   const f = facts(card);
   assert.equal(f.Status, '\u{1F7E2} Open');
-  assert.equal(f.Approval, '\u{1F44D} Approved by Alice Example, Bob Example');
+  assert.equal(f.Approval, '\u{1F44D} By Alice Example, Bob Example');
   assert.equal(f.Pipeline, '\u2705 Passed (#7)');
-  assert.equal(f['Auto-merge'], '\u{1F500} Enabled by Alice Example');
+  assert.equal(f['Auto-merge'], '\u{1F500} By Alice Example');
   assert.equal(f.Target, 'main');
   assert.equal(f.Ticket, 'EX-123');
   assert.equal(f.Rebase, undefined);
@@ -583,7 +583,7 @@ test('merge request card: rebase line only when required, with its reason and st
 
 test('merge request card: merged and closed cards keep what is known', () => {
   const merged = facts(buildMergeRequestCard({ ...baseMr, state: 'merged', approved: true, approvedBy: ['Alice Example'], autoMerge: true }));
-  assert.equal(merged.Approval, '\u{1F44D} Approved by Alice Example');
+  assert.equal(merged.Approval, '\u{1F44D} By Alice Example');
   assert.equal(merged['Auto-merge'], '\u{1F500} Enabled');
   // Not approved / disabled are not worth a line once merged.
   const mergedPlain = facts(buildMergeRequestCard({ ...baseMr, state: 'merged', approved: false, autoMerge: false }));

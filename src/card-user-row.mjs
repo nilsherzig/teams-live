@@ -32,10 +32,10 @@ function textColumn(content, extra = {}, width = 'auto') {
   };
 }
 
-export function avatarColumn(name, dataUri) {
+export function avatarColumn(name, dataUri, width = 'auto') {
   return {
     type: 'Column',
-    width: 'auto',
+    width,
     verticalContentAlignment: 'Center',
     items: [{ type: 'Image', url: dataUri, altText: name, style: 'Person', width: `${AVATAR_PX}px`, height: `${AVATAR_PX}px` }],
   };
@@ -53,20 +53,50 @@ export function collectCardPeople(data) {
   return [...new Set(names)];
 }
 
+// The lead ("By") sits in a fixed-width, non-wrapping cell so it can never break
+// character by character; its width follows its length like the label column does.
+const LEAD_PX_PER_CHAR = 9;
+const LEAD_PX_PAD = 6;
+
+function leadColumn(lead, width) {
+  return {
+    type: 'Column',
+    width,
+    verticalContentAlignment: 'Center',
+    items: [{ type: 'TextBlock', text: lead || '\u00A0', wrap: false }],
+  };
+}
+
+// Keeps a name aligned with its neighbours' names when it has no picture itself.
+function pictureSpacer() {
+  return {
+    type: 'Column',
+    width: `${AVATAR_PX}px`,
+    verticalContentAlignment: 'Center',
+    items: [{ type: 'TextBlock', text: '\u00A0', wrap: false }],
+  };
+}
+
 /**
  * @param {string} label  row label (bold)
  * @param {Array<{name: string, avatar?: string}>} people
  * @param {object} [opts]
- * @param {string} [opts.lead]  text between label and people, e.g. "Approved by"
+ * @param {string} [opts.lead]  short text before the first person, e.g. "By"; it keeps its own fixed width
  * @param {number} [opts.charBudget]  remaining picture budget for this card
  * @param {string} [opts.labelWidth]  fixed label column width, so the label lines up with the other fact rows
  * @returns {{row: object, usedChars: number}|null}
+ *
+ * Layout: the label column, then ONE stretch value column (so the value starts
+ * where every other fact row's value starts) holding one line per person:
+ * [lead] [picture] [name]. Only the name column stretches, so on a narrow
+ * screen only the name wraps, at word boundaries; the label, the lead and the
+ * picture never shrink or break.
  */
 export function userRow(label, people, { lead = '', charBudget = MAX_AVATAR_CHARS_PER_CARD, maxAvatars = MAX_AVATARS_PER_ROW, labelWidth = 'auto' } = {}) {
   let remaining = charBudget;
   let shown = 0;
   let used = 0;
-  const personColumns = [];
+  const entries = [];
   for (const person of people || []) {
     const name = text(person?.name);
     if (!name) continue;
@@ -75,14 +105,24 @@ export function userRow(label, people, { lead = '', charBudget = MAX_AVATAR_CHAR
       remaining -= avatar.length;
       used += avatar.length;
       shown += 1;
-      personColumns.push(avatarColumn(name, avatar), textColumn(name));
+      entries.push({ name, avatar });
     } else {
-      personColumns.push(textColumn(name));
+      entries.push({ name, avatar: null });
     }
   }
   if (shown === 0) return null;
-  const columns = [textColumn(text(label), { weight: 'Bolder' }, labelWidth)];
-  if (text(lead)) columns.push(textColumn(text(lead)));
-  columns.push(...personColumns);
-  return { row: { type: 'ColumnSet', spacing: 'Small', columns }, usedChars: used };
+  const leadText = text(lead);
+  const leadWidth = `${Math.ceil(Array.from(leadText).length * LEAD_PX_PER_CHAR) + LEAD_PX_PAD}px`;
+  const lines = entries.map(({ name, avatar }, index) => {
+    const columns = [];
+    if (leadText) columns.push(leadColumn(index === 0 ? leadText : '', leadWidth));
+    columns.push(avatar ? avatarColumn(name, avatar, `${AVATAR_PX}px`) : pictureSpacer());
+    columns.push(textColumn(name, {}, 'stretch'));
+    return index === 0 ? { type: 'ColumnSet', columns } : { type: 'ColumnSet', spacing: 'Small', columns };
+  });
+  const labelColumn = textColumn(text(label), { weight: 'Bolder' }, labelWidth);
+  // With several people stacked, the label stays with the first line.
+  if (entries.length > 1) labelColumn.verticalContentAlignment = 'Top';
+  const valueColumn = { type: 'Column', width: 'stretch', items: lines };
+  return { row: { type: 'ColumnSet', spacing: 'Small', columns: [labelColumn, valueColumn] }, usedChars: used };
 }

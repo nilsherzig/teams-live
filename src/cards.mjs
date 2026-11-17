@@ -509,14 +509,14 @@ export function buildMergeRequestCard(mr) {
   const approvers = (mr.approvedBy || []).filter(Boolean);
   let approval = '';
   if (approved === true) {
-    approval = `👍 Approved${approvers.length > 0 ? ` by ${approvers.join(', ')}` : ''}`;
+    approval = approvers.length > 0 ? `👍 By ${approvers.join(', ')}` : '👍 Approved';
   } else if (live || (state === 'closed' && approved === false)) {
     approval = approved === false ? '⏳ Not approved yet' : '❔ Unknown (not retrieved)';
   }
 
   let autoMergeText = '';
   if (autoMerge === true) {
-    autoMergeText = `🔀 Enabled${mr.autoMergeUser ? ` by ${mr.autoMergeUser}` : ''}`;
+    autoMergeText = mr.autoMergeUser ? `🔀 By ${mr.autoMergeUser}` : '🔀 Enabled';
   } else if (live) {
     autoMergeText = autoMerge === false ? '⏸️ Disabled' : '❔ Unknown (not retrieved)';
   }
@@ -543,12 +543,12 @@ export function buildMergeRequestCard(mr) {
       ['Status', statusLabel],
       author ? personFact('Author', author, [author], mr.avatars) : ['Author', ''],
       approved === true && approvers.length > 0
-        ? personFact('Approval', approval, approvers.map(str), mr.avatars, '👍 Approved by')
+        ? personFact('Approval', approval, approvers.map(str), mr.avatars, '👍 By')
         : ['Approval', approval],
       pipelineFact(mr.pipeline, mr.pipelineKnown),
       ['Rebase', rebase],
       autoMerge === true && mr.autoMergeUser
-        ? personFact('Auto-merge', autoMergeText, [str(mr.autoMergeUser)], mr.avatars, '🔀 Enabled by')
+        ? personFact('Auto-merge', autoMergeText, [str(mr.autoMergeUser)], mr.avatars, '🔀 By')
         : ['Auto-merge', autoMergeText],
       ['Target', mr.targetBranch],
       logoFact('Ticket', mdLink(jiraLabel, mr.jira?.url), 'jira'),
