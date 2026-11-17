@@ -956,3 +956,14 @@ test('merge request card: without a Jira reference there is no Ticket row, the s
     );
   }
 });
+
+test('service logos are small palette PNGs: every card header carries one and a card has a byte limit', () => {
+  for (const [service, url] of Object.entries(SERVICE_ICONS)) {
+    assert.match(url, /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/, service);
+    const png = Buffer.from(url.split(',')[1], 'base64');
+    assert.equal(png.readUInt32BE(16), 48, `${service} is 3x of the 16px slot`);
+    assert.equal(png.readUInt32BE(20), 48);
+    assert.equal(png[25], 3, `${service} is a palette PNG (colour type 3)`);
+    assert.ok(url.length < 1000, `${service} logo is ${url.length} characters`);
+  }
+});
