@@ -998,7 +998,7 @@ function listIconColumn(glyph, { images, emoji }) {
  * without images), the linked reference and title, and one meta line. The CI
  * status is the emoji of the other cards ("passed", "failed"...) with its
  * label. With `avatars`, a row whose author has a picture (`row.avatar`, a
- * data URI) shows it, 20px like on the other cards, in a column on the right.
+ * data URI) shows it, 18px like on the other cards, in a column on the right.
  */
 function mrListRow(row, { images, avatars = false }) {
   const state = MR_LIST_STATES[row.state] || MR_LIST_STATES.open;

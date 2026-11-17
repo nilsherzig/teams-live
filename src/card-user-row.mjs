@@ -8,7 +8,7 @@
  * layout unchanged.
  */
 
-export const AVATAR_PX = 20;
+export const AVATAR_PX = 18;
 // Total size of the embedded pictures per card (characters of the data URIs).
 // Cards are limited on the wire (MAX_CARD_BYTES), so extra pictures are dropped
 // in favour of names before the card could outgrow it: a full MR card is already

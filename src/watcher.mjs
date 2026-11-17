@@ -73,7 +73,7 @@ const SNAKE_FRAME_DELAY_MS = 1800;
 const REBASE_PREFIX = '**Rebase';
 // Author pictures on the /mrs list card: all lookups share one deadline (a list has many
 // rows, so not 1.5 s each), and every picture costs its data URI plus the column markup.
-// They use the smaller 24px server-side resize (shown at 20px): a list has little wire room.
+// They use the smaller 24px server-side resize (shown at 18px): a list has little wire room.
 const MRS_LIST_AVATAR_SIZE = 'HR24x24';
 const MRS_LIST_AVATAR_DEADLINE_MS = 2800;
 const MRS_LIST_AVATAR_MARGIN = 150;

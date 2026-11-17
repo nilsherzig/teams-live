@@ -79,7 +79,7 @@ const personsIn = (message) => {
   return found;
 };
 
-test('/mrs list: a row whose author has an exact picture shows it at 20px, next to the author', async () => {
+test('/mrs list: a row whose author has an exact picture shows it at 18px, next to the author', async () => {
   const fetched = [];
   const w = newWatcher({ fetched });
   const mrs = [mr(1, ALICE_GL), mr(2, BOB_GL), mr(3, { name: 'Carol Example', username: 'carol' })];
@@ -89,8 +89,8 @@ test('/mrs list: a row whose author has an exact picture shows it at 20px, next 
   const images = personsIn(message);
   assert.deepEqual(images.map((i) => i.altText).sort(), ['Alice Example', 'Bob Example']);
   for (const image of images) {
-    assert.equal(image.width, '20px');
-    assert.equal(image.height, '20px');
+    assert.equal(image.width, '18px');
+    assert.equal(image.height, '18px');
     assert.match(image.url, /^data:image\/jpeg;base64,/);
   }
   // The author names stay on the meta lines; Carol has no Teams identity and is name only.
@@ -119,7 +119,7 @@ test('/mrs list: every fact of the plain list card is kept, pictures only add a 
   const without = await plain.getOrFetchMrsText({});
   assert.equal(personsIn(without).length, 0);
   assert.equal(messageMarkdown(withPictures), messageMarkdown(without));
-  const strip = (card) => JSON.stringify(card).replace(/\{"type":"Column","width":"auto","verticalContentAlignment":"Center","items":\[\{"type":"Image","url":"data:[^"]+","altText":"[^"]+","style":"Person","width":"20px","height":"20px"\}\]\},?/g, '');
+  const strip = (card) => JSON.stringify(card).replace(/\{"type":"Column","width":"auto","verticalContentAlignment":"Center","items":\[\{"type":"Image","url":"data:[^"]+","altText":"[^"]+","style":"Person","width":"18px","height":"18px"\}\]\},?/g, '');
   const normalize = (s) => s.replace(/,\]/g, ']');
   assert.equal(normalize(strip(cardOf(withPictures))), normalize(JSON.stringify(cardOf(without))));
   // The GitLab state glyphs are still images, not emojis.

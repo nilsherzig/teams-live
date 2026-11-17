@@ -570,7 +570,7 @@ test('regular output is byte-identical without pictures', () => {
   }
 });
 
-test('jira assignee gets a round 20px picture next to the name', () => {
+test('jira assignee gets a round 18px picture next to the name', () => {
   const card = buildJiraIssueCard({ ...JIRA, avatars: { 'Alice Example': URI } });
   const [row] = rows(card);
   assert.ok(row);
@@ -580,7 +580,7 @@ test('jira assignee gets a round 20px picture next to the name', () => {
   assert.equal(value.width, 'stretch');
   assert.deepEqual(
     { type: avatar.items[0].type, style: avatar.items[0].style, width: avatar.items[0].width, height: avatar.items[0].height, altText: avatar.items[0].altText, url: avatar.items[0].url },
-    { type: 'Image', style: 'Person', width: '20px', height: '20px', altText: 'Alice Example', url: URI },
+    { type: 'Image', style: 'Person', width: '18px', height: '18px', altText: 'Alice Example', url: URI },
   );
   assert.equal(name.items[0].text, 'Alice Example');
   assert.equal(items(card).filter((i) => i.type === 'FactSet').length, 0, 'a picture turns the facts into aligned rows');
