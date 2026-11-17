@@ -84,7 +84,7 @@ export const TV_SWITCH_TARGETS = ['ard', 'zdf', 'tagesschau'];
 export const TV_SWITCH_ACTIONS = [...TV_SWITCH_TARGETS, 'off'];
 export const TV_CYCLE_ACTIONS = ['next', 'prev'];
 // Audio controls; the routing itself is configured elsewhere, these only fire its webhooks.
-export const TV_AUDIO_ACTIONS = ['mute', 'volume_up', 'volume_down'];
+export const TV_AUDIO_ACTIONS = ['mute', 'unmute', 'volume_up', 'volume_down'];
 export const TV_CONTROL_ACTIONS = [...TV_SWITCH_ACTIONS, ...TV_CYCLE_ACTIONS, ...TV_AUDIO_ACTIONS];
 const TV_WEBHOOK_KEYS = [...TV_SWITCH_ACTIONS, ...TV_AUDIO_ACTIONS, 'volume'];
 const DEFAULT_VOLUME_STEP = 0.05;
@@ -414,12 +414,13 @@ const isTagesschau = (word) =>
 
 /**
  * `/tv` arguments to an action: `programme`, `ard`, `zdf`, `tagesschau`, `off`,
- * `next`, `prev`, `help` (no argument) or `unknown`.
+ * `next`, `prev`, `mute`, `unmute`, `volume_up`, `volume_down`, `help` (no argument) or `unknown`.
  */
 export function parseTvArgs(args = []) {
   const first = str(args[0]).toLowerCase();
   if (!first) return { action: 'help' };
   if (first === 'mute') return { action: 'mute' };
+  if (first === 'unmute') return { action: 'unmute' };
   if (VOLUME_ALIASES.has(first)) {
     const dir = str(args[1]).toLowerCase();
     if (UP_ALIASES.has(dir)) return { action: 'volume_up' };
@@ -436,7 +437,7 @@ export function parseTvArgs(args = []) {
 }
 
 export const TV_USAGE =
-  'Usage: `/tv program` (what is on now and next on ARD and ZDF); owner only: `/tv ard`, `/tv zdf`, `/tv tagesschau`, `/tv next`, `/tv prev`, `/tv off`, `/tv mute`, `/tv vol up`, `/tv vol down`.';
+  'Usage: `/tv program` (what is on now and next on ARD and ZDF); owner only: `/tv ard`, `/tv zdf`, `/tv tagesschau`, `/tv next`, `/tv prev`, `/tv off`, `/tv mute`, `/tv unmute`, `/tv vol up` (also unmutes), `/tv vol down`.';
 
 // ---------------------------------------------------------------- switching
 
@@ -686,12 +687,28 @@ export class TvSwitch {
   }
 
   /**
+   * `/tv unmute`: mute off, explicit like `mute` (`muted: false`), never a
+   * toggle, so repeating it is harmless. The same scene gate as `mute`.
+   */
+  unmute() {
+    return this.serialize(async () => {
+      const gate = await this.audioGate();
+      if (!gate.ok) return gate;
+      const result = await this.post('unmute', { muted: false });
+      return result.ok ? { ok: true, requested: true, channel: gate.channel } : result;
+    });
+  }
+
+  /**
    * `/tv vol up|down`: one bounded step. With a volume entity configured the
    * level is read, moved by one step, clamped to 0..1 and set absolutely (the
    * `volume` webhook), which keeps repeated steps exact; without it the
    * receiver gets `volume_up`/`volume_down` with the step and does the maths.
-   * It never unmutes by itself, and like `mute` it only runs while a channel
-   * scene is on air (`audioGate`).
+   * `up` also unmutes the source (the helper does it after the step, also at
+   * the top of the range; with the absolute `volume` webhook the daemon posts
+   * the `unmute` webhook after the level, when that one is configured), `down`
+   * never does. Like `mute` it only runs while a channel scene is on air
+   * (`audioGate`).
    */
   volumeStep(direction) {
     return this.serialize(async () => {
@@ -709,7 +726,12 @@ export class TvSwitch {
       if (!Number.isFinite(level)) return { ok: false, error: 'could not read the volume (state unavailable)' };
       const next = Math.min(1, Math.max(0, Math.round((level + (action === 'volume_up' ? step : -step)) * 1000) / 1000));
       const result = await this.post('volume', { level: next });
-      return result.ok ? { ok: true, requested: true, channel: gate.channel, level: next } : result;
+      if (!result.ok) return result;
+      if (action === 'volume_up' && this.isConfigured('unmute')) {
+        const unmuted = await this.post('unmute', { muted: false });
+        if (!unmuted.ok) return { ok: false, error: `the volume was requested, but the unmute failed (${unmuted.error})` };
+      }
+      return { ok: true, requested: true, channel: gate.channel, level: next };
     });
   }
 }

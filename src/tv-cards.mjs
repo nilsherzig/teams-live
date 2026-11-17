@@ -1,7 +1,7 @@
 // The cards of the `/tv` command, in a module of their own.
 //
 // - `tvControlReply()` is the reply of a control (`/tv ard|zdf|tagesschau|off`,
-//   `next|prev`, `mute`, `vol up|down`) and of its refusals and errors: the
+//   `next|prev`, `mute`, `unmute`, `vol up|down`) and of its refusals and errors: the
 //   regular markdown message and a compact Adaptive Card for the optional rich
 //   messages. The card is a layout of its own (channel logo, channel name and
 //   the state under it, the programme when known), not the generic markdown
@@ -69,7 +69,8 @@ const TV = '\u{1F4FA}';
 /** The title of an audio control; the reply says "requested" because a webhook cannot prove more. */
 export const TV_AUDIO_TITLES = Object.freeze({
   mute: 'Mute requested',
-  volume_up: 'Volume increase requested',
+  unmute: 'Unmute requested',
+  volume_up: 'Volume increase and unmute requested',
   volume_down: 'Volume decrease requested',
 });
 

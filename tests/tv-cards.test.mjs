@@ -268,8 +268,11 @@ test('audio reply: "requested", never "done", and the detail is in the status li
   assert.doesNotMatch(mute.markdown, /Muted/);
   assert.deepEqual(texts(mute.card), ['Mute requested', 'ARD · accepted, not verified']);
   const up = tvControlReply({ type: 'audio', action: 'volume_up', channel: 'zdf', level: 0.55 });
-  assert.deepEqual(texts(up.card), ['Volume increase requested', 'ZDF · target 55% · accepted, not verified']);
+  assert.deepEqual(texts(up.card), ['Volume increase and unmute requested', 'ZDF · target 55% · accepted, not verified']);
   assert.match(tvControlReply({ type: 'audio', action: 'volume_down', channel: 'ard' }).markdown, /Volume decrease requested\./);
+  const unmute = tvControlReply({ type: 'audio', action: 'unmute', channel: 'ard' });
+  assert.match(unmute.markdown, /Unmute requested\. Home Assistant accepted the request; the result is not verified\./);
+  assert.deepEqual(texts(unmute.card), ['Unmute requested', 'ARD · accepted, not verified']);
 });
 
 test('refusal, failure and "not configured" replies: a warning or error card with the reason, no channel logo', () => {
@@ -327,7 +330,7 @@ const tvConfig = (extra = {}) =>
     },
     switch: {
       base_url: 'https://ha.example',
-      webhooks: { ard: `${SECRET_ID}-ard`, zdf: `${SECRET_ID}-zdf`, tagesschau: `${SECRET_ID}-tagesschau`, off: `${SECRET_ID}-off`, mute: `${SECRET_ID}-mute` },
+      webhooks: { ard: `${SECRET_ID}-ard`, zdf: `${SECRET_ID}-zdf`, tagesschau: `${SECRET_ID}-tagesschau`, off: `${SECRET_ID}-off`, mute: `${SECRET_ID}-mute`, unmute: `${SECRET_ID}-unmute` },
       state: { entity_id: 'select.scene_x', token: TOKEN },
       ...extra.switch,
     },
@@ -487,11 +490,21 @@ test('/tv mute (rich): "Mute requested" with the detail in the card, and a refus
   assert.match(brb.reactions[0], /warning|exclamation|crossmark|⚠/i);
 });
 
+test('/tv unmute (rich): "Unmute requested" with the detail in the card, and a refused one stays a warning', async () => {
+  const r = await run(['unmute'], { rich: true, ha: fakeHa({ scene: 'ard' }) });
+  assert.deepEqual(texts(r.cards[0]), ['Unmute requested', 'ARD · accepted, not verified']);
+  assert.deepEqual(r.ha.posts, [{ action: 'unmute', muted: false }]);
+  const brb = await run(['unmute'], { rich: true, ha: fakeHa({ scene: 'brb' }) });
+  assert.match(words(brb.cards[0])[0], /did nothing/);
+  assert.deepEqual(brb.ha.posts, []);
+});
+
 test('no reply, card, log or reaction contains a webhook id, URL or token', async () => {
   const cases = [
     ['ard', {}],
     ['zdf', { ha: fakeHa({ applies: false }) }],
     ['mute', {}],
+    ['unmute', {}],
     ['off', {}],
     ['ard', { ha: { ha: { posts: [] }, handler: async () => { throw new Error(`getaddrinfo ENOTFOUND ha.example ${SECRET_ID}`); } } }],
     ['ard', { epg: epgFetch({ 'https://epg.example/': new Error(`secret ${TOKEN}`) }) }],

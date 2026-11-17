@@ -497,7 +497,7 @@ export const COMMAND_CATEGORIES = [
       '- `/tv program` (or `/tv programme`): Shows what is on now and next on ARD and ZDF.',
       '- `/tv ard`, `/tv zdf`, `/tv tagesschau`, `/tv off`: Switches the stream input, or to the "brb" scene (owner only).',
       '- `/tv next`, `/tv prev`: Cycles ARD, ZDF, Tagesschau (owner only; from off: next is ARD, prev is Tagesschau).',
-      '- `/tv mute`, `/tv vol up`, `/tv vol down`: Mutes the TV or steps its volume (owner only).',
+      '- `/tv mute`, `/tv unmute`, `/tv vol up`, `/tv vol down`: Mutes or unmutes the TV, or steps its volume; `vol up` also unmutes (owner only).',
       '- `/weather [location]`: Shows current weather for location (default: Berlin).',
       '- `/whereis [search]` (or `/where`): Checks if a person is available, in a meeting (with join link), or away.',
       '- `/whois <search>` (or `/who`): Looks up a person in the Teams directory and shows contact details.',
@@ -4810,7 +4810,7 @@ export class MergeRequestWatcher {
 
   /**
    * The owner-only `/tv` controls (same policy as /restart), fail-closed:
-   * `ard|zdf|tagesschau|off`, `next|prev`, `mute`, `vol up|down`. Webhook URLs,
+   * `ard|zdf|tagesschau|off`, `next|prev`, `mute`, `unmute`, `vol up|down`. Webhook URLs,
    * ids and the Home Assistant token never appear in a reply or in the log.
    */
   async executeTvSwitchCommand(event, action) {
@@ -4839,6 +4839,9 @@ export class MergeRequestWatcher {
     } else if (action === 'mute') {
       doing = 'Muting';
       result = await this.tvSwitch.mute();
+    } else if (action === 'unmute') {
+      doing = 'Unmuting';
+      result = await this.tvSwitch.unmute();
     } else if (action === 'volume_up' || action === 'volume_down') {
       doing = 'Changing the volume';
       result = await this.tvSwitch.volumeStep(action === 'volume_up' ? 'up' : 'down');
