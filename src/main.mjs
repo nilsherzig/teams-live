@@ -235,7 +235,7 @@ async function main() {
     }
   }
 
-  // Approve button: authenticated confirmation page (fails closed when misconfigured)
+  // Approve button: capability-link confirmation page (fails closed when misconfigured)
   const apCfg = config.gitlab?.approve;
   if (apCfg?.enable) {
     if (config.teams?.rich_messages !== true) {
@@ -245,12 +245,8 @@ async function main() {
       approveServer = new ApproveServer({
         gitlab,
         baseUrl: apCfg.base_url,
-        ownerUsers: apCfg.owner_users,
-        proxySecret: apCfg.proxy_secret,
         host: apCfg.host,
         port: apCfg.port,
-        userHeader: apCfg.user_header,
-        proxySecretHeader: apCfg.proxy_secret_header,
         linkTtlSeconds: apCfg.link_ttl_seconds,
         stateFile: path.join(config.gitlab.state_dir, 'approve-links.json'),
         refreshCards: (project, iid) => watcher.refreshMrCards(project, iid),

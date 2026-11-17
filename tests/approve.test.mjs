@@ -4,11 +4,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { ApproveServer, ApprovalStore, CsrfTokens, normalizeOwnerUsers } from '../src/approve.mjs';
+import crypto from 'node:crypto';
+
+import { ApproveServer, ApprovalStore, CsrfTokens, normalizeLinkTtlSeconds } from '../src/approve.mjs';
 import { buildMergeRequestCard } from '../src/cards.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 
-const SECRET = 'proxy-secret-for-tests';
 const ORIGIN = 'https://approve.example.com';
 const SHA = 'a'.repeat(40);
 const PROJECT = 'group/app';
@@ -39,121 +40,209 @@ function makeGitlab(overrides = {}) {
   return gitlab;
 }
 
-async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, now, ownerUsers = ['Owner'] } = {}) {
+async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, now, linkTtlSeconds } = {}) {
   const server = new ApproveServer({
     gitlab,
     baseUrl: `${ORIGIN}/approve`,
-    ownerUsers,
-    proxySecret: SECRET,
     port: 0,
     stateFile,
     refreshCards,
     now,
+    linkTtlSeconds,
   });
   await server.start();
   const base = `http://127.0.0.1:${server.port}`;
-  const link = server.store.linkFor({ project: PROJECT, iid: IID, sha: SHA });
-  const headers = (extra = {}) => ({ 'X-Teams-Live-Proxy-Secret': SECRET, 'Remote-User': 'owner', ...extra });
-  const get = (id = link.id, h = headers()) => fetch(`${base}/approve/${id}`, { headers: h });
+  const { token, record } = server.store.linkFor({ project: PROJECT, iid: IID, sha: SHA });
+  const form = (fields) => new URLSearchParams(fields).toString();
+  const FORM = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  const entry = () => fetch(`${base}/approve/`);
+  const bootstrap = (t = token, headers = {}) =>
+    fetch(`${base}/approve/session`, { method: 'POST', headers: { ...FORM, Origin: ORIGIN, ...headers }, body: form({ token: t }) });
+  const cookieOf = (res) => /tl_approve=[^;]+/.exec(res.headers.get('set-cookie') || '')?.[0] || null;
+  const open = async (t = token) => cookieOf(await bootstrap(t));
+  const page = (cookie) => fetch(`${base}/approve/confirm`, { headers: cookie ? { Cookie: cookie } : {} });
   const csrfFrom = async (res) => /name="csrf" value="([^"]+)"/.exec(await res.text())?.[1];
-  const post = (id, form, h = {}) =>
-    fetch(`${base}/approve/${id}`, {
+  const post = (cookie, fields, headers = {}) =>
+    fetch(`${base}/approve/confirm`, {
       method: 'POST',
-      headers: headers({ 'Content-Type': 'application/x-www-form-urlencoded', Origin: ORIGIN, ...h }),
-      body: new URLSearchParams(form).toString(),
+      headers: { ...FORM, Origin: ORIGIN, ...(cookie ? { Cookie: cookie } : {}), ...headers },
+      body: form(fields),
     });
-  const confirm = async (h = {}) => post(link.id, { csrf: await csrfFrom(await get()) }, h);
-  return { server, gitlab, link, base, headers, get, post, csrfFrom, confirm };
+  const confirm = async (headers = {}) => {
+    const cookie = await open();
+    return post(cookie, { csrf: await csrfFrom(await page(cookie)) }, headers);
+  };
+  return { server, gitlab, token, record, base, entry, bootstrap, cookieOf, open, page, csrfFrom, post, confirm };
 }
 
-test('constructor fails closed without owners, secret, base url or on a non-loopback host', () => {
-  const ok = { gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve`, ownerUsers: ['owner'], proxySecret: SECRET };
+test('constructor fails closed on a missing, insecure or non-loopback configuration', () => {
+  const ok = { gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve` };
   assert.doesNotThrow(() => new ApproveServer(ok));
-  assert.throws(() => new ApproveServer({ ...ok, ownerUsers: [] }), /owner_users/);
-  assert.throws(() => new ApproveServer({ ...ok, proxySecret: '  ' }), /secret/);
+  assert.doesNotThrow(() => new ApproveServer({ ...ok, baseUrl: 'http://127.0.0.1:3006/approve' }), 'plain http only on loopback');
   assert.throws(() => new ApproveServer({ ...ok, baseUrl: '' }), /base_url/);
+  assert.throws(() => new ApproveServer({ ...ok, baseUrl: 'http://approve.example.com/approve' }), /https/);
+  assert.throws(() => new ApproveServer({ ...ok, baseUrl: `${ORIGIN}/approve#frag` }), /fragment/);
   assert.throws(() => new ApproveServer({ ...ok, host: '0.0.0.0' }), /loopback/);
+  assert.throws(() => new ApproveServer({ gitlab: null, baseUrl: `${ORIGIN}/approve` }), /GitLab client/);
 });
 
-test('normalizeOwnerUsers accepts arrays and comma or newline separated text', () => {
-  assert.deepEqual(normalizeOwnerUsers(['Alice', ' bob ', '']), ['alice', 'bob']);
-  assert.deepEqual(normalizeOwnerUsers('Alice,bob\ncarol'), ['alice', 'bob', 'carol']);
-  assert.deepEqual(normalizeOwnerUsers(undefined), []);
+test('the link lifetime defaults to 24 hours and is hard bounded', () => {
+  assert.equal(normalizeLinkTtlSeconds(undefined), 86400);
+  assert.equal(normalizeLinkTtlSeconds('garbage'), 86400);
+  assert.equal(normalizeLinkTtlSeconds(-5), 86400);
+  assert.equal(normalizeLinkTtlSeconds(5), 60);
+  assert.equal(normalizeLinkTtlSeconds(3600), 3600);
+  assert.equal(normalizeLinkTtlSeconds(10 * 365 * 86400), 7 * 86400);
 });
 
-test('ids are opaque 192-bit base64url and records are reused per project, merge request and head', () => {
+test('tokens are random 256-bit, only their hash is stored, and the link keeps the token in the fragment', () => {
   const store = new ApprovalStore();
   const a = store.linkFor({ project: PROJECT, iid: IID, sha: SHA });
-  assert.match(a.id, /^[A-Za-z0-9_-]{32}$/);
-  assert.equal(store.linkFor({ project: PROJECT.toUpperCase(), iid: IID, sha: SHA }).id, a.id);
+  assert.match(a.token, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(a.record.id, crypto.createHash('sha256').update(a.token).digest('hex'));
+  assert.equal(JSON.stringify([...store.records.values()]).includes(a.token), false);
+  assert.equal(store.byToken(a.token).sha, SHA);
+  assert.equal(store.byToken('A'.repeat(43)), null);
+  assert.equal(store.byToken('short'), null);
+  // The same open link is shown again (card refresh), case-insensitively per project.
+  assert.equal(store.linkFor({ project: PROJECT.toUpperCase(), iid: IID, sha: SHA }).token, a.token);
+  // A new head commit supersedes the old link.
   const b = store.linkFor({ project: PROJECT, iid: IID, sha: 'b'.repeat(40) });
-  assert.notEqual(b.id, a.id);
-  assert.equal(store.records.get(a.id).status, 'stale');
+  assert.notEqual(b.token, a.token);
+  assert.equal(store.byId(a.record.id).status, 'stale');
   assert.equal(store.linkFor({ project: PROJECT, iid: IID, sha: null }), null);
+
+  const server = new ApproveServer({ gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve` });
+  const url = new URL(server.linkFor({ project: PROJECT, iid: IID, sha: SHA }));
+  assert.equal(url.origin, ORIGIN);
+  assert.equal(url.pathname, '/approve/');
+  assert.equal(url.search, '');
+  assert.match(url.hash, /^#[A-Za-z0-9_-]{43}$/);
 });
 
-test('unauthenticated, spoofed and wrong-owner requests are rejected before anything happens', async () => {
+test('the entry page is static: no token needed, no GitLab call, hash-pinned script and hardening headers', async () => {
   const ctx = await setup();
   try {
-    const noSecret = await ctx.get(ctx.link.id, { 'Remote-User': 'owner' });
-    assert.equal(noSecret.status, 401);
-    const wrongSecret = await ctx.get(ctx.link.id, ctx.headers({ 'X-Teams-Live-Proxy-Secret': 'nope' }));
-    assert.equal(wrongSecret.status, 401);
-    const noUser = await ctx.get(ctx.link.id, { 'X-Teams-Live-Proxy-Secret': SECRET });
-    assert.equal(noUser.status, 401);
-    const listUser = await ctx.get(ctx.link.id, ctx.headers({ 'Remote-User': 'owner, mallory' }));
-    assert.equal(listUser.status, 401);
-    const other = await ctx.get(ctx.link.id, ctx.headers({ 'Remote-User': 'mallory' }));
-    assert.equal(other.status, 403);
-    const post = await ctx.post(ctx.link.id, { csrf: 'x' }, { 'Remote-User': 'mallory' });
-    assert.equal(post.status, 403);
+    for (const method of ['GET', 'HEAD']) {
+      const res = await fetch(`${ctx.base}/approve/`, { method });
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('cache-control'), 'no-store');
+      assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+      assert.equal(res.headers.get('x-frame-options'), 'DENY');
+      assert.equal(res.headers.get('referrer-policy'), 'same-origin');
+      const csp = res.headers.get('content-security-policy');
+      assert.match(csp, /default-src 'none'/);
+      assert.match(csp, /frame-ancestors 'none'/);
+      assert.match(csp, /connect-src 'self'/);
+      assert.doesNotMatch(csp, /unsafe-eval|https?:\/\/(?!approve\.example\.com)/);
+      if (method === 'GET') {
+        const html = await res.text();
+        const script = /<script>([\s\S]*?)<\/script>/.exec(html)[1];
+        const hash = `sha256-${crypto.createHash('sha256').update(script).digest('base64')}`;
+        assert.ok(csp.includes(`script-src '${hash}'`), 'the CSP pins exactly this script');
+        assert.doesNotMatch(html, /src=|href=|https?:\/\//, 'no third-party or external resources');
+        assert.match(script, /history\.replaceState/, 'the fragment is cleared from the address bar');
+        assert.match(script, /location\.hash/);
+      }
+    }
     assert.equal(ctx.gitlab.calls.getMr, 0);
     assert.equal(ctx.gitlab.calls.approve.length, 0);
+    assert.equal((await fetch(`${ctx.base}/approve/${ctx.token}`)).status, 404, 'the token is not a path');
+    assert.equal((await fetch(`${ctx.base}/elsewhere`)).status, 404);
   } finally {
     await ctx.server.stop();
   }
 });
 
-test('GET and HEAD never mutate and carry the hardening headers', async () => {
+test('the bootstrap sets a hardened session cookie and neither approves nor consumes the link', async () => {
   const ctx = await setup();
   try {
-    const res = await ctx.get();
+    const res = await ctx.bootstrap();
+    assert.equal(res.status, 200);
+    const setCookie = res.headers.get('set-cookie');
+    assert.match(setCookie, /^tl_approve=[A-Za-z0-9_-]{43};/);
+    assert.match(setCookie, /HttpOnly/);
+    assert.match(setCookie, /SameSite=Strict/);
+    assert.match(setCookie, /Secure/);
+    assert.match(setCookie, /Path=\/approve/);
+    assert.doesNotMatch(await res.text() + setCookie, new RegExp(ctx.token));
+    assert.equal(ctx.gitlab.calls.getMr, 0, 'no GitLab call');
+    assert.equal(ctx.gitlab.calls.approve.length, 0);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open', 'not consumed');
+    // Any number of bootstraps (scanners) leave the link usable.
+    for (let i = 0; i < 5; i++) assert.equal((await ctx.bootstrap()).status, 200);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('the bootstrap checks origin, content type, token format and state', async () => {
+  const ctx = await setup();
+  try {
+    assert.equal((await ctx.bootstrap(ctx.token, { Origin: 'https://evil.example.org' })).status, 403);
+    const noOrigin = await fetch(`${ctx.base}/approve/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `token=${ctx.token}`,
+    });
+    assert.equal(noOrigin.status, 403, 'neither Origin nor Referer');
+    const json = await fetch(`${ctx.base}/approve/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: ORIGIN },
+      body: '{}',
+    });
+    assert.equal(json.status, 415);
+    assert.equal((await ctx.bootstrap('A'.repeat(43))).status, 404, 'unknown');
+    assert.equal((await ctx.bootstrap('nope')).status, 404, 'malformed');
+    assert.equal((await fetch(`${ctx.base}/approve/session`)).status, 405, 'GET is not a bootstrap');
+    ctx.server.store.setStatus(ctx.record.id, 'stale');
+    assert.equal((await ctx.bootstrap()).status, 410, 'superseded');
+    ctx.server.store.setStatus(ctx.record.id, 'approved');
+    assert.equal((await ctx.bootstrap()).status, 410, 'used');
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('repeated invalid tokens are throttled', async () => {
+  const ctx = await setup();
+  try {
+    let last;
+    for (let i = 0; i < 70; i++) last = await ctx.bootstrap(crypto.randomBytes(32).toString('base64url'));
+    assert.equal(last.status, 429);
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('the confirmation page needs a session, shows the account honestly and never mutates on GET or HEAD', async () => {
+  const ctx = await setup();
+  try {
+    assert.equal((await ctx.page()).status, 401, 'no cookie');
+    assert.equal((await ctx.page('tl_approve=garbage')).status, 401, 'bad cookie');
+    assert.equal((await ctx.page(`tl_approve=${'A'.repeat(43)}`)).status, 401, 'unknown session');
+    assert.equal(ctx.gitlab.calls.getMr, 0);
+
+    const cookie = await ctx.open();
+    const res = await ctx.page(cookie);
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.match(html, /Approve merge request/);
-    assert.match(html, /<form method="post"/);
+    assert.match(html, /<form method="post" action="https:\/\/approve\.example\.com\/approve\/confirm"/);
+    assert.match(html, /configured GitLab account/);
+    assert.match(html, /not as you personally/);
     assert.equal(res.headers.get('cache-control'), 'no-store');
-    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
-    assert.equal(res.headers.get('x-frame-options'), 'DENY');
-    assert.equal(res.headers.get('referrer-policy'), 'same-origin');
-    const csp = res.headers.get('content-security-policy');
-    assert.match(csp, /default-src 'none'/);
-    assert.match(csp, /frame-ancestors 'none'/);
-    assert.match(csp, new RegExp(`form-action ${ORIGIN}`));
-
-    const before = ctx.gitlab.calls.getMr;
-    const head = await fetch(`${ctx.base}/approve/${ctx.link.id}`, { method: 'HEAD', headers: ctx.headers() });
+    assert.doesNotMatch(res.headers.get('content-security-policy'), /script-src/);
+    const head = await fetch(`${ctx.base}/approve/confirm`, { method: 'HEAD', headers: { Cookie: cookie } });
     assert.equal(head.status, 200);
-    assert.equal(ctx.gitlab.calls.getMr, before, 'HEAD does not contact GitLab');
     assert.equal(ctx.gitlab.calls.approve.length, 0);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
   } finally {
     await ctx.server.stop();
   }
 });
 
-test('unknown, malformed and cross-prefix ids are not found', async () => {
-  const ctx = await setup();
-  try {
-    assert.equal((await ctx.get('short')).status, 404);
-    assert.equal((await ctx.get('A'.repeat(32))).status, 404);
-    const bare = await fetch(`${ctx.base}/${ctx.link.id}`, { headers: ctx.headers() });
-    assert.equal(bare.status, 200, 'the proxy may strip the prefix');
-  } finally {
-    await ctx.server.stop();
-  }
-});
-
-test('a confirmed POST approves once with the displayed head SHA and refreshes the card', async () => {
+test('a confirmed POST approves once with the displayed head SHA, uses the link up and refreshes the card', async () => {
   const refreshes = [];
   const ctx = await setup({
     refreshCards: async (project, iid) => {
@@ -169,12 +258,29 @@ test('a confirmed POST approves once with the displayed head SHA and refreshes t
     assert.match(html, /refresh was run/);
     assert.deepEqual(ctx.gitlab.calls.approve, [{ project: PROJECT, iid: String(IID), opts: { sha: SHA } }]);
     assert.deepEqual(refreshes, [[PROJECT, String(IID)]]);
-    assert.equal(ctx.server.store.get(ctx.link.id).status, 'approved');
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'approved');
 
-    // A replay never approves a second time.
+    // The link cannot be used again: a replay, a new session and a bootstrap all fail.
+    const cookie = await ctx.open().catch(() => null);
+    assert.equal(cookie, null);
+    assert.equal((await ctx.bootstrap()).status, 410);
     const again = await ctx.confirm();
-    assert.equal(again.status, 200);
-    assert.match(await again.text(), /already approved/i);
+    assert.equal(again.status, 401);
+    assert.equal(ctx.gitlab.calls.approve.length, 1);
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('a session that already holds the page cannot replay the confirmation', async () => {
+  const ctx = await setup();
+  try {
+    const cookie = await ctx.open();
+    const csrf = await ctx.csrfFrom(await ctx.page(cookie));
+    assert.equal((await ctx.post(cookie, { csrf })).status, 200);
+    const replay = await ctx.post(cookie, { csrf });
+    assert.equal(replay.status, 410);
+    assert.match(await replay.text(), /already used/);
     assert.equal(ctx.gitlab.calls.approve.length, 1);
   } finally {
     await ctx.server.stop();
@@ -194,14 +300,14 @@ test('concurrent POSTs approve exactly once', async () => {
   };
   const ctx = await setup({ gitlab });
   try {
-    const token = await ctx.csrfFrom(await ctx.get());
-    const first = ctx.post(ctx.link.id, { csrf: token });
-    const second = ctx.post(ctx.link.id, { csrf: token });
+    const cookie = await ctx.open();
+    const csrf = await ctx.csrfFrom(await ctx.page(cookie));
+    const first = ctx.post(cookie, { csrf });
+    const second = ctx.post(cookie, { csrf });
     await new Promise((r) => setTimeout(r, 100));
     release();
-    const [a, b] = await Promise.all([first, second]);
-    assert.equal(a.status, 200);
-    assert.equal(b.status, 200);
+    const statuses = (await Promise.all([first, second])).map((r) => r.status).sort();
+    assert.deepEqual(statuses, [200, 410]);
     assert.equal(ctx.gitlab.calls.approve.length, 1);
   } finally {
     release();
@@ -212,18 +318,27 @@ test('concurrent POSTs approve exactly once', async () => {
 test('CSRF and origin checks reject a POST without approving', async () => {
   const ctx = await setup();
   try {
-    const token = await ctx.csrfFrom(await ctx.get());
-    assert.equal((await ctx.post(ctx.link.id, {})).status, 403, 'missing token');
-    assert.equal((await ctx.post(ctx.link.id, { csrf: 'garbage' })).status, 403, 'bad token');
-    assert.equal((await ctx.post(ctx.link.id, { csrf: `${token}x` })).status, 403, 'tampered token');
-    assert.equal((await ctx.post(ctx.link.id, { csrf: token }, { Origin: 'https://evil.example.org' })).status, 403, 'foreign origin');
-    const noOrigin = await fetch(`${ctx.base}/approve/${ctx.link.id}`, {
+    const cookie = await ctx.open();
+    const csrf = await ctx.csrfFrom(await ctx.page(cookie));
+    assert.equal((await ctx.post(cookie, {})).status, 403, 'missing token');
+    assert.equal((await ctx.post(cookie, { csrf: 'garbage' })).status, 403, 'bad token');
+    assert.equal((await ctx.post(cookie, { csrf: `${csrf}x` })).status, 403, 'tampered token');
+    assert.equal((await ctx.post(cookie, { csrf }, { Origin: 'https://evil.example.org' })).status, 403, 'foreign origin');
+    assert.equal((await ctx.post(null, { csrf })).status, 401, 'no session');
+
+    // A token of another session of the same link is not valid here.
+    const other = await ctx.open();
+    const otherCsrf = await ctx.csrfFrom(await ctx.page(other));
+    assert.equal((await ctx.post(cookie, { csrf: otherCsrf })).status, 403, 'bound to the session');
+
+    const noOrigin = await fetch(`${ctx.base}/approve/confirm`, {
       method: 'POST',
-      headers: ctx.headers({ 'Content-Type': 'application/x-www-form-urlencoded' }),
-      body: new URLSearchParams({ csrf: token }).toString(),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookie },
+      body: new URLSearchParams({ csrf }).toString(),
     });
     assert.equal(noOrigin.status, 403, 'neither Origin nor Referer');
-    const referer = await ctx.post(ctx.link.id, { csrf: token }, { Origin: '', Referer: `${ORIGIN}/approve/${ctx.link.id}` });
+    assert.equal(ctx.gitlab.calls.approve.length, 0);
+    const referer = await ctx.post(cookie, { csrf }, { Origin: '', Referer: `${ORIGIN}/approve/confirm` });
     assert.equal(referer.status, 200, 'a matching Referer is an accepted fallback');
     assert.equal(ctx.gitlab.calls.approve.length, 1);
   } finally {
@@ -231,30 +346,31 @@ test('CSRF and origin checks reject a POST without approving', async () => {
   }
 });
 
-test('a CSRF token is bound to the owner, the record and its expiry', () => {
+test('a CSRF token is bound to the session, the link and its expiry', () => {
   let now = 1_000_000;
   const csrf = new CsrfTokens({ now: () => now, ttlMs: 1000 });
-  const token = csrf.issue('owner', 'id-1');
-  assert.equal(csrf.verify(token, 'owner', 'id-1'), true);
-  assert.equal(csrf.verify(token, 'someone', 'id-1'), false);
-  assert.equal(csrf.verify(token, 'owner', 'id-2'), false);
-  assert.equal(new CsrfTokens().verify(token, 'owner', 'id-1'), false, 'another process key');
+  const token = csrf.issue('session-1', 'id-1');
+  assert.equal(csrf.verify(token, 'session-1', 'id-1'), true);
+  assert.equal(csrf.verify(token, 'session-2', 'id-1'), false);
+  assert.equal(csrf.verify(token, 'session-1', 'id-2'), false);
+  assert.equal(new CsrfTokens().verify(token, 'session-1', 'id-1'), false, 'another process key');
   now += 1001;
-  assert.equal(csrf.verify(token, 'owner', 'id-1'), false, 'expired');
+  assert.equal(csrf.verify(token, 'session-1', 'id-1'), false, 'expired');
 });
 
 test('wrong content type and oversized bodies are rejected', async () => {
   const ctx = await setup();
   try {
-    const json = await fetch(`${ctx.base}/approve/${ctx.link.id}`, {
+    const cookie = await ctx.open();
+    const json = await fetch(`${ctx.base}/approve/confirm`, {
       method: 'POST',
-      headers: ctx.headers({ 'Content-Type': 'application/json', Origin: ORIGIN }),
+      headers: { 'Content-Type': 'application/json', Origin: ORIGIN, Cookie: cookie },
       body: '{}',
     });
     assert.equal(json.status, 415);
-    const big = await fetch(`${ctx.base}/approve/${ctx.link.id}`, {
+    const big = await fetch(`${ctx.base}/approve/confirm`, {
       method: 'POST',
-      headers: ctx.headers({ 'Content-Type': 'application/x-www-form-urlencoded', Origin: ORIGIN }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: ORIGIN, Cookie: cookie },
       body: `csrf=${'a'.repeat(10_000)}`,
     }).catch(() => null);
     if (big) assert.equal(big.status, 413);
@@ -264,34 +380,38 @@ test('wrong content type and oversized bodies are rejected', async () => {
   }
 });
 
-test('a changed head commit is rejected as stale and marks the link stale', async () => {
+test('a changed head commit is rejected as stale and invalidates the link', async () => {
   const ctx = await setup();
   try {
-    const token = await ctx.csrfFrom(await ctx.get());
+    const cookie = await ctx.open();
+    const csrf = await ctx.csrfFrom(await ctx.page(cookie));
     ctx.gitlab.mr = { ...ctx.gitlab.mr, sha: 'c'.repeat(40) };
-    const res = await ctx.post(ctx.link.id, { csrf: token });
+    const res = await ctx.post(cookie, { csrf });
     assert.equal(res.status, 409);
     assert.match(await res.text(), /changed after this card was posted/);
     assert.equal(ctx.gitlab.calls.approve.length, 0);
-    assert.equal(ctx.server.store.get(ctx.link.id).status, 'stale');
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'stale');
+    assert.equal((await ctx.bootstrap()).status, 410);
   } finally {
     await ctx.server.stop();
   }
 });
 
-test('closed, merged and draft merge requests are not offered or approved', async () => {
-  for (const [patch, pattern] of [
-    [{ state: 'closed' }, /no longer open/],
-    [{ state: 'merged' }, /merged/],
-    [{ draft: true }, /draft/],
+test('closed, merged and draft merge requests are not offered or approved; closed and merged invalidate the link', async () => {
+  for (const [patch, pattern, invalidated] of [
+    [{ state: 'closed' }, /no longer open/, true],
+    [{ state: 'merged' }, /merged/, true],
+    [{ draft: true }, /draft/, false],
   ]) {
     const ctx = await setup();
     try {
+      const cookie = await ctx.open();
       ctx.gitlab.mr = { ...ctx.gitlab.mr, ...patch };
-      const page = await ctx.get();
+      const page = await ctx.page(cookie);
       assert.equal(page.status, 409);
       assert.match(await page.text(), pattern);
       assert.equal(ctx.gitlab.calls.approve.length, 0);
+      assert.equal(ctx.server.store.byId(ctx.record.id).status, invalidated ? 'stale' : 'open');
     } finally {
       await ctx.server.stop();
     }
@@ -309,7 +429,7 @@ test('identity decides: already approved, unknown and not-allowed are refused wi
     gitlab.userState = userState;
     const ctx = await setup({ gitlab });
     try {
-      const res = await ctx.get();
+      const res = await ctx.page(await ctx.open());
       assert.equal(res.status, status);
       assert.match(await res.text(), pattern);
       assert.equal(gitlab.calls.approve.length, 0);
@@ -331,7 +451,7 @@ test('a pending merge status such as ci_must_pass does not block the approval', 
   }
 });
 
-test('GitLab errors are reported honestly without rendering GitLab text', async () => {
+test('GitLab errors are reported honestly without rendering GitLab text and do not burn the link', async () => {
   const gitlab = makeGitlab();
   gitlab.approveError = new Error('GitLab error (403): <script>secret-detail</script>');
   const ctx = await setup({ gitlab });
@@ -341,12 +461,13 @@ test('GitLab errors are reported honestly without rendering GitLab text', async 
     const html = await res.text();
     assert.match(html, /Nothing was approved/);
     assert.doesNotMatch(html, /secret-detail/);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
   } finally {
     await ctx.server.stop();
   }
 });
 
-test('an uncertain outcome checks the own approval before reporting', async () => {
+test('an uncertain outcome checks the own approval and only a confirmed approval consumes the link', async () => {
   // The request fails after GitLab applied it: the recheck finds the approval.
   const gitlab = makeGitlab();
   gitlab.approveError = new Error('GitLab request failed (network)');
@@ -356,11 +477,12 @@ test('an uncertain outcome checks the own approval before reporting', async () =
     const res = await ctx.confirm();
     assert.equal(res.status, 200);
     assert.match(await res.text(), /Approved in GitLab/);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'approved');
   } finally {
     await ctx.server.stop();
   }
 
-  // The recheck finds nothing: say so.
+  // The recheck finds nothing: say so; the link stays usable.
   const g2 = makeGitlab();
   g2.approveError = new Error('GitLab error (502): bad gateway');
   ctx = await setup({ gitlab: g2 });
@@ -368,11 +490,12 @@ test('an uncertain outcome checks the own approval before reporting', async () =
     const res = await ctx.confirm();
     assert.equal(res.status, 502);
     assert.match(await res.text(), /no approval is recorded/);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
   } finally {
     await ctx.server.stop();
   }
 
-  // The recheck itself is unavailable: the outcome is unknown.
+  // The recheck itself is unavailable: the outcome is unknown; the link is not burned.
   const g3 = makeGitlab();
   g3.approveError = new Error('GitLab request failed (network)');
   g3.userState = () =>
@@ -382,6 +505,7 @@ test('an uncertain outcome checks the own approval before reporting', async () =
     const res = await ctx.confirm();
     assert.equal(res.status, 502);
     assert.match(await res.text(), /may or may not be approved/);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
   } finally {
     await ctx.server.stop();
   }
@@ -407,22 +531,50 @@ test('a failing card refresh is reported without over-claiming', async () => {
   }
 });
 
-test('links survive a restart, expire and are bounded; nothing secret is stored', () => {
+test('links and sessions expire; the default lifetime is 24 hours', async () => {
+  let now = 1_000_000_000;
+  const ctx = await setup({ now: () => now });
+  try {
+    assert.equal(ctx.record.expiresAt - ctx.record.createdAt, 24 * 3600 * 1000);
+    const cookie = await ctx.open();
+    assert.equal((await ctx.page(cookie)).status, 200);
+    now += 16 * 60 * 1000;
+    assert.equal((await ctx.page(cookie)).status, 401, 'the session expires after 15 minutes');
+    assert.equal((await ctx.bootstrap()).status, 200, 'the link itself is still valid');
+    now += 24 * 3600 * 1000;
+    assert.equal((await ctx.bootstrap()).status, 404, 'the link expired');
+  } finally {
+    await ctx.server.stop();
+  }
+
+  const short = await setup({ linkTtlSeconds: 120, now: () => now });
+  try {
+    assert.equal(short.record.expiresAt - short.record.createdAt, 120_000);
+    const cookie = await short.open();
+    now += 121_000;
+    assert.equal((await short.page(cookie)).status, 401, 'a session never outlives its link');
+  } finally {
+    await short.server.stop();
+  }
+});
+
+test('records survive a restart as hashes only, expire and are bounded; nothing secret is stored or logged', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'approve-test-'));
   const file = path.join(dir, 'links.json');
   try {
     let now = 1_000_000;
     const first = new ApprovalStore({ file, ttlMs: 10_000, now: () => now });
-    const rec = first.linkFor({ project: PROJECT, iid: IID, sha: SHA });
+    const { token, record } = first.linkFor({ project: PROJECT, iid: IID, sha: SHA });
     assert.equal(fs.statSync(file).mode & 0o777, 0o600);
     const raw = fs.readFileSync(file, 'utf8');
-    assert.doesNotMatch(raw, /secret|token|csrf/i);
+    assert.equal(raw.includes(token), false, 'the token is not stored');
+    assert.match(raw, new RegExp(record.id));
 
     const second = new ApprovalStore({ file, ttlMs: 10_000, now: () => now });
     second.load();
-    assert.equal(second.get(rec.id)?.sha, SHA, 'survives a restart');
+    assert.equal(second.byToken(token)?.sha, SHA, 'the link survives a restart');
     now += 10_001;
-    assert.equal(second.get(rec.id), null, 'expired');
+    assert.equal(second.byToken(token), null, 'expired');
 
     const capped = new ApprovalStore({ max: 3, now: () => ++now });
     for (let i = 0; i < 6; i++) capped.linkFor({ project: PROJECT, iid: i, sha: SHA });
@@ -431,15 +583,39 @@ test('links survive a restart, expire and are bounded; nothing secret is stored'
     fs.writeFileSync(file, '{not json');
     const broken = new ApprovalStore({ file });
     assert.doesNotThrow(() => broken.load());
+
+    // Records of the former path-id format are ignored.
+    fs.writeFileSync(file, JSON.stringify({ version: 1, records: [{ id: 'A'.repeat(32), project: PROJECT, iid: '1', sha: SHA, createdAt: now, expiresAt: now + 1e9, status: 'open' }] }));
+    const old = new ApprovalStore({ file, now: () => now });
+    old.load();
+    assert.equal(old.records.size, 0);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the token never reaches the logs', async () => {
+  const lines = [];
+  const original = console.error;
+  console.error = (...args) => lines.push(args.join(' '));
+  const gitlab = makeGitlab();
+  gitlab.approveError = new Error('GitLab error (409): conflict');
+  const ctx = await setup({ gitlab });
+  try {
+    await ctx.confirm();
+    await ctx.bootstrap('A'.repeat(43));
+    assert.ok(lines.length > 0);
+    assert.equal(lines.some((l) => l.includes(ctx.token)), false);
+  } finally {
+    console.error = original;
+    await ctx.server.stop();
   }
 });
 
 test('the merge request card has the Approve button only when a link is present', () => {
   const base = { state: 'open', iid: 7, project: PROJECT, title: 'Example', url: 'https://gitlab.example.com/x', approved: false };
   const card = (extra) => buildMergeRequestCard({ ...base, ...extra }).card ?? buildMergeRequestCard({ ...base, ...extra });
-  const withLink = card({ approveUrl: `${ORIGIN}/approve/${'A'.repeat(32)}` });
+  const withLink = card({ approveUrl: `${ORIGIN}/approve/#${'A'.repeat(43)}` });
   const text = JSON.stringify(withLink);
   assert.match(text, /"type":"Action.OpenUrl"/);
   assert.match(text, /Approve…/);
@@ -460,7 +636,7 @@ function watcherWith(teams, flow) {
 }
 
 test('the watcher offers the button only for live, undrafted, unapproved merge requests with a known head', () => {
-  const flow = new ApproveServer({ gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve`, ownerUsers: ['owner'], proxySecret: SECRET });
+  const flow = new ApproveServer({ gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve` });
   const mr = { project: PROJECT, iid: IID, title: 'Example' };
   const details = { sha: SHA, draft: false, approved: false, title: 'Example' };
   const hasButton = (w, d, opts) => /Action\.OpenUrl/.test(JSON.stringify(w.buildMrCard(mr, d, opts)));

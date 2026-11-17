@@ -70,10 +70,8 @@ test('teams.rich_messages is off by default and only enabled by boolean true', (
   assert.equal(write({ rich_messages: true }).teams.rich_messages, true);
 });
 
-test('gitlab.approve defaults to off and reads the proxy secret only from a file', () => {
+test('gitlab.approve defaults to off, has a 24 h link lifetime and ignores the former proxy-auth keys', () => {
   const dir = tmpDir();
-  fs.writeFileSync(path.join(dir, 'proxy'), 'file-secret\n');
-  fs.writeFileSync(path.join(dir, 'owners'), 'Carol\nDave\n');
   const write = (approve) => {
     const configPath = path.join(dir, `config-${Math.random().toString(36).slice(2)}.json`);
     fs.writeFileSync(
@@ -87,21 +85,21 @@ test('gitlab.approve defaults to off and reads the proxy secret only from a file
   assert.equal(off.enable, false);
   assert.equal(off.host, '127.0.0.1');
   assert.equal(off.port, 3006);
-  assert.equal(off.user_header, 'Remote-User');
-  assert.equal(off.proxy_secret_header, 'X-Teams-Live-Proxy-Secret');
   assert.equal(off.link_ttl_seconds, 86400);
-  assert.deepEqual(off.owner_users, []);
-  assert.equal(off.proxy_secret, '');
+  assert.equal(off.base_url, '');
+  for (const key of ['owner_users', 'user_header', 'proxy_secret', 'proxy_secret_header']) {
+    assert.equal(key in off, false, `${key} is gone`);
+  }
 
   const on = write({
     enable: true,
     base_url: 'https://approve.example.com/approve',
-    owner_users: ['Alice', ' bob '],
-    owner_users_file: path.join(dir, 'owners'),
-    proxy_secret: 'inline-is-ignored',
-    proxy_secret_file: path.join(dir, 'proxy'),
+    link_ttl_seconds: 3600,
+    owner_users: ['alice'],
+    proxy_secret_file: '/nonexistent',
   });
   assert.equal(on.enable, true);
-  assert.deepEqual(on.owner_users, ['alice', 'bob', 'carol', 'dave']);
-  assert.equal(on.proxy_secret, 'file-secret');
+  assert.equal(on.base_url, 'https://approve.example.com/approve');
+  assert.equal(on.link_ttl_seconds, 3600);
+  assert.equal('owner_users' in on, false, 'former keys are not carried');
 });

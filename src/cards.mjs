@@ -15,7 +15,7 @@
 // title, an optional one-line subtitle and a few facts. Navigation uses inline
 // links (the title and the cross references), not buttons. The one exception
 // is the "Approve..." button of the merge request card (`approveUrl`), which
-// opens an authenticated confirmation page: it never approves by itself.
+// opens a capability-link confirmation page: it never approves by itself.
 
 import { SERVICE_ICONS } from './card-icons.mjs';
 
