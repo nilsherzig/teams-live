@@ -279,6 +279,10 @@ export function loadConfig(configPath) {
     edit_own_url_messages: Boolean(fileConfig.teams?.edit_own_url_messages ?? false),
     // Opt-in: send GitLab/Jira/OpsGenie/Confluence updates as Adaptive Cards
     rich_messages: fileConfig.teams?.rich_messages === true,
+    // Dampening of connector expired/restored alerts; see src/service-alerts.mjs
+    service_alerts: fileConfig.teams?.service_alerts && typeof fileConfig.teams.service_alerts === 'object'
+      ? fileConfig.teams.service_alerts
+      : {},
     admin_ids: Array.isArray(fileConfig.teams?.admin_ids)
       ? fileConfig.teams.admin_ids.map(String)
       : [],

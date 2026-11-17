@@ -133,6 +133,7 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `teams.max_session_minutes` | Age after which the push session is replaced (60). |
 | `teams.history_poll_interval_seconds` | Poll of the watched chats for missed pushes (120, 0 disables). |
 | `teams.rich_messages` | Post the watcher messages as Adaptive Cards (false). See [Rich messages](#rich-messages). |
+| `teams.service_alerts.*` | Dampens the admin alerts about expired connector credentials (see below). Keys, in seconds: `stable_recovery_seconds` (120), `flap_window_seconds` (600), `flap_recovery_seconds` (300), `reminder_seconds` (43200), and `flap_transitions` (4). |
 | `gitlab.approve.*` | Approve button of merge request cards: capability link (off). See [Approving from a card](#approving-from-a-card). |
 | `teams.troll_user` | User MRI whose `/exec` gets a joke reply instead of the fake shell output. |
 | `browser_daemon.url`, `.profile`, `.secret_file` | browser-daemon used to sign in to Teams again. |
@@ -153,6 +154,19 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `home_assistant.url`, `.token_file` | Home Assistant with the HR WORKS integration, for `/whereis`. |
 | `home_assistant.hrworks_batch_size` | Organizational units per HR WORKS request when prefetching the company (4). Keep each request under the proxy timeout. |
 | `conversations` | Chats to watch: `{ id, name, gitlab }`. Default: the self chat `48:notes`. |
+
+### Connector alerts
+
+When a connector (GitLab, Jira, Confluence, OpsGenie, Home Assistant) reports
+bad credentials, the admin chat gets one "Authentication Expired" message. The
+matching "Restored" message follows only after the connector stayed healthy for
+`stable_recovery_seconds`. If it changes state `flap_transitions` times within
+`flap_window_seconds`, one "Connection Unstable" message is sent and the
+expired/restored messages are suppressed until it was healthy for
+`flap_recovery_seconds`, followed by one summary with the number of suppressed
+changes (or by one "still failing" message if it stays broken). Only the
+notifications are dampened, never the health status. The state is kept in
+`service-alerts.json` in the state directory.
 
 ## GitLab webhook
 
