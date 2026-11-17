@@ -44,6 +44,7 @@ import {
   ciStatusEmoji as getCiStatusEmoji,
   ciStatusInfo,
 } from './cards.mjs';
+import { LEADERBOARD_MAX_ENTRIES, PODIUM_SIZE, buildLeaderboardCard, rankLeaderboard } from './card-leaderboard.mjs';
 import {
   UserDirectory,
   normalizeName,
@@ -75,6 +76,8 @@ const REBASE_PREFIX = '**Rebase';
 // rows, so not 1.5 s each), and every picture costs its data URI plus the column markup.
 // They use the smaller 24px server-side resize (shown at 18px): a list has little wire room.
 const MRS_LIST_AVATAR_SIZE = 'HR24x24';
+// The leaderboard podium (top three) shows larger pictures than the rows below it.
+const leaderboardAvatarSize = (index) => (index < PODIUM_SIZE ? 'HR32x32' : 'HR24x24');
 const MRS_LIST_AVATAR_DEADLINE_MS = 2800;
 const MRS_LIST_AVATAR_MARGIN = 150;
 const MRS_LIST_AVATAR_ROW_OVERHEAD = 260; // measured: the avatar column adds about 220 bytes beyond the data URI
@@ -6285,40 +6288,89 @@ export class MergeRequestWatcher {
     this.setCommandReaction(conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
   }
 
-  async executeLeaderboardCommand(event) {
-    log(`Executing /leaderboard in ${event.conversationId}...`);
-
-    if (!this.userInteractions || this.userInteractions.size === 0) {
-      await sendReply(
-        event.conversationId,
-        event,
-        '🏆 **Bot Interaction Leaderboard**:\n\n_No interactions recorded yet._'
-      );
-      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
-      return;
-    }
-
-    const sortedUsers = [...this.userInteractions.values()].sort((a, b) => (b.count || 0) - (a.count || 0));
-
+  /** The plain-text leaderboard (regular mode, and the fallback copy of the card). */
+  formatLeaderboardMarkdown(sortedUsers) {
+    if (sortedUsers.length === 0) return '🏆 **Bot Interaction Leaderboard**:\n\n_No interactions recorded yet._';
     const medals = ['🥇', '🥈', '🥉'];
-    const lines = [];
-
-    for (let i = 0; i < sortedUsers.length; i++) {
-      const u = sortedUsers[i];
+    const lines = sortedUsers.map((u, i) => {
       const rankBadge = i < medals.length ? medals[i] : `\`#${i + 1}\``;
-
       const topCmds = Object.entries(u.commands || {})
         .sort(([, a], [, b]) => b - a)
         .slice(0, 3)
         .map(([cmd, cnt]) => `${cmd} (${cnt})`)
         .join(', ');
-
       const cmdBreakdown = topCmds ? ` _(top: ${topCmds})_` : '';
-      lines.push(`${rankBadge} **${u.name}**: ${u.count} interaction${u.count === 1 ? '' : 's'}${cmdBreakdown}`);
-    }
+      return `${rankBadge} **${u.name}**: ${u.count} interaction${u.count === 1 ? '' : 's'}${cmdBreakdown}`;
+    });
+    return `🏆 **Bot Interaction Leaderboard**:\n\n${lines.join('\n')}`;
+  }
 
-    const text = `🏆 **Bot Interaction Leaderboard**:\n\n${lines.join('\n')}`;
-    await sendReply(event.conversationId, event, text);
+  /**
+   * The leaderboard as a card with profile pictures. Pictures go to the best
+   * ranked users first and only as many as fit the wire limit (the card itself
+   * is small, so unlike a list there is usually room for all of them).
+   */
+  leaderboardMessage(sortedUsers) {
+    const markdown = this.formatLeaderboardMarkdown(sortedUsers.slice(0, LEADERBOARD_MAX_ENTRIES));
+    // Every user counts towards the totals; only the top ones are shown (and get a picture).
+    const entries = sortedUsers.map((u, i) => ({
+      name: u.name,
+      count: u.count,
+      commands: u.commands,
+      avatar:
+        i >= LEADERBOARD_MAX_ENTRIES || this.suppressAvatars || !this.avatarService
+          ? undefined
+          : this.avatarService.peek({ name: u.name, mri: u.mri }, { size: leaderboardAvatarSize(i) }),
+    }));
+    const build = (withPictures) =>
+      buildLeaderboardCard({ entries: entries.map((e, i) => (i < withPictures ? e : { ...e, avatar: undefined })), fallbackText: markdown });
+    const message = (withPictures) => makeRichMessage(markdown, build(withPictures));
+    try {
+      const pictures = entries.filter((e) => e.avatar).length;
+      // Fewer pictures until the card fits, starting from the lowest rank.
+      for (let k = Math.min(entries.length, LEADERBOARD_MAX_ENTRIES); k >= 0; k -= 1) {
+        const candidate = message(k);
+        if (richMessageWireBytes(candidate) <= MAX_CARD_BYTES) {
+          if (k < pictures) log(`Leaderboard card too large with pictures, showing the first ${k}`);
+          return candidate;
+        }
+      }
+    } catch (e) {
+      log(`building the leaderboard card failed, using plain text: ${e.message}`);
+    }
+    return markdown;
+  }
+
+  /** Fetches the pictures of the ranked users (bounded, cached, one deadline for all). */
+  async prefetchLeaderboardAvatars(sortedUsers) {
+    if (!this.avatarService) return;
+    try {
+      const top = sortedUsers.slice(0, LEADERBOARD_MAX_ENTRIES);
+      const bySize = new Map();
+      top.forEach((u, i) => {
+        const size = leaderboardAvatarSize(i);
+        if (!bySize.has(size)) bySize.set(size, []);
+        bySize.get(size).push({ name: u.name, mri: u.mri });
+      });
+      await Promise.all([...bySize].map(([size, people]) => this.avatarService.avatarsFor(people, { size, deadlineMs: MRS_LIST_AVATAR_DEADLINE_MS })));
+    } catch (e) {
+      log(`profile picture lookup failed: ${e.message}`);
+    }
+  }
+
+  async executeLeaderboardCommand(event) {
+    log(`Executing /leaderboard in ${event.conversationId}...`);
+    const users = [...(this.userInteractions?.values() ?? [])];
+    let reply;
+    if (this.richMessages) {
+      // The card ranks ties by name; rank here the same way so a picture goes with its row.
+      const ranked = rankLeaderboard(users).ranked;
+      await this.prefetchLeaderboardAvatars(ranked);
+      reply = this.leaderboardMessage(ranked);
+    } else {
+      reply = this.formatLeaderboardMarkdown(users.sort((a, b) => (b.count || 0) - (a.count || 0)));
+    }
+    await sendReply(event.conversationId, event, reply);
     this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
   }
 

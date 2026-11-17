@@ -26,9 +26,9 @@ import { MAX_AVATAR_CHARS_PER_CARD, avatarColumn, isImageDataUri, userRow } from
 export const ADAPTIVE_CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json';
 export const ADAPTIVE_CARD_VERSION = '1.4';
 
-const str = (value) => (value === undefined || value === null ? '' : String(value).trim());
+export const str = (value) => (value === undefined || value === null ? '' : String(value).trim());
 
-function textBlock(text, extra = {}) {
+export function textBlock(text, extra = {}) {
   return { type: 'TextBlock', text: str(text), wrap: true, ...extra };
 }
 
@@ -176,6 +176,7 @@ const EMOJI_BRANDS = {
   standup: { emoji: '🌅', name: 'Standup' },
   // Replies of the bot itself: help, status, errors, acknowledgements, notices.
   bot: { emoji: '🧢', name: 'teams-live' },
+  leaderboard: { emoji: '🏆', name: 'Leaderboard' },
 };
 
 /**
@@ -257,7 +258,7 @@ function header(service, kind, glyph = null, ref = null) {
  * `badges` is a row of non-interactive status badges, `extraItems` are
  * appended after the facts. `actions` are bottom buttons (Action.OpenUrl).
  */
-function assembleCard({
+export function assembleCard({
   service,
   kind,
   glyph = null,
