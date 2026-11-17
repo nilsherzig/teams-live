@@ -2433,14 +2433,24 @@ export class MergeRequestWatcher {
     return avatars;
   }
 
-  /** The names an MR card shows people for: approvers (live or last reported) and the auto-merge user. */
+  /**
+   * The author an MR card shows: this check's, else the one last seen for the
+   * merge request (a failed lookup must not drop the row from a refresh).
+   */
+  mrCardAuthor(mr, mrDetails) {
+    const author = String(mrDetails?.author || mr?.author?.name || mr?.author?.username || '').trim();
+    if (author && mr) mr.lastAuthor = author;
+    return author || (mr?.lastAuthor ?? '');
+  }
+
+  /** The names an MR card shows people for: the author, approvers (live or last reported) and the auto-merge user. */
   mrCardPeopleData(mr, mrDetails) {
     const approvedBy = Array.isArray(mrDetails?.approvedBy)
       ? mrDetails.approvedBy
       : mr?.lastReportedApprovedBy
         ? String(mr.lastReportedApprovedBy).split(', ')
         : [];
-    return { approvedBy, autoMergeUser: mrDetails?.autoMergeUser };
+    return { author: this.mrCardAuthor(mr, mrDetails), approvedBy, autoMergeUser: mrDetails?.autoMergeUser };
   }
 
   /**
@@ -2485,6 +2495,7 @@ export class MergeRequestWatcher {
       detailedMergeStatus: mrDetails?.detailedMergeStatus,
       autoMerge: typeof mrDetails?.autoMerge === 'boolean' ? mrDetails.autoMerge : null,
       autoMergeUser: mrDetails?.autoMergeUser,
+      author: this.mrCardAuthor(mr, mrDetails),
       avatars: this.cardAvatars(this.mrCardPeopleData(mr, mrDetails)),
       pipeline,
       // "none"/"unknown" only when this card's details are the ones that found no pipeline.

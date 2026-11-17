@@ -11,8 +11,9 @@
 export const AVATAR_PX = 24;
 // Total size of the embedded pictures per card (characters of the data URIs).
 // Cards are limited on the wire (MAX_CARD_BYTES), so extra pictures are dropped
-// in favour of names before the card could outgrow it.
-export const MAX_AVATAR_CHARS_PER_CARD = 9000;
+// in favour of names before the card could outgrow it: a full MR card is already
+// about 17 KB without photos and a real 24px photo costs about 3 KB.
+export const MAX_AVATAR_CHARS_PER_CARD = 6500;
 export const MAX_AVATARS_PER_ROW = 3;
 
 /** Cards only ever embed a plain base64 JPEG/PNG data URI, never a remote URL. */
@@ -22,10 +23,10 @@ export function isImageDataUri(value) {
 
 const text = (value) => (value === undefined || value === null ? '' : String(value).trim());
 
-function textColumn(content, extra = {}) {
+function textColumn(content, extra = {}, width = 'auto') {
   return {
     type: 'Column',
-    width: 'auto',
+    width,
     verticalContentAlignment: 'Center',
     items: [{ type: 'TextBlock', text: content, wrap: true, ...extra }],
   };
@@ -42,11 +43,11 @@ function avatarColumn(name, dataUri) {
 
 /**
  * Names worth a picture on a card, in display order: the assignee, the owner,
- * the approvers and the auto-merge user, without "Unassigned" placeholders and
+ * the merge request author, the approvers and the auto-merge user, without "Unassigned" placeholders and
  * duplicates. Reads the same fields the card builders do.
  */
 export function collectCardPeople(data) {
-  const names = [data?.assignee, data?.owner, ...(Array.isArray(data?.approvedBy) ? data.approvedBy : []), data?.autoMergeUser]
+  const names = [data?.assignee, data?.owner, data?.author, ...(Array.isArray(data?.approvedBy) ? data.approvedBy : []), data?.autoMergeUser]
     .map(text)
     .filter((n) => n && n.toLowerCase() !== 'unassigned');
   return [...new Set(names)];
@@ -58,9 +59,10 @@ export function collectCardPeople(data) {
  * @param {object} [opts]
  * @param {string} [opts.lead]  text between label and people, e.g. "Approved by"
  * @param {number} [opts.charBudget]  remaining picture budget for this card
+ * @param {string} [opts.labelWidth]  fixed label column width, so the label lines up with the other fact rows
  * @returns {{row: object, usedChars: number}|null}
  */
-export function userRow(label, people, { lead = '', charBudget = MAX_AVATAR_CHARS_PER_CARD, maxAvatars = MAX_AVATARS_PER_ROW } = {}) {
+export function userRow(label, people, { lead = '', charBudget = MAX_AVATAR_CHARS_PER_CARD, maxAvatars = MAX_AVATARS_PER_ROW, labelWidth = 'auto' } = {}) {
   let remaining = charBudget;
   let shown = 0;
   let used = 0;
@@ -79,7 +81,7 @@ export function userRow(label, people, { lead = '', charBudget = MAX_AVATAR_CHAR
     }
   }
   if (shown === 0) return null;
-  const columns = [textColumn(text(label), { weight: 'Bolder' })];
+  const columns = [textColumn(text(label), { weight: 'Bolder' }, labelWidth)];
   if (text(lead)) columns.push(textColumn(text(lead)));
   columns.push(...personColumns);
   return { row: { type: 'ColumnSet', spacing: 'Small', columns }, usedChars: used };

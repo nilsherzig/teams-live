@@ -20,12 +20,27 @@ import { GITLAB_ICONS_SMALL } from '../src/gitlab-icons-small.mjs';
 const items = (card) => card.body[0].items;
 // Text with markdown links reduced to their labels (and escapes removed).
 const plain = (text) => text.replace(/\[((?:\\.|[^\]\\])*)\]\([^)]*\)/g, '$1').replace(/\\([\\[\]])/g, '$1');
-// The Jira fact is a logo + value row, not a FactSet entry (see logoRows); it reads as the "Jira" fact here.
-const logoRows = (card) => items(card).slice(1).filter((i) => i.type === 'ColumnSet' && i.columns[0]?.items[0]?.type === 'Image' && i.columns.length === 2 && i.columns[1].width === 'stretch');
-const rawFacts = (card) => ({
-  ...Object.fromEntries(items(card).find((i) => i.type === 'FactSet').facts.map((f) => [f.title, f.value])),
-  ...Object.fromEntries(logoRows(card).map((r) => [r.columns[0].items[0].altText, r.columns[1].items[0].text])),
-});
+// Facts of a card: the FactSet entries, or, when a fact carries a picture (a logo or a person), the rows
+// that replace the FactSet: a bold fixed-width label column, then the value ("Ticket" has a logo column too).
+const factRows = (card) =>
+  items(card).filter((i) => i.type === 'ColumnSet' && i.columns[0]?.items[0]?.weight === 'Bolder' && /^\d+px$/.test(i.columns[0].width));
+const rawFacts = (card) => {
+  const set = items(card).find((i) => i.type === 'FactSet');
+  return {
+    ...Object.fromEntries((set?.facts || []).map((f) => [f.title, f.value])),
+    ...Object.fromEntries(
+      factRows(card).map((r) => [
+        r.columns[0].items[0].text,
+        r.columns
+          .slice(1)
+          .flatMap((c) => c.items)
+          .filter((i) => i.type === 'TextBlock')
+          .map((i) => i.text)
+          .join(' '),
+      ])
+    ),
+  };
+};
 const facts = (card) => Object.fromEntries(Object.entries(rawFacts(card)).map(([k, v]) => [k, plain(v)]));
 const style = (card) => card.body[0].style;
 const header = (card) => items(card)[0];
@@ -104,11 +119,11 @@ test('merge request card: open, approved, green pipeline, auto-merge', () => {
   assert.equal(f.Pipeline, '\u2705 Passed (#7)');
   assert.equal(f['Auto-merge'], '\u{1F500} Enabled by Alice Example');
   assert.equal(f.Target, 'main');
-  assert.equal(f.Jira, 'EX-123');
+  assert.equal(f.Ticket, 'EX-123');
   assert.equal(f.Rebase, undefined);
   assert.equal(rawTitle(card), `[Add example feature](${baseMr.url})`);
   assert.equal(rawFacts(card).Pipeline, '\u2705 [Passed (#7)](https://gitlab.example.com/group/project/-/pipelines/7)');
-  assert.equal(rawFacts(card).Jira, '[EX-123](https://jira.example.com/browse/EX-123)');
+  assert.equal(rawFacts(card).Ticket, '[EX-123](https://jira.example.com/browse/EX-123)');
 });
 
 test('merge request card: failed pipeline wins over everything else for open MRs', () => {
@@ -450,7 +465,7 @@ test('cross references inside the card are linked when their URL is known', () =
     jira: { key: 'EX-123', url: jiraUrl },
   });
   assert.equal(rawFacts(mr).Pipeline, `\u2705 [Passed (#7)](${pipelineUrl})`);
-  assert.equal(rawFacts(mr).Jira, `[EX-123](${jiraUrl})`);
+  assert.equal(rawFacts(mr).Ticket, `[EX-123](${jiraUrl})`);
   // Status-like facts without a link stay plain.
   assert.equal(rawFacts(mr).Status, '\u{1F7E2} Open');
 
@@ -478,7 +493,7 @@ test('cross references stay plain text when their URL is missing or invalid', ()
     jira: { key: 'EX-123', url: 'not a url' },
   });
   assert.equal(rawFacts(mr).Pipeline, '\u2705 Passed (#7)');
-  assert.equal(rawFacts(mr).Jira, 'EX-123');
+  assert.equal(rawFacts(mr).Ticket, 'EX-123');
 
   const job = buildJobCard({ id: 5, status: 'failed', pipeline: { id: 9, status: 'failed' }, mr: { iid: 42, title: 'T' } });
   assert.equal(rawFacts(job).Pipeline, '\u274c Failed (#9)');
@@ -586,8 +601,8 @@ test('merge request card: merged and closed cards keep what is known', () => {
 
 test('merge request card: Jira reference without a key uses a linked fallback label', () => {
   const card = buildMergeRequestCard({ ...baseMr, state: 'open', jira: { url: 'https://jira.example.com/browse/EX-9' } });
-  assert.equal(rawFacts(card).Jira, '[Jira issue](https://jira.example.com/browse/EX-9)');
-  assert.equal(facts(buildMergeRequestCard({ ...baseMr, state: 'open', jira: { url: 'nope' } })).Jira, undefined);
+  assert.equal(rawFacts(card).Ticket, '[Jira issue](https://jira.example.com/browse/EX-9)');
+  assert.equal(facts(buildMergeRequestCard({ ...baseMr, state: 'open', jira: { url: 'nope' } })).Ticket, undefined);
 });
 
 test('ciStatusEmoji normalizes case and knows cancelled', () => {
@@ -874,18 +889,19 @@ test('jira header key: missing key falls back, the issue URL stays on the title;
   assert.equal(visibleText(card.body[0].items).split('APP-123').length - 1, 1, 'visible once');
 });
 
-test('merge request card: the Jira fact is prefixed by the embedded Jira logo, next to the linked key', () => {
+test('merge request card: the Ticket fact keeps its bold label, then the embedded Jira logo and the linked key', () => {
   const url = 'https://jira.example.com/browse/EX-123';
   const card = buildMergeRequestCard({ ...baseMr, state: 'open', targetBranch: 'main', jira: { key: 'EX-123', url } });
   assertValidCard(card);
-  const [row, ...more] = logoRows(card);
-  assert.equal(more.length, 0);
-  const [logoColumn, textColumn] = row.columns;
+  const row = factRows(card).find((r) => r.columns[0].items[0].text === 'Ticket');
+  assert.equal(row.columns.length, 3);
+  const [labelColumn, logoColumn, textColumn] = row.columns;
+  assert.equal(labelColumn.items[0].weight, 'Bolder');
   assert.deepEqual(logoColumn.items[0], { type: 'Image', url: SERVICE_ICONS.jira, altText: 'Jira', width: '16px', height: '16px' });
   assert.equal(logoColumn.width, 'auto');
   assert.match(logoColumn.items[0].url, /^data:image\//);
   assert.equal(textColumn.items[0].text, `[EX-123](${url})`);
-  // The row sits in place: the facts before it and after it stay in FactSets, none is lost.
+  // Every other fact is still there, none is lost to the rows.
   const f = facts(card);
   assert.equal(f.Status, '\u{1F7E2} Open');
   assert.equal(f.Target, 'main');
@@ -895,10 +911,37 @@ test('merge request card: the Jira fact is prefixed by the embedded Jira logo, n
   assert.ok(!urls.some((u) => /\.(png|jpe?g|svg|gif|ico)(\?|$)/i.test(u)));
 });
 
+test('merge request card: with a Ticket every fact row shares one label width, so the labels line up', () => {
+  const url = 'https://jira.example.com/browse/EX-123';
+  const card = buildMergeRequestCard({
+    ...baseMr,
+    state: 'open',
+    targetBranch: 'main',
+    approved: true,
+    approvedBy: ['Alice Example'],
+    autoMerge: true,
+    autoMergeUser: 'Alice Example',
+    pipeline: { id: 7, status: 'success' },
+    jira: { key: 'EX-123', url },
+  });
+  assert.equal(items(card).filter((i) => i.type === 'FactSet').length, 0);
+  const rows = factRows(card);
+  assert.deepEqual(
+    rows.map((r) => r.columns[0].items[0].text),
+    ['Status', 'Approval', 'Pipeline', 'Auto-merge', 'Target', 'Ticket']
+  );
+  const widths = new Set(rows.map((r) => r.columns[0].width));
+  assert.equal(widths.size, 1);
+  const px = Number.parseInt([...widths][0], 10);
+  assert.ok(px >= 'Auto-merge'.length * 7 && px <= 140, `label width ${px}px`);
+  for (const r of rows) assert.equal(r.type, 'ColumnSet');
+});
+
 test('merge request card: without a Jira reference there is no logo row, the facts stay one FactSet', () => {
   const card = buildMergeRequestCard({ ...baseMr, state: 'open', jira: null });
-  assert.equal(logoRows(card).length, 0);
+  assert.equal(factRows(card).length, 0);
   assert.equal(items(card).filter((i) => i.type === 'FactSet').length, 1);
   const unusable = buildMergeRequestCard({ ...baseMr, state: 'open', jira: { url: 'nope' } });
-  assert.equal(logoRows(unusable).length, 0);
+  assert.equal(factRows(unusable).length, 0);
+  assert.equal(items(unusable).filter((i) => i.type === 'FactSet').length, 1);
 });

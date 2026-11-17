@@ -672,6 +672,8 @@ export class GitLabClient {
       project,
       iid,
       title: mr.title,
+      // Display name of the author (the username when GitLab has no name).
+      author: mr.author?.name || mr.author?.username || null,
       description: mr.description,
       source_branch: mr.source_branch,
       // Head commit of the merge request (what an approval is bound to).

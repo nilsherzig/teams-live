@@ -703,7 +703,7 @@ test('the merge request card has the Approve button only when a link is present'
   const withLink = card({ approveUrl: `${ORIGIN}/approve/#${'A'.repeat(43)}` });
   const text = JSON.stringify(withLink);
   assert.match(text, /"type":"Action.OpenUrl"/);
-  assert.ok(JSON.stringify(withLink.actions ?? withLink).includes("✅ Approve"), "the button reads exactly the check mark and Approve");
+  assert.equal(withLink.actions[0].title, '👍 Approve', 'the button reads exactly the thumbs-up and Approve');
   assert.doesNotMatch(text, /Approve…|Approve\.\.\.|\bApprove -|- Approve/);
   assert.doesNotMatch(JSON.stringify(card({})), /Action\.OpenUrl/);
   assert.doesNotMatch(JSON.stringify(card({ approveUrl: 'javascript:alert(1)' })), /Action\.OpenUrl/);
@@ -725,7 +725,8 @@ test('the watcher offers the button only for live, undrafted, unapproved merge r
   const flow = new ApproveServer({ gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve` });
   const mr = { project: PROJECT, iid: IID, title: 'Example' };
   const details = { sha: SHA, draft: false, approved: false, title: 'Example' };
-  const hasButton = (w, d, opts) => JSON.stringify(w.buildMrCard(mr, d, opts)).includes('✅ Approve');
+  // The title is a prefix of the "👍 Approved" approval fact, so look at the card's actions.
+  const hasButton = (w, d, opts) => (w.buildMrCard(mr, d, opts).actions ?? []).some((a) => a.title === '👍 Approve');
 
   const rich = watcherWith({ rich_messages: true }, flow);
   assert.equal(hasButton(rich, details, { state: 'open' }), true);
@@ -1401,7 +1402,7 @@ test('the watcher offers Reopen only on closed cards with the flow enabled in ri
 
   const closed = text(rich, { state: 'closed' });
   assert.match(closed, /🔄 Reopen/);
-  assert.doesNotMatch(closed, /✅ Approve/);
+  assert.doesNotMatch(closed, /"title":"👍 Approve"/);
   for (const state of ['merged', 'open', 'rebase', 'rebased']) {
     assert.doesNotMatch(text(rich, { state }), /Reopen/, state);
   }

@@ -177,3 +177,76 @@ test('a card that would outgrow the wire budget with pictures is rebuilt without
   assert.equal(watcher.suppressAvatars, false, 'the switch is reset');
   assert.equal(Object.keys(watcher.cardAvatars(jiraIssue)).length, 1, 'later cards get their pictures again');
 });
+
+const authorOf = (card) => card.body[0].items.find((i) => i.type === 'ColumnSet' && i.columns[0].items[0].text === 'Author');
+const plainAuthor = (card) =>
+  card.body[0].items.find((i) => i.type === 'FactSet')?.facts.find((f) => f.title === 'Author')?.value;
+
+test('MR card prefetches and shows the author with the picture, fetching it once', async () => {
+  const fetched = [];
+  const watcher = richWatcher(undefined, { fetched });
+  const mr = { project: 'group/app', iid: 7, title: 'Example' };
+  const details = { title: 'Example', author: 'Alice Example' };
+  assert.deepEqual(watcher.mrCardPeopleData(mr, details).author, 'Alice Example');
+  assert.equal(personImages(watcher.buildMrCard(mr, details)).length, 0, 'building never fetches');
+  await watcher.prefetchAvatars(watcher.mrCardPeopleData(mr, details));
+  await watcher.prefetchAvatars(watcher.mrCardPeopleData(mr, details));
+  assert.deepEqual(fetched, [ALICE]);
+  const row = authorOf(watcher.buildMrCard(mr, details));
+  assert.deepEqual(row.columns.map((c) => c.items[0].text ?? c.items[0].altText), ['Author', 'Alice Example', 'Alice Example']);
+  assert.match(row.columns[1].items[0].url, /^data:image\/jpeg;base64,/);
+});
+
+test('MR card author: list entry object, then the last seen one when a refresh has none', async () => {
+  const watcher = richWatcher();
+  const mr = { project: 'group/app', iid: 7, title: 'Example', author: { username: 'alice', name: 'Alice Example' } };
+  assert.equal(watcher.mrCardAuthor(mr, {}), 'Alice Example');
+  assert.equal(watcher.mrCardAuthor({ author: { username: 'bob' } }, {}), 'bob', 'username when there is no name');
+  const tracked = { project: 'group/app', iid: 8, title: 'Other' };
+  assert.equal(watcher.mrCardAuthor(tracked, { author: 'Bob Example' }), 'Bob Example');
+  assert.equal(watcher.mrCardAuthor(tracked, {}), 'Bob Example', 'a failed lookup keeps the author');
+  assert.equal(watcher.mrCardAuthor(null, null), '');
+  const card = watcher.buildMrCard({ project: 'group/app', iid: 9, title: 'Third' }, { title: 'Third' });
+  assert.equal(plainAuthor(card), undefined, 'no author, no row');
+});
+
+test('MR card author without a picture (unknown person, regular mode) is a plain Author fact', async () => {
+  const watcher = richWatcher();
+  const mr = { project: 'group/app', iid: 7, title: 'Example' };
+  const details = { title: 'Example', author: 'Zed Nobody' };
+  await watcher.prefetchAvatars(watcher.mrCardPeopleData(mr, details));
+  assert.equal(plainAuthor(watcher.buildMrCard(mr, details)), 'Zed Nobody');
+
+  const fetched = [];
+  const regular = richWatcher({}, { fetched });
+  await regular.prefetchAvatars(regular.mrCardPeopleData(mr, { author: 'Alice Example' }));
+  assert.deepEqual(fetched, [], 'regular mode makes no request');
+});
+
+test('an MR card with the author picture that would outgrow the wire budget keeps the author name, drops the photo', async () => {
+  const watcher = richWatcher(undefined, { extra: 3500 });
+  const mr = { project: 'group/app', iid: 7, title: 'Example' };
+  const details = { title: 'Example', author: 'Alice Example' };
+  await watcher.prefetchAvatars(watcher.mrCardPeopleData(mr, details));
+  const build = () => watcher.buildMrCard(mr, details);
+  const size = (markdown) => richMessageWireBytes(makeRichMessage(markdown, build()));
+  const withPhoto = size('x');
+  const withoutPhoto = (() => {
+    watcher.suppressAvatars = true;
+    try {
+      return size('x');
+    } finally {
+      watcher.suppressAvatars = false;
+    }
+  })();
+  assert.ok(withPhoto - withoutPhoto > 3000, 'the photo is what the size is made of');
+  // Pad the plain fallback text so that only the photo-less card fits.
+  const markdown = 'x'.repeat(MAX_CARD_BYTES - withoutPhoto - 100);
+  assert.ok(size(markdown) > MAX_CARD_BYTES, 'precondition: overflows with the photo');
+  const message = watcher.richMessage(markdown, build);
+  assert.notEqual(message, markdown, 'still a card');
+  assert.ok(richMessageWireBytes(message) <= MAX_CARD_BYTES);
+  const sent = message.card;
+  assert.equal(personImages(sent).length, 0, 'the photo is gone (the service logos stay)');
+  assert.equal(plainAuthor(sent), 'Alice Example');
+});

@@ -222,7 +222,7 @@ out for what the entity is:
 
 | Entity | Card |
 | --- | --- |
-| GitLab merge request (open, merged, closed, rebase required, rebased) | Title, state colour, approval, auto-merge, pipeline, rebase (only when required), target branch, Jira key (prefixed by the Jira logo), links |
+| GitLab merge request (open, merged, closed, rebase required, rebased) | Title, state colour, author (with profile picture), approval, auto-merge, pipeline, rebase (only when required), target branch, "Ticket" (Jira logo and key), links |
 | GitLab job and pipeline | Status colour, stage, ref, duration, failure reason, linked merge request |
 | Jira issue | Summary, type, status, priority, assignee |
 | OpsGenie alert | Message, priority badge (P1 red to P5 subdued), OPEN / ACK'D / CLOSED badge, owner |
@@ -296,8 +296,14 @@ linked too (the pipeline and Jira key of a merge request, and the pipeline and
 merge request of a job or pipeline). A link is only added for a valid http(s)
 URL; without one the text stays plain, and brackets in titles are escaped so
 they cannot break the link. Cards carry no bottom buttons, except the optional
-"✅ Approve" button of a merge request card (see
+"👍 Approve" button of a merge request card (see
 [Approving from a card](#approving-from-a-card)).
+
+Facts are a plain label/value list. When a fact carries a picture (the profile
+picture of the author, an approver or the auto-merge user, or the Jira logo of
+the "Ticket" fact), all facts of that card become rows that share one label
+width, so the labels stay aligned. The author's name is always shown; the
+picture is dropped first when the card would not fit.
 
 Status lines keep the emojis of the regular messages: approval, pipeline,
 rebase, auto-merge, merged and closed on merge requests, and the CI status on
@@ -330,7 +336,7 @@ The script uses generic fixture data and refuses channel conversations.
 ### Approving from a card
 
 With `teams.rich_messages` on and the approval flow enabled, an open merge
-request card gets an "✅ Approve" button. The button opens a confirmation page;
+request card gets an "👍 Approve" button. The button opens a confirmation page;
 it never approves by itself.
 
 The link is a capability: **anyone who has the link can approve that one merge

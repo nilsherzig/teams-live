@@ -14,7 +14,7 @@
 // label for the kind of entity (for example "GitLab - Merge request"), then the
 // title, an optional one-line subtitle and a few facts. Navigation uses inline
 // links (the title and the cross references), not buttons. The one exception
-// are the "✅ Approve" button of the merge request card (`approveUrl`, open
+// are the "👍 Approve" button of the merge request card (`approveUrl`, open
 // merge requests) and the "🔄 Reopen" button (`reopenUrl`, closed ones), which
 // open a capability-link confirmation page: they never act by themselves.
 
@@ -52,9 +52,9 @@ function personFact(title, text, names, avatars, lead = '') {
 
 /**
  * A fact whose value is prefixed by a service logo (an embedded image, never a
- * remote URL). The logo replaces the label text: a FactSet value cannot hold an
- * image, so `factBlocks` renders the fact as a compact logo + value row in
- * place, with the service name as the image's alt text.
+ * remote URL). A FactSet value cannot hold an image, so `factBlocks` renders
+ * the fact as a label + logo + value row, with the service name as the image's
+ * alt text. The label stays: it lines up with the other fact labels.
  */
 function logoFact(title, value, service) {
   const logo = SERVICE_ICONS[service];
@@ -62,53 +62,63 @@ function logoFact(title, value, service) {
   return [title, value, { logo, alt: SERVICES[service] || str(title) }];
 }
 
-function logoRow({ logo, alt }, value) {
+// Rows with a picture cannot sit in a FactSet, whose title column sizes itself.
+// So when a card has any, every fact becomes a row with one shared label width.
+const LABEL_PX_PER_CHAR = 8;
+const LABEL_PX_MIN = 56;
+const LABEL_PX_MAX = 140;
+
+function labelWidth(labels) {
+  const longest = Math.max(0, ...labels.map((label) => label.length));
+  return `${Math.min(LABEL_PX_MAX, Math.max(LABEL_PX_MIN, Math.ceil(longest * LABEL_PX_PER_CHAR) + 8))}px`;
+}
+
+function factLabelColumn(title, width) {
   return {
-    type: 'ColumnSet',
-    spacing: 'Small',
-    columns: [
-      {
-        type: 'Column',
-        width: 'auto',
-        verticalContentAlignment: 'Center',
-        items: [{ type: 'Image', url: logo, altText: alt, width: '16px', height: '16px' }],
-      },
-      { type: 'Column', width: 'stretch', verticalContentAlignment: 'Center', items: [textBlock(value)] },
-    ],
+    type: 'Column',
+    width,
+    verticalContentAlignment: 'Center',
+    items: [textBlock(title, { weight: 'Bolder' })],
   };
+}
+
+/** A fact as a row: the shared-width bold label, then the value (with its logo when it has one). */
+function factRow(title, value, width, logo = null) {
+  const columns = [factLabelColumn(title, width)];
+  if (logo) {
+    columns.push({
+      type: 'Column',
+      width: 'auto',
+      verticalContentAlignment: 'Center',
+      items: [{ type: 'Image', url: logo.logo, altText: logo.alt, width: '16px', height: '16px' }],
+    });
+  }
+  columns.push({ type: 'Column', width: 'stretch', verticalContentAlignment: 'Center', items: [textBlock(value)] });
+  return { type: 'ColumnSet', spacing: 'Small', columns };
 }
 
 /**
  * Facts as card items: one FactSet, unchanged, unless a fact has pictures (a
- * person row, see personFact, or a service logo, see logoFact); the picture
- * rows then sit in place and split the FactSet around them. The profile
- * pictures of one card share a size budget.
+ * person row, see personFact, or a service logo, see logoFact). The FactSet
+ * cannot align with those, so the whole fact list then becomes rows that share
+ * one label width. The profile pictures of one card share a size budget.
  */
 function factBlocks(facts) {
   if (!facts.some((f) => f?.[2]?.people || f?.[2]?.logo)) return [factSet(facts)];
-  const blocks = [];
-  let plain = [];
+  const shown = facts.filter((f) => str(f[0]) && str(f[1]));
+  const width = labelWidth(shown.map((f) => str(f[0])));
   let budget = MAX_AVATAR_CHARS_PER_CARD;
-  const flush = () => {
-    blocks.push(factSet(plain));
-    plain = [];
-  };
-  for (const fact of facts) {
+  return shown.map((fact) => {
     const extra = fact[2];
-    const built = extra?.people && str(fact[1]) ? userRow(fact[0], extra.people, { lead: extra.lead, charBudget: budget }) : null;
+    const built = extra?.people
+      ? userRow(str(fact[0]), extra.people, { lead: extra.lead, charBudget: budget, labelWidth: width })
+      : null;
     if (built) {
-      flush();
-      blocks.push(built.row);
       budget -= built.usedChars;
-    } else if (extra?.logo && str(fact[1])) {
-      flush();
-      blocks.push(logoRow(extra, str(fact[1])));
-    } else {
-      plain.push(fact);
+      return built.row;
     }
-  }
-  flush();
-  return blocks;
+    return factRow(str(fact[0]), str(fact[1]), width, extra?.logo ? extra : null);
+  });
 }
 
 /**
@@ -451,10 +461,11 @@ const tri = (value) => (value === true ? true : value === false ? false : null);
  * (true/false/undefined) tells "no pipeline" from a failed lookup. The rebase fact
  * appears only while a rebase is required. Merged and closed merge requests
  * keep the details that are known. `draft` marks an open merge request as a
- * draft (neutral); it never masks a merged or closed one. `approveUrl` adds an "✅ Approve" button
+ * draft (neutral); it never masks a merged or closed one. `approveUrl` adds an "👍 Approve" button
  * to a live merge request and `reopenUrl` a "🔄 Reopen" button to a closed one
  * (never a merged one); each opens a confirmation page (see src/approve.mjs)
- * and never acts by itself.
+ * and never acts by itself. `author` (a display name) adds an "Author" fact;
+ * with a profile picture in `avatars` it is a picture row, otherwise plain text.
  */
 export function buildMergeRequestCard(mr) {
   const state = mr.state || 'open';
@@ -510,6 +521,7 @@ export function buildMergeRequestCard(mr) {
     rebase = `⚠️ Required: ${reason}${mr.detailedMergeStatus ? ` (status: ${mr.detailedMergeStatus})` : ''}`;
   }
 
+  const author = str(mr.author);
   const jiraLabel = str(mr.jira?.key) || (safeHttpUrl(mr.jira?.url) ? 'Jira issue' : '');
 
   return assembleCard({
@@ -524,6 +536,7 @@ export function buildMergeRequestCard(mr) {
     stats: mr.diffStats,
     facts: [
       ['Status', statusLabel],
+      author ? personFact('Author', author, [author], mr.avatars) : ['Author', ''],
       approved === true && approvers.length > 0
         ? personFact('Approval', approval, approvers.map(str), mr.avatars, '👍 Approved by')
         : ['Approval', approval],
@@ -533,11 +546,11 @@ export function buildMergeRequestCard(mr) {
         ? personFact('Auto-merge', autoMergeText, [str(mr.autoMergeUser)], mr.avatars, '🔀 Enabled by')
         : ['Auto-merge', autoMergeText],
       ['Target', mr.targetBranch],
-      logoFact('Jira', mdLink(jiraLabel, mr.jira?.url), 'jira'),
+      logoFact('Ticket', mdLink(jiraLabel, mr.jira?.url), 'jira'),
     ].filter(Boolean),
     actions: live
       ? mr.approveUrl
-        ? [{ title: '✅ Approve', url: mr.approveUrl }]
+        ? [{ title: '👍 Approve', url: mr.approveUrl }]
         : []
       : state === 'closed' && mr.reopenUrl
         ? [{ title: '🔄 Reopen', url: mr.reopenUrl }]

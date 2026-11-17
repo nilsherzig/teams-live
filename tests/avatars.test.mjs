@@ -512,6 +512,7 @@ test('fetcher never requests anything for a non-orgid identity or an odd size', 
 const URI = `data:image/jpeg;base64,${Buffer.from(fakeJpeg()).toString('base64')}`;
 const bigUri = (n) => `data:image/jpeg;base64,${'A'.repeat(n)}`;
 const items = (card) => card.body[0].items;
+const factOf = (card, label) => items(card).find((i) => i.type === 'ColumnSet' && i.columns[0].items[0].text === label);
 const rows = (card) => items(card).filter((i) => i.type === 'ColumnSet' && i.columns.some((c) => c.items[0].type === 'Image' && c.items[0].style === 'Person'));
 // Profile pictures only: the service icon in the header is an Image too.
 const images = (card) => JSON.stringify(card).match(/"type":"Image"[^}]*"style":"Person"/g)?.length ?? 0;
@@ -544,9 +545,42 @@ test('jira assignee gets a round 24px picture next to the name', () => {
     { type: 'Image', style: 'Person', width: '24px', height: '24px', altText: 'Alice Example', url: URI },
   );
   assert.equal(name.items[0].text, 'Alice Example');
-  const factSets = items(card).filter((i) => i.type === 'FactSet');
-  assert.ok(factSets.every((f) => !f.facts.some((x) => x.title === 'Assignee')), 'assignee only once');
-  assert.ok(factSets.flatMap((f) => f.facts).some((x) => x.title === 'Priority'), 'other facts kept');
+  assert.equal(items(card).filter((i) => i.type === 'FactSet').length, 0, 'a picture turns the facts into aligned rows');
+  assert.equal(items(card).filter((i) => i.type === 'ColumnSet' && i.columns[0].items[0].text === 'Assignee').length, 1, 'assignee only once');
+  assert.ok(factOf(card, 'Priority'), 'other facts kept');
+  assert.equal(label.width, factOf(card, 'Priority').columns[0].width, 'label widths match');
+});
+
+test('merge request card: pending to approved keeps one fixed label column and one value origin on every row', () => {
+  const base = {
+    ...MR,
+    author: 'Alice Example',
+    approved: false,
+    approvedBy: [],
+    autoMerge: false,
+    autoMergeUser: undefined,
+    pipeline: { id: 7, status: 'success' },
+    pipelineKnown: true,
+    jira: { key: 'EX-1', url: 'https://jira.example.com/browse/EX-1' },
+    avatars: { 'Alice Example': URI, 'Bob Example': URI },
+  };
+  const approved = { ...base, approved: true, approvedBy: ['Bob Example'], autoMerge: true, autoMergeUser: 'Bob Example' };
+  const labels = ['Status', 'Author', 'Pipeline', 'Target', 'Ticket'];
+  for (const [state, data, expected] of [
+    ['pending', base, labels],
+    ['approved', approved, ['Status', 'Author', 'Approval', 'Pipeline', 'Auto-merge', 'Target', 'Ticket']],
+  ]) {
+    const card = buildMergeRequestCard(data);
+    assert.equal(items(card).filter((i) => i.type === 'FactSet').length, 0, `${state}: no auto-sized FactSet left`);
+    const rowsOf = items(card).filter((i) => i.type === 'ColumnSet' && expected.includes(i.columns[0].items?.[0]?.text));
+    assert.deepEqual(rowsOf.map((r) => r.columns[0].items[0].text), expected, `${state}: every fact keeps its row, in order`);
+    const firstWidths = new Set(rowsOf.map((r) => r.columns[0].width));
+    assert.equal(firstWidths.size, 1, `${state}: one label width`);
+    assert.match([...firstWidths][0], /^\d+px$/, `${state}: a fixed pixel label column`);
+    for (const r of rowsOf) assert.equal(r.columns[0].items[0].weight, 'Bolder', `${state}: bold labels`);
+  }
+  const pendingWidth = factOf(buildMergeRequestCard(base), 'Status').columns[0].width;
+  assert.notEqual(pendingWidth, 'auto');
 });
 
 test('unassigned or picture-less people stay plain facts', () => {
@@ -561,9 +595,9 @@ test('merge request approvers and the auto-merge user get pictures, in fact orde
   const [approval, autoMerge] = rows(card);
   assert.deepEqual(approval.columns.map((c) => c.items[0].text ?? c.items[0].altText), ['Approval', '👍 Approved by', 'Alice Example', 'Alice Example', 'Bob Example', 'Bob Example']);
   assert.deepEqual(autoMerge.columns.map((c) => c.items[0].text ?? c.items[0].altText), ['Auto-merge', '🔀 Enabled by', 'Carol Example', 'Carol Example']);
-  const order = items(card).map((i) => (i.type === 'FactSet' ? `F:${i.facts.map((f) => f.title).join(',')}` : i.type === 'ColumnSet' ? `R:${i.columns[0].items[0].text ?? ''}` : i.type));
-  assert.ok(order.indexOf('R:Approval') < order.indexOf('R:Auto-merge'));
-  assert.ok(order.some((o) => o.startsWith('F:') && o.includes('Status')));
+  const order = items(card).filter((i) => i.type === 'ColumnSet').map((i) => i.columns[0].items[0].text ?? '');
+  assert.ok(order.indexOf('Approval') < order.indexOf('Auto-merge'));
+  assert.ok(order.includes('Status') && order.includes('Target'), 'plain facts stay, as rows');
 });
 
 test('a person without a picture next to one with a picture keeps their name', () => {
@@ -621,4 +655,41 @@ test('collectCardPeople lists people once, without placeholders', () => {
   assert.deepEqual(collectCardPeople({ assignee: ' Alice Example ', owner: 'Alice Example' }), ['Alice Example']);
   assert.deepEqual(collectCardPeople({}), []);
   assert.deepEqual(collectCardPeople(null), []);
+});
+
+test('merge request author gets a labeled picture row, aligned with the other fact labels', () => {
+  const card = buildMergeRequestCard({ ...MR, author: 'Dave Example', avatars: { 'Dave Example': URI } });
+  const row = factOf(card, 'Author');
+  assert.deepEqual(row.columns.map((c) => c.items[0].text ?? c.items[0].altText), ['Author', 'Dave Example', 'Dave Example']);
+  assert.equal(row.columns[1].items[0].style, 'Person');
+  assert.equal(row.columns[1].items[0].url, URI);
+  assert.equal(row.columns[0].items[0].weight, 'Bolder');
+  assert.equal(row.columns[0].width, factOf(card, 'Status').columns[0].width);
+  const order = items(card).map((i) => i.columns?.[0].items[0].text);
+  assert.ok(order.indexOf('Status') < order.indexOf('Author') && order.indexOf('Author') < order.indexOf('Approval'));
+});
+
+test('merge request author without a picture is a plain Author fact; no author, no row', () => {
+  const plain = buildMergeRequestCard({ ...MR, author: 'Dave Example' });
+  const set = items(plain).find((i) => i.type === 'FactSet');
+  assert.deepEqual(set.facts.find((f) => f.title === 'Author'), { title: 'Author', value: 'Dave Example' });
+  assert.equal(images(plain), 0);
+  for (const author of [undefined, null, '', '  ']) {
+    const card = buildMergeRequestCard({ ...MR, author, avatars: { 'Dave Example': URI } });
+    assert.ok(!JSON.stringify(card).includes('"Author"'));
+  }
+});
+
+test('merge request author, first in fact order, takes the shared picture budget; later names stay', () => {
+  const big = `data:image/jpeg;base64,${'A'.repeat(4800)}`;
+  const card = buildMergeRequestCard({
+    ...MR,
+    author: 'Dave Example',
+    avatars: { 'Dave Example': big, 'Alice Example': big, 'Bob Example': big },
+  });
+  const text = JSON.stringify(card);
+  assert.ok(text.includes('Dave Example'), 'the name is never dropped');
+  // Only one picture of this size fits the shared budget; the author, first in fact order, gets it.
+  assert.equal(images(card), 1);
+  assert.ok(factOf(card, 'Author').columns.some((c) => c.items[0].type === 'Image'));
 });

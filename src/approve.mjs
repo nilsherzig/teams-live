@@ -1,7 +1,7 @@
 // Capability-link web confirmation flow for approving a GitLab merge request
 // from a rich card.
 //
-// The card carries an "✅ Approve" button (Action.OpenUrl) whose URL holds a
+// The card carries an "👍 Approve" button (Action.OpenUrl) whose URL holds a
 // random 256-bit capability token in the FRAGMENT (`https://host/approve/#<token>`).
 // There are no accounts: whoever holds the link can approve, as the configured
 // GitLab account, and nothing here identifies or authenticates the caller.
