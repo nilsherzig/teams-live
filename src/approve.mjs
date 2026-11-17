@@ -22,6 +22,13 @@
 //   invalidated when the head commit changes or the merge request is closed
 //   or merged. An uncertain outcome consumes nothing.
 // - The listener binds to loopback only and sits behind the reverse proxy.
+//
+// The same flow serves a second action, "Reopen", for CLOSED (never merged)
+// merge requests: a "🔄 Reopen" button on the closed card opens a link of the
+// kind `reopen`. It is separate from the approval links (its own records, never
+// staled by approvals and vice versa), has no head commit to pin, and is used up
+// by a confirmed reopen. Everything above (capability token, session, CSRF,
+// Origin, lock) applies unchanged.
 
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -50,6 +57,29 @@ const APPROVED_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const REFRESH_TIMEOUT_MS = 15_000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const COOKIE_NAME = 'tl_approve';
+const ACTIONS = ['approve', 'reopen'];
+
+// Page copy per kind of link. `generic` is the entry page, which does not know
+// the action yet (the token that says so is still in the fragment).
+const COPY = {
+  approve: {
+    title: 'Approve merge request',
+    blocked: 'Cannot approve',
+    kicker: 'GitLab approval',
+    footer: 'approvals are sent through the configured account.',
+    question: 'Approve this merge request?',
+    button: 'Approve merge request',
+  },
+  reopen: {
+    title: 'Reopen merge request',
+    blocked: 'Cannot reopen',
+    kicker: 'GitLab merge request',
+    footer: 'the reopen is sent through the configured account.',
+    question: 'Reopen this merge request?',
+    button: 'Reopen merge request',
+  },
+  generic: { kicker: 'GitLab', footer: 'actions are sent through the configured account.' },
+};
 
 const escapeHtml = (value) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -144,7 +174,7 @@ export class ApprovalStore {
           typeof r.sha === 'string' &&
           Number.isFinite(r.createdAt) &&
           Number.isFinite(r.expiresAt) &&
-          ['open', 'approved', 'stale'].includes(r.status)
+          ['open', 'approved', 'used', 'stale'].includes(r.status)
         ) {
           this.records.set(r.id, {
             id: r.id,
@@ -154,6 +184,7 @@ export class ApprovalStore {
             createdAt: r.createdAt,
             expiresAt: r.expiresAt,
             status: r.status,
+            action: ACTIONS.includes(r.action) ? r.action : 'approve',
           });
         }
       }
@@ -221,17 +252,20 @@ export class ApprovalStore {
    * link minted by this process is reused; otherwise a new random token is
    * issued. Open links of other head commits of the merge request become stale.
    */
-  linkFor({ project, iid, sha }) {
-    if (!project || iid === undefined || iid === null || !sha) return null;
+  linkFor({ project, iid, sha, action = 'approve' }) {
+    const reopen = action === 'reopen';
+    if (!ACTIONS.includes(action)) return null;
+    // An approval is pinned to a head commit; a reopen link has none to pin.
+    if (!project || iid === undefined || iid === null || (!sha && !reopen)) return null;
     let changed = this.prune();
     const key = keyOf(project, iid);
-    const cacheKey = `${key}@${sha}`;
-    if (this.approvedHeads.has(cacheKey)) {
+    const cacheKey = reopen ? `${key}#reopen` : `${key}@${sha}`;
+    if (!reopen && this.approvedHeads.has(cacheKey)) {
       if (changed) this.persist();
       return null;
     }
     for (const r of this.records.values()) {
-      if (keyOf(r.project, r.iid) === key && r.sha !== sha && r.status === 'open') {
+      if (!reopen && r.action === 'approve' && keyOf(r.project, r.iid) === key && r.sha !== sha && r.status === 'open') {
         r.status = 'stale';
         changed = true;
       }
@@ -261,10 +295,11 @@ export class ApprovalStore {
       id: sha256Hex(token),
       project: String(project),
       iid: String(iid),
-      sha: String(sha),
+      sha: sha ? String(sha) : '-',
       createdAt: now,
       expiresAt: now + this.ttlMs,
       status: 'open',
+      action: reopen ? 'reopen' : 'approve',
     };
     this.records.set(record.id, record);
     this.minted.set(cacheKey, { token, id: record.id });
@@ -307,17 +342,30 @@ export class ApprovalStore {
     const key = keyOf(project, iid);
     this.approvedHeads.set(`${key}@${sha}`, this.now());
     for (const r of this.records.values()) {
-      if (keyOf(r.project, r.iid) !== key || r.status === 'stale') continue;
+      if (r.action !== 'approve' || keyOf(r.project, r.iid) !== key || r.status === 'stale') continue;
       r.status = r.sha === sha ? 'approved' : 'stale';
     }
     this.persist();
   }
 
-  /** Closed, merged or changed merge request: no link of it works any more. */
-  invalidate(project, iid) {
+  /** A confirmed reopen uses up every reopen link of the merge request. */
+  markReopened(project, iid) {
     const key = keyOf(project, iid);
     for (const r of this.records.values()) {
-      if (keyOf(r.project, r.iid) === key && r.status === 'open') r.status = 'stale';
+      if (r.action === 'reopen' && keyOf(r.project, r.iid) === key && r.status === 'open') r.status = 'used';
+    }
+    this.persist();
+  }
+
+  /**
+   * Closed, merged or changed merge request: no approval link of it works any
+   * more (`action` 'reopen': the reopen links, for a merge request that is merged
+   * or open again).
+   */
+  invalidate(project, iid, action = 'approve') {
+    const key = keyOf(project, iid);
+    for (const r of this.records.values()) {
+      if (r.action === action && keyOf(r.project, r.iid) === key && r.status === 'open') r.status = 'stale';
     }
     this.persist();
   }
@@ -441,11 +489,14 @@ export class ApproveServer {
     this.scriptHash = `sha256-${crypto.createHash('sha256').update(this.script).digest('base64')}`;
   }
 
-  /** URL of the confirmation entry page for a merge request head commit, or null. */
-  linkFor({ project, iid, sha }) {
+  /**
+   * URL of the confirmation entry page, or null: for an approval of a merge
+   * request head commit, or (`action: 'reopen'`) for reopening a closed one.
+   */
+  linkFor({ project, iid, sha, action = 'approve' }) {
     try {
-      if (this.store.hasApprovedHead(project, iid, sha)) this.revalidateApproved(project, iid, sha);
-      const link = this.store.linkFor({ project, iid, sha });
+      if (action === 'approve' && this.store.hasApprovedHead(project, iid, sha)) this.revalidateApproved(project, iid, sha);
+      const link = this.store.linkFor({ project, iid, sha, action });
       return link ? `${this.origin}${this.basePath}/#${link.token}` : null;
     } catch (err) {
       log(`Could not create an approval link: ${err.message}`);
@@ -540,15 +591,16 @@ export class ApproveServer {
    * inline SVG only (the CSP allows nothing else), no external fonts or images.
    * `tone` colors the panel edge: neutral, ok, warn or error.
    */
-  page(title, body, { script = '', tone = 'neutral' } = {}) {
+  page(title, body, { script = '', tone = 'neutral', kind = 'approve' } = {}) {
     const safeTone = ['neutral', 'ok', 'warn', 'error'].includes(tone) ? tone : 'neutral';
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}</style></head><body><div class="shell"><header class="brand">${BRAND_MARK}<span class="word">teams-live</span><span class="sep" aria-hidden="true">·</span><span class="kicker">GitLab approval</span></header><main class="panel tone-${safeTone}"><h1>${escapeHtml(title)}</h1>${body}${script}</main><footer class="foot">Served by your teams-live instance. Nothing here is GitLab itself; approvals are sent through the configured account.</footer></div></body></html>`;
+    const copy = COPY[kind] || COPY.approve;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}</style></head><body><div class="shell"><header class="brand">${BRAND_MARK}<span class="word">teams-live</span><span class="sep" aria-hidden="true">·</span><span class="kicker">${copy.kicker}</span></header><main class="panel tone-${safeTone}"><h1>${escapeHtml(title)}</h1>${body}${script}</main><footer class="foot">Served by your teams-live instance. Nothing here is GitLab itself; ${copy.footer}</footer></div></body></html>`;
   }
 
   /** The static script that exchanges the fragment token for a session. */
   bootstrapScript() {
     const base = JSON.stringify(`${this.basePath}`);
-    return `(function(){var B=${base},m=document.getElementById('msg');function say(t){m.textContent=t}var h=location.hash.replace(/^#/,'');try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}if(!/^[A-Za-z0-9_-]{43}$/.test(h)){say('This approval link is incomplete. Use the button on the Teams card.');return}fetch(B+'/session',{method:'POST',credentials:'same-origin',cache:'no-store',referrerPolicy:'no-referrer',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'token='+h}).then(function(r){if(r.ok){location.replace(B+'/confirm');return}if(r.status===410){say('This approval link was already used or the merge request changed. Use the button on the current Teams card.')}else if(r.status===429){say('Too many attempts. Try again in a minute.')}else if(r.status===404){say('This approval link is unknown or has expired. Use the button on the current Teams card.')}else{say('The link could not be opened. Nothing was approved.')}}).catch(function(){say('The link could not be opened. Nothing was approved.')})})();`;
+    return `(function(){var B=${base},m=document.getElementById('msg');function say(t){m.textContent=t}var h=location.hash.replace(/^#/,'');try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}if(!/^[A-Za-z0-9_-]{43}$/.test(h)){say('This link is incomplete. Use the button on the Teams card.');return}fetch(B+'/session',{method:'POST',credentials:'same-origin',cache:'no-store',referrerPolicy:'no-referrer',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'token='+h}).then(function(r){if(r.ok){location.replace(B+'/confirm');return}if(r.status===410){say('This link was already used or the merge request changed. Use the button on the current Teams card.')}else if(r.status===429){say('Too many attempts. Try again in a minute.')}else if(r.status===404){say('This link is unknown or has expired. Use the button on the current Teams card.')}else{say('The link could not be opened. Nothing was changed.')}}).catch(function(){say('The link could not be opened. Nothing was changed.')})})();`;
   }
 
   /** Route below the base path ("/", "/session", "/confirm") or null. */
@@ -675,9 +727,9 @@ export class ApproveServer {
     if (route === '/') {
       if (method === 'POST') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: 'GET, HEAD' } });
       const body = this.page(
-        'Approve merge request',
-        '<p id="msg">Opening the approval link…</p><noscript><p>JavaScript is required to open an approval link.</p></noscript>',
-        { script: `<script>${this.script}</script>` },
+        'Opening link',
+        '<p id="msg">Opening the link…</p><noscript><p>JavaScript is required to open this link.</p></noscript>',
+        { script: `<script>${this.script}</script>`, kind: 'generic' },
       );
       return this.send(res, 200, body, { head, script: true });
     }
@@ -689,7 +741,7 @@ export class ApproveServer {
     if (method === 'HEAD') return this.send(res, 200, '', { head: true });
     const session = this.sessionOf(req);
     if (!session) {
-      return this.send(res, 401, this.page('Link not opened', '<p>Open the approval link from the Teams card again. Nothing was approved.</p>', { tone: 'warn' }));
+      return this.send(res, 401, this.page('Link not opened', '<p>Open the link from the Teams card again. Nothing was changed.</p>', { tone: 'warn' }));
     }
     if (method === 'GET') return this.showConfirmation(res, session);
     return this.approve(req, res, session);
@@ -723,6 +775,7 @@ export class ApproveServer {
    * `ready`, `already` (the configured account approved) or `blocked`.
    */
   async evaluate(record) {
+    if (record.action === 'reopen') return this.evaluateReopen(record);
     if (record.status === 'approved') return { status: 'used' };
     if (record.status === 'stale') return { status: 'blocked', reason: 'This link was superseded because the merge request changed. Use the button on the current Teams card.' };
     let mr;
@@ -754,21 +807,55 @@ export class ApproveServer {
     return { status: 'ready', mr, user: state.user };
   }
 
+  /**
+   * Reopen: only a closed merge request that was not merged can be reopened.
+   * `ready`, `already` (it is open again) or `blocked`. The head commit plays
+   * no role; the account is not verified beforehand, GitLab decides on the PUT.
+   */
+  async evaluateReopen(record) {
+    if (record.status === 'used') return { status: 'used' };
+    if (record.status === 'stale') return { status: 'blocked', reason: 'This link is no longer valid because the merge request changed. Use the button on the current Teams card.' };
+    let mr;
+    try {
+      mr = await this.gitlab.getMr(record.project, record.iid);
+    } catch {
+      return { status: 'blocked', reason: 'GitLab could not be reached to read the merge request. Nothing was reopened. Try again later.' };
+    }
+    if (mr?.state === 'opened') {
+      this.store.invalidate(record.project, record.iid, 'reopen');
+      return { status: 'already', mr };
+    }
+    if (mr?.state === 'merged') {
+      this.store.invalidate(record.project, record.iid, 'reopen');
+      return { status: 'blocked', mr, reason: 'This merge request is merged and cannot be reopened.' };
+    }
+    if (mr?.state !== 'closed') {
+      return { status: 'blocked', mr, reason: 'The state of the merge request is unknown. Nothing was reopened.' };
+    }
+    const user = typeof this.gitlab.getCurrentUser === 'function' ? await this.gitlab.getCurrentUser().catch(() => null) : null;
+    return { status: 'ready', mr, user: user?.id ? user : null };
+  }
+
   summary(record, mr, user) {
+    const reopen = record.action === 'reopen';
     const lines = [
       `<div class="mr"><div class="mr-head">${stateBadge(mr)}<span class="ref">${escapeHtml(record.project)}!${escapeHtml(record.iid)}</span></div><p><strong>${escapeHtml(mr?.title || `Merge request !${record.iid}`)}</strong></p>`,
-      `<p class="note">Head commit <code>${escapeHtml(record.sha.slice(0, 12))}</code></p></div>`,
+      reopen ? '</div>' : `<p class="note">Head commit <code>${escapeHtml(record.sha.slice(0, 12))}</code></p></div>`,
     ];
     if (user) {
+      const who = escapeHtml(user.username || user.name || user.id);
       lines.push(
-        `<p class="callout">The approval is made with the configured GitLab account <code>${escapeHtml(user.username || user.name || user.id)}</code>, not as you personally. Anyone with this link can approve.</p>`,
+        reopen
+          ? `<p class="callout">The merge request is reopened with the configured GitLab account <code>${who}</code>, not as you personally. Anyone with this link can reopen it.</p>`
+          : `<p class="callout">The approval is made with the configured GitLab account <code>${who}</code>, not as you personally. Anyone with this link can approve.</p>`,
       );
     }
     return lines.join('');
   }
 
   usedPage(record) {
-    return { code: 410, title: 'Link already used', body: `${this.summary(record, null, null)}<p>This link was already used to approve the merge request. Nothing more was sent.</p>` };
+    const text = record.action === 'reopen' ? 'reopen the merge request' : 'approve the merge request';
+    return { code: 410, title: 'Link already used', body: `${this.summary(record, null, null)}<p>This link was already used to ${text}. Nothing more was sent.</p>` };
   }
 
   /** Short-lived, coalesced read for the confirmation page (never used to approve). */
@@ -794,15 +881,26 @@ export class ApproveServer {
       const u = this.usedPage(record);
       return this.send(res, u.code, this.page(u.title, u.body, { tone: toneForCode(u.code) }));
     }
+    const kind = record.action === 'reopen' ? 'reopen' : 'approve';
+    const copy = COPY[kind];
     if (result.status === 'blocked') {
-      return this.send(res, 409, this.page('Cannot approve', `${this.summary(record, result.mr, result.user)}<p>${escapeHtml(result.reason)}</p>`, { tone: 'warn' }));
+      return this.send(res, 409, this.page(copy.blocked, `${this.summary(record, result.mr, result.user)}<p>${escapeHtml(result.reason)}</p>`, { tone: 'warn', kind }));
     }
     if (result.status === 'already') {
-      return this.send(res, 200, this.page('Already approved', `${this.summary(record, result.mr, result.user)}<p>This merge request is already approved by the configured account in GitLab. Nothing to do.</p>`, { tone: 'ok' }));
+      return this.send(res, 200, this.page(...this.alreadyPage(record, result), { tone: 'ok', kind }));
     }
     const token = this.csrf.issue(sid, record.id);
-    const form = `<form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><p>Approve this merge request?</p><button class="btn" type="submit">Approve merge request</button></form>`;
-    return this.send(res, 200, this.page('Approve merge request', `${this.summary(record, result.mr, result.user)}${form}`, { tone: 'neutral' }));
+    const form = `<form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><p>${copy.question}</p><button class="btn" type="submit">${copy.button}</button></form>`;
+    return this.send(res, 200, this.page(copy.title, `${this.summary(record, result.mr, result.user)}${form}`, { tone: 'neutral', kind }));
+  }
+
+  /** `[title, body]` for a merge request that is already in the wanted state. */
+  alreadyPage(record, result, sent = false) {
+    const summary = this.summary(record, result.mr, result.user);
+    if (record.action === 'reopen') {
+      return ['Already open', `${summary}<p>This merge request is already open in GitLab. ${sent ? 'Nothing was sent.' : 'Nothing to do.'}</p>`];
+    }
+    return ['Already approved', `${summary}<p>This merge request is already approved by the configured account in GitLab. ${sent ? 'Nothing was sent.' : 'Nothing to do.'}</p>`];
   }
 
   async withLock(key, fn) {
@@ -823,37 +921,77 @@ export class ApproveServer {
   }
 
   async approve(req, res, { sid, record }) {
+    const kind = record.action === 'reopen' ? 'reopen' : 'approve';
+    const nothing = kind === 'reopen' ? 'Nothing was reopened.' : 'Nothing was approved.';
     if (!this.originAllowed(req)) {
-      this.send(res, 403, this.page('Not allowed', '<p>The request did not come from the approval page. Nothing was approved.</p>', { tone: 'warn' }));
+      this.send(res, 403, this.page('Not allowed', `<p>The request did not come from the confirmation page. ${nothing}</p>`, { tone: 'warn', kind }));
       return;
     }
     const parsed = await this.postForm(req);
     if (!parsed.form) {
       const msg = parsed.status === 415 ? 'Unsupported request.' : 'The request was rejected.';
-      this.send(res, parsed.status, this.page('Not allowed', `<p>${msg} Nothing was approved.</p>`, { tone: 'warn' }));
+      this.send(res, parsed.status, this.page('Not allowed', `<p>${msg} ${nothing}</p>`, { tone: 'warn', kind }));
       return;
     }
     if (!this.csrf.verify(parsed.form.get('csrf'), sid, record.id)) {
-      this.send(res, 403, this.page('Page expired', '<p>This page expired. Open the link again and confirm. Nothing was approved.</p>', { tone: 'warn' }));
+      this.send(res, 403, this.page('Page expired', `<p>This page expired. Open the link again and confirm. ${nothing}</p>`, { tone: 'warn', kind }));
       return;
     }
 
     const outcome = await this.withLock(keyOf(record.project, record.iid), async () => {
       this.readCache.delete(record.id);
       const current = this.store.byId(record.id);
-      if (!current) return { code: 410, title: 'Link expired', body: '<p>This approval link expired. Nothing was approved.</p>' };
+      if (!current) return { code: 410, title: 'Link expired', body: `<p>This link expired. ${nothing}</p>` };
       const result = await this.evaluate(current);
       if (result.status === 'used') return this.usedPage(current);
       if (result.status === 'blocked') {
-        return { code: 409, title: 'Cannot approve', body: `${this.summary(current, result.mr, result.user)}<p>${escapeHtml(result.reason)}</p>` };
+        return { code: 409, title: COPY[kind].blocked, body: `${this.summary(current, result.mr, result.user)}<p>${escapeHtml(result.reason)}</p>` };
       }
       if (result.status === 'already') {
-        this.store.markApproved(current.project, current.iid, current.sha);
-        return { code: 200, title: 'Already approved', body: `${this.summary(current, result.mr, result.user)}<p>This merge request is already approved by the configured account in GitLab. Nothing was sent.</p>` };
+        if (kind === 'reopen') this.store.markReopened(current.project, current.iid);
+        else this.store.markApproved(current.project, current.iid, current.sha);
+        const [title, body] = this.alreadyPage(current, result, true);
+        return { code: 200, title, body };
       }
-      return this.sendApproval(current, result);
+      return kind === 'reopen' ? this.sendReopen(current, result) : this.sendApproval(current, result);
     });
-    this.send(res, outcome.code, this.page(outcome.title, outcome.body, { tone: outcome.tone || toneForCode(outcome.code) }));
+    this.send(res, outcome.code, this.page(outcome.title, outcome.body, { tone: outcome.tone || toneForCode(outcome.code), kind }));
+  }
+
+  /**
+   * Reopens the merge request. The outcome of a failed or unanswered request is
+   * looked up before anything is said: nothing is used up unless it is open.
+   */
+  async sendReopen(record, result) {
+    const summary = this.summary(record, result.mr, result.user);
+    try {
+      await this.gitlab.reopenMr(record.project, record.iid);
+    } catch (err) {
+      const status = gitlabStatus(err);
+      log(`Reopen of ${record.project}!${record.iid} failed${status ? ` (HTTP ${status})` : ' (no response)'}`);
+      if (status === null || status >= 500) {
+        const mr = await this.gitlab.getMr(record.project, record.iid).catch(() => null);
+        if (mr?.state === 'opened') return this.reopened(record, summary);
+        if (mr) {
+          return { code: 502, title: 'Reopen failed', body: `${summary}<p>GitLab did not confirm the request and the merge request is not open. Nothing was reopened. Reload the page to try again.</p>` };
+        }
+        return { code: 502, title: 'Outcome unknown', body: `${summary}<p>GitLab did not give a clear answer and the result could not be checked. The merge request may or may not be open again: check it in GitLab before retrying.</p>` };
+      }
+      if (status === 401 || status === 403) {
+        return { code: 403, title: 'Reopen refused', body: `${summary}<p>GitLab refused the request (the configured account may not be allowed to reopen this merge request). Nothing was reopened.</p>` };
+      }
+      if (status === 404) {
+        return { code: 404, title: 'Reopen failed', body: `${summary}<p>GitLab could not find the merge request. Nothing was reopened.</p>` };
+      }
+      return { code: 409, title: 'Reopen failed', body: `${summary}<p>GitLab rejected the request (HTTP ${status}), for example because the merge request cannot be reopened. Nothing was reopened. Reload the page to review it again.</p>` };
+    }
+    return this.reopened(record, summary);
+  }
+
+  async reopened(record, summary) {
+    this.store.markReopened(record.project, record.iid);
+    const refresh = await this.refresh(record);
+    return { code: 200, title: 'Reopened', body: `${summary}<p>Reopened in GitLab.</p><p class="note">${escapeHtml(refresh)}</p>` };
   }
 
   async sendApproval(record, result) {

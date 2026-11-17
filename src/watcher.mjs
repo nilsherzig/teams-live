@@ -1774,6 +1774,23 @@ export class MergeRequestWatcher {
     }
   }
 
+  /**
+   * Link to the reopen confirmation page, or null when the button must not be
+   * shown: flow disabled, rich mode off, or not a closed merge request (a
+   * merged or open one cannot be reopened).
+   */
+  mrReopenUrl(mr, { state }) {
+    if (!this.approveFlow || !this.richMessages) return null;
+    if (state !== 'closed') return null;
+    if (!mr?.project || mr.iid === undefined || mr.iid === null) return null;
+    try {
+      return this.approveFlow.linkFor({ project: mr.project, iid: mr.iid, action: 'reopen' });
+    } catch (err) {
+      log(`Reopen link failed for ${mr.project}!${mr.iid}: ${err.message}`);
+      return null;
+    }
+  }
+
   /** Re-checks the watched cards of one merge request (like a webhook event does). */
   async refreshMrCards(project, iid) {
     const projLower = String(project || '').toLowerCase();
@@ -2454,6 +2471,7 @@ export class MergeRequestWatcher {
       state,
       diffStats,
       approveUrl: this.mrApproveUrl(mr, mrDetails, { state, approved }),
+      reopenUrl: this.mrReopenUrl(mr, { state }),
       iid: mr.iid,
       project: mr.project,
       title: cardTitle,

@@ -14,8 +14,9 @@
 // label for the kind of entity (for example "GitLab - Merge request"), then the
 // title, an optional one-line subtitle and a few facts. Navigation uses inline
 // links (the title and the cross references), not buttons. The one exception
-// is the "✅ Approve" button of the merge request card (`approveUrl`), which
-// opens a capability-link confirmation page: it never approves by itself.
+// are the "✅ Approve" button of the merge request card (`approveUrl`, open
+// merge requests) and the "🔄 Reopen" button (`reopenUrl`, closed ones), which
+// open a capability-link confirmation page: they never act by themselves.
 
 import { SERVICE_ICONS } from './card-icons.mjs';
 import { GITLAB_ICONS } from './gitlab-icons.mjs';
@@ -451,8 +452,9 @@ const tri = (value) => (value === true ? true : value === false ? false : null);
  * appears only while a rebase is required. Merged and closed merge requests
  * keep the details that are known. `draft` marks an open merge request as a
  * draft (neutral); it never masks a merged or closed one. `approveUrl` adds an "✅ Approve" button
- * that opens a confirmation page (see src/approve.mjs); it never approves by
- * itself.
+ * to a live merge request and `reopenUrl` a "🔄 Reopen" button to a closed one
+ * (never a merged one); each opens a confirmation page (see src/approve.mjs)
+ * and never acts by itself.
  */
 export function buildMergeRequestCard(mr) {
   const state = mr.state || 'open';
@@ -533,7 +535,13 @@ export function buildMergeRequestCard(mr) {
       ['Target', mr.targetBranch],
       logoFact('Jira', mdLink(jiraLabel, mr.jira?.url), 'jira'),
     ].filter(Boolean),
-    actions: mr.approveUrl ? [{ title: '✅ Approve', url: mr.approveUrl }] : [],
+    actions: live
+      ? mr.approveUrl
+        ? [{ title: '✅ Approve', url: mr.approveUrl }]
+        : []
+      : state === 'closed' && mr.reopenUrl
+        ? [{ title: '🔄 Reopen', url: mr.reopenUrl }]
+        : [],
     fallbackText: mr.fallbackText,
   });
 }

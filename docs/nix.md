@@ -415,3 +415,15 @@ them gets a warning and they are ignored.
 The button is hidden once the merge request is approved or when the head commit
 is unknown. After an approval the card of the merge request is re-checked; the
 page says whether that refresh ran, failed or had no card to update.
+
+#### Reopening from a closed card
+
+The same flow serves a second button. A card of a **closed** merge request that
+was not merged gets a "🔄 Reopen" button (never a merged, open or draft one). It
+uses its own capability links, with the same token, session, CSRF, Origin and
+single-use rules as an approval link, but without a head commit: the page checks
+that the merge request is still closed (an open one reports "Already open", a
+merged one is refused), and a confirmed POST reopens it with the configured
+GitLab account. After an unclear answer the state is read back before anything
+is reported or used up. The card is re-checked afterwards like after an
+approval. Approval and reopen links of one merge request do not affect each other.

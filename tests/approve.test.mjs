@@ -16,12 +16,22 @@ const PROJECT = 'group/app';
 const IID = 7;
 
 function makeGitlab(overrides = {}) {
-  const calls = { approve: [], getMr: 0, state: 0 };
+  const calls = { approve: [], reopen: [], getMr: 0, state: 0 };
   const gitlab = {
     calls,
     mr: { state: 'opened', draft: false, sha: SHA, title: 'Example change' },
     userState: { known: true, user: { id: 1, username: 'owner' }, hasApproved: false, canApprove: true },
     approveError: null,
+    reopenError: null,
+    async getCurrentUser() {
+      return { id: 1, username: 'owner' };
+    },
+    async reopenMr(project, iid) {
+      calls.reopen.push({ project, iid });
+      if (gitlab.reopenError) throw gitlab.reopenError;
+      gitlab.mr = { ...gitlab.mr, state: 'opened' };
+      return gitlab.mr;
+    },
     async getMr() {
       calls.getMr++;
       return gitlab.mr;
@@ -40,7 +50,7 @@ function makeGitlab(overrides = {}) {
   return gitlab;
 }
 
-async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, now, linkTtlSeconds } = {}) {
+async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, now, linkTtlSeconds, action = 'approve' } = {}) {
   const server = new ApproveServer({
     gitlab,
     baseUrl: `${ORIGIN}/approve`,
@@ -52,7 +62,7 @@ async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, no
   });
   await server.start();
   const base = `http://127.0.0.1:${server.port}`;
-  const { token, record } = server.store.linkFor({ project: PROJECT, iid: IID, sha: SHA });
+  const { token, record } = server.store.linkFor({ project: PROJECT, iid: IID, sha: action === 'reopen' ? undefined : SHA, action });
   const form = (fields) => new URLSearchParams(fields).toString();
   const FORM = { 'Content-Type': 'application/x-www-form-urlencoded' };
   const entry = () => fetch(`${base}/approve/`);
@@ -715,7 +725,7 @@ test('the watcher offers the button only for live, undrafted, unapproved merge r
   const flow = new ApproveServer({ gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve` });
   const mr = { project: PROJECT, iid: IID, title: 'Example' };
   const details = { sha: SHA, draft: false, approved: false, title: 'Example' };
-  const hasButton = (w, d, opts) => /Action\.OpenUrl/.test(JSON.stringify(w.buildMrCard(mr, d, opts)));
+  const hasButton = (w, d, opts) => JSON.stringify(w.buildMrCard(mr, d, opts)).includes('✅ Approve');
 
   const rich = watcherWith({ rich_messages: true }, flow);
   assert.equal(hasButton(rich, details, { state: 'open' }), true);
@@ -966,4 +976,312 @@ test('after a restart with a full store of open links nothing is evicted and the
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- Reopen (closed, not merged merge requests). All GitLab calls are mocked. ---
+
+const closedGitlab = (overrides = {}) => {
+  const gitlab = makeGitlab(overrides);
+  gitlab.mr = { state: 'closed', title: 'Example change' };
+  return gitlab;
+};
+
+test('reopen links need no head commit, are independent of approval links and are used up by a reopen', () => {
+  const store = new ApprovalStore();
+  assert.equal(store.linkFor({ project: PROJECT, iid: IID, sha: null }), null, 'an approval still needs a head');
+  assert.equal(store.linkFor({ project: PROJECT, iid: IID, action: 'bogus' }), null);
+  const approve = store.linkFor({ project: PROJECT, iid: IID, sha: SHA });
+  const reopen = store.linkFor({ project: PROJECT, iid: IID, action: 'reopen' });
+  assert.equal(reopen.record.action, 'reopen');
+  assert.equal(approve.record.action, 'approve');
+  assert.notEqual(reopen.token, approve.token);
+  assert.equal(store.linkFor({ project: PROJECT.toUpperCase(), iid: IID, action: 'reopen' }).token, reopen.token, 'reused');
+
+  // A new head supersedes approvals only; an approval leaves the reopen link alone.
+  store.linkFor({ project: PROJECT, iid: IID, sha: 'b'.repeat(40) });
+  assert.equal(store.byId(approve.record.id).status, 'stale');
+  assert.equal(store.byId(reopen.record.id).status, 'open');
+  store.markApproved(PROJECT, IID, 'b'.repeat(40));
+  assert.equal(store.byId(reopen.record.id).status, 'open');
+  store.invalidate(PROJECT, IID);
+  assert.equal(store.byId(reopen.record.id).status, 'open', 'invalidating approvals keeps reopen links');
+
+  store.markReopened(PROJECT, IID);
+  assert.equal(store.byId(reopen.record.id).status, 'used');
+  // Closed again later: a fresh link is minted (nothing remembers the reopen).
+  const again = store.linkFor({ project: PROJECT, iid: IID, action: 'reopen' });
+  assert.notEqual(again.token, reopen.token);
+  assert.equal(again.record.status, 'open');
+});
+
+test('the action and the used status survive a restart; old records count as approvals', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-reopen-'));
+  const file = path.join(dir, 'approve.json');
+  try {
+    const store = new ApprovalStore({ file });
+    const reopen = store.linkFor({ project: PROJECT, iid: IID, action: 'reopen' });
+    const used = store.linkFor({ project: PROJECT, iid: 8, action: 'reopen' });
+    store.markReopened(PROJECT, 8);
+    const loaded = new ApprovalStore({ file });
+    loaded.load();
+    assert.equal(loaded.byId(reopen.record.id).action, 'reopen');
+    assert.equal(loaded.byId(used.record.id).status, 'used');
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    delete raw.records[0].action;
+    fs.writeFileSync(file, JSON.stringify(raw));
+    const legacy = new ApprovalStore({ file });
+    legacy.load();
+    assert.equal(legacy.byId(reopen.record.id).action, 'approve');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a confirmed POST reopens a closed merge request once, uses the link up and refreshes the card', async () => {
+  const refreshes = [];
+  const ctx = await setup({
+    gitlab: closedGitlab(),
+    action: 'reopen',
+    refreshCards: async (project, iid) => {
+      refreshes.push([project, iid]);
+      return { matched: 1, completed: 1, failed: 0 };
+    },
+  });
+  try {
+    // The entry page is generic, the confirmation page says what will happen.
+    const entry = await (await ctx.entry()).text();
+    assert.match(entry, /<h1>Opening link<\/h1>/);
+    assert.doesNotMatch(entry, /GitLab approval|Approve merge request/);
+    const cookie = await ctx.open();
+    const res = await ctx.page(cookie);
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /<title>Reopen merge request · teams-live<\/title>/);
+    assert.match(html, /<button class="btn" type="submit">Reopen merge request<\/button>/);
+    assert.match(html, /Reopen this merge request\?/);
+    assert.match(html, /pill-closed/);
+    assert.match(html, /not as you personally/);
+    assert.doesNotMatch(html, /Head commit|approval|Approve/);
+    assert.equal(ctx.gitlab.calls.reopen.length, 0, 'GET never reopens');
+
+    const posted = await ctx.post(cookie, { csrf: await ctx.csrfFrom(await ctx.page(cookie)) });
+    assert.equal(posted.status, 200);
+    const done = await posted.text();
+    assert.match(done, /Reopened in GitLab/);
+    assert.match(done, /refresh was run/);
+    assert.deepEqual(ctx.gitlab.calls.reopen, [{ project: PROJECT, iid: String(IID) }]);
+    assert.deepEqual(ctx.gitlab.calls.approve, []);
+    assert.deepEqual(refreshes, [[PROJECT, String(IID)]]);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'used');
+
+    assert.equal((await ctx.bootstrap()).status, 410);
+    const replay = await ctx.page(cookie);
+    assert.equal(replay.status, 410);
+    assert.match(await replay.text(), /already used to reopen/);
+    assert.equal(ctx.gitlab.calls.reopen.length, 1);
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('reopen checks CSRF and origin like the approval and does not reopen without them', async () => {
+  const ctx = await setup({ gitlab: closedGitlab(), action: 'reopen' });
+  try {
+    const cookie = await ctx.open();
+    const csrf = await ctx.csrfFrom(await ctx.page(cookie));
+    assert.equal((await ctx.post(cookie, { csrf }, { Origin: 'https://evil.example.com' })).status, 403);
+    const noCsrf = await ctx.post(cookie, { csrf: 'x' });
+    assert.equal(noCsrf.status, 403);
+    assert.match(await noCsrf.text(), /Nothing was reopened/);
+    assert.equal((await ctx.post(null, { csrf })).status, 401);
+    assert.equal(ctx.gitlab.calls.reopen.length, 0);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('only a closed merge request can be reopened: open is reported as such, merged is refused', async () => {
+  // Either way the link is superseded on sight (a GET changes nothing in GitLab).
+  for (const [state, status, pattern] of [
+    ['opened', 200, /already open/],
+    ['merged', 409, /merged and cannot be reopened/],
+  ]) {
+    const gitlab = closedGitlab();
+    gitlab.mr = { ...gitlab.mr, state };
+    const ctx = await setup({ gitlab, action: 'reopen' });
+    try {
+      const cookie = await ctx.open();
+      const page = await ctx.page(cookie);
+      assert.equal(page.status, status);
+      assert.match(await page.text(), pattern);
+      assert.doesNotMatch(await (await ctx.page(cookie)).text(), /<button/);
+      assert.equal(gitlab.calls.reopen.length, 0);
+      assert.equal(ctx.server.store.byId(ctx.record.id).status, 'stale');
+    } finally {
+      await ctx.server.stop();
+    }
+  }
+
+  // The state changes between the page and the click: the POST evaluates fresh.
+  const gitlab = closedGitlab();
+  const ctx = await setup({ gitlab, action: 'reopen' });
+  try {
+    const cookie = await ctx.open();
+    const csrf = await ctx.csrfFrom(await ctx.page(cookie));
+    gitlab.mr = { ...gitlab.mr, state: 'merged' };
+    const res = await ctx.post(cookie, { csrf });
+    assert.equal(res.status, 409);
+    assert.match(await res.text(), /merged/);
+    assert.equal(gitlab.calls.reopen.length, 0);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'stale');
+  } finally {
+    await ctx.server.stop();
+  }
+
+  // Somebody else reopened it first: nothing is sent, the link is used up.
+  const g2 = closedGitlab();
+  const c2 = await setup({ gitlab: g2, action: 'reopen' });
+  try {
+    const cookie = await c2.open();
+    const csrf = await c2.csrfFrom(await c2.page(cookie));
+    g2.mr = { ...g2.mr, state: 'opened' };
+    const res = await c2.post(cookie, { csrf });
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /already open in GitLab\. Nothing was sent/);
+    assert.equal(g2.calls.reopen.length, 0);
+    assert.equal(c2.server.store.byId(c2.record.id).status, 'stale');
+  } finally {
+    await c2.server.stop();
+  }
+});
+
+test('a GitLab read failure blocks the reopen page without leaking GitLab text', async () => {
+  const gitlab = closedGitlab({
+    async getMr() {
+      throw new Error('GitLab error (500): <script>alert(1)</script>');
+    },
+  });
+  const ctx = await setup({ gitlab, action: 'reopen' });
+  try {
+    const page = await ctx.page(await ctx.open());
+    assert.equal(page.status, 409);
+    const html = await page.text();
+    assert.match(html, /could not be reached/);
+    assert.doesNotMatch(html, /<script>alert/);
+    assert.equal(gitlab.calls.reopen.length, 0);
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('reopen failures are reported honestly and only a confirmed reopen consumes the link', async () => {
+  const run = async (error, mrAfter) => {
+    const gitlab = closedGitlab();
+    gitlab.reopenError = error;
+    const ctx = await setup({ gitlab, action: 'reopen' });
+    try {
+      const reopened = gitlab.reopenMr;
+      gitlab.reopenMr = async (...args) => {
+        try {
+          return await reopened(...args);
+        } finally {
+          if (mrAfter) gitlab.mr = { ...gitlab.mr, state: mrAfter };
+        }
+      };
+      const res = await ctx.confirm();
+      return { status: res.status, html: await res.text(), link: ctx.server.store.byId(ctx.record.id).status };
+    } finally {
+      await ctx.server.stop();
+    }
+  };
+
+  const refused = await run(new Error('GitLab error (403): Forbidden'));
+  assert.equal(refused.status, 403);
+  assert.match(refused.html, /Nothing was reopened/);
+  assert.equal(refused.link, 'open');
+
+  const missing = await run(new Error('GitLab error (404): Not found'));
+  assert.equal(missing.status, 404);
+  assert.equal(missing.link, 'open');
+
+  const rejected = await run(new Error('GitLab error (409): Cannot reopen'));
+  assert.equal(rejected.status, 409);
+  assert.match(rejected.html, /HTTP 409/);
+  assert.equal(rejected.link, 'open');
+
+  // The answer is lost but GitLab applied it: the recheck finds it open.
+  const landed = await run(new Error('GitLab request failed (network)'), 'opened');
+  assert.equal(landed.status, 200);
+  assert.match(landed.html, /Reopened in GitLab/);
+  assert.equal(landed.link, 'used');
+
+  // Not applied: still closed, so nothing is consumed.
+  const notApplied = await run(new Error('GitLab error (502): bad gateway'));
+  assert.equal(notApplied.status, 502);
+  assert.match(notApplied.html, /not open\. Nothing was reopened/);
+  assert.equal(notApplied.link, 'open');
+});
+
+test('an unanswered reopen whose result cannot be checked is reported as unknown and not consumed', async () => {
+  const gitlab = closedGitlab();
+  gitlab.reopenError = new Error('GitLab request failed (network)');
+  let reads = 0;
+  gitlab.getMr = async () => {
+    reads++;
+    if (reads > 2) throw new Error('GitLab request failed (network)');
+    return gitlab.mr;
+  };
+  const ctx = await setup({ gitlab, action: 'reopen' });
+  try {
+    const res = await ctx.confirm();
+    assert.equal(res.status, 502);
+    assert.match(await res.text(), /may or may not be open again/);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('the card has the Reopen button only for a closed merge request with a link', () => {
+  const base = { iid: 7, project: PROJECT, title: 'Example', url: 'https://gitlab.example.com/x', approved: false };
+  const card = (extra) => {
+    const built = buildMergeRequestCard({ ...base, ...extra });
+    return JSON.stringify(built.card ?? built);
+  };
+  const reopenUrl = `${ORIGIN}/approve/#${'A'.repeat(43)}`;
+  const closed = card({ state: 'closed', reopenUrl });
+  assert.match(closed, /"type":"Action.OpenUrl"/);
+  assert.match(closed, /"title":"🔄 Reopen"/);
+  assert.ok(closed.includes(reopenUrl));
+  assert.doesNotMatch(closed, /Approve/);
+  assert.doesNotMatch(card({ state: 'closed' }), /Action\.OpenUrl/);
+  assert.doesNotMatch(card({ state: 'closed', reopenUrl: 'javascript:alert(1)' }), /Action\.OpenUrl/);
+  for (const state of ['merged', 'open', 'rebase', 'rebased']) {
+    assert.doesNotMatch(card({ state, reopenUrl }), /Reopen/, state);
+  }
+  // An approve link never shows on a closed card.
+  assert.doesNotMatch(card({ state: 'closed', approveUrl: reopenUrl }), /Action\.OpenUrl/);
+});
+
+test('the watcher offers Reopen only on closed cards with the flow enabled in rich mode', () => {
+  const flow = new ApproveServer({ gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve` });
+  const mr = { project: PROJECT, iid: IID, title: 'Example' };
+  const details = { sha: SHA, draft: false, title: 'Example' };
+  const text = (w, opts) => JSON.stringify(w.buildMrCard(mr, details, opts));
+  const rich = watcherWith({ rich_messages: true }, flow);
+
+  const closed = text(rich, { state: 'closed' });
+  assert.match(closed, /🔄 Reopen/);
+  assert.doesNotMatch(closed, /✅ Approve/);
+  for (const state of ['merged', 'open', 'rebase', 'rebased']) {
+    assert.doesNotMatch(text(rich, { state }), /Reopen/, state);
+  }
+  assert.doesNotMatch(text(watcherWith({ rich_messages: false }, flow), { state: 'closed' }), /Reopen/, 'rich mode off');
+  assert.doesNotMatch(text(watcherWith({ rich_messages: true }, null), { state: 'closed' }), /Reopen/, 'flow disabled');
+
+  // The same link is shown again on a refresh and carries a reopen record.
+  const url = (w) => /https:\/\/approve\.example\.com\/approve\/#[A-Za-z0-9_-]{43}/.exec(text(w, { state: 'closed' }))?.[0];
+  assert.equal(url(rich), url(rich));
+  assert.equal([...flow.store.records.values()].filter((r) => r.action === 'reopen').length, 1);
 });
