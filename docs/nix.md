@@ -164,6 +164,8 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `tv.switch.off_scene`, `.timeout_seconds` | OBS scene sent along with `/tv off` (`brb`) and the request timeout (10). |
 | `conversations` | Chats to watch: `{ id, name, gitlab }`. Default: the self chat `48:notes`. |
 
+Receiver contract (Home Assistant): every call is `POST /api/webhook/<id>` with a JSON body. Channels send `{ "action": "ard" }` (likewise `zdf`, `tagesschau`); `/tv off` sends `{ "action": "off", "scene": "brb" }`. One webhook may serve all four targets, since the action is in the body. The receiver must act only on those actions and ignore anything else. Webhooks cannot return state, so the readback is a separate entity: when the OBS scene is the source of truth, point `tv.switch.state.entity_id` at the entity that shows the current scene and map its values (`state.map.off` must list the real name of the `off` scene if it differs from `off_scene`).
+
 Cycling: `/tv next` goes ARD, ZDF, Tagesschau, ARD; `/tv prev` goes the other way. `off` (the `brb` scene) is not a channel: from off, `/tv next` switches to ARD and `/tv prev` to Tagesschau. Commands run one at a time, so two quick `/tv next` advance twice, and a missing, failed or unrecognized readback or a failed webhook neither advances nor changes anything. `/tv tagesschau` also accepts `ts` and common typos; all controls are owner only and never show a URL, id, token or host in a reply or the log.
 
 ### Connector alerts
