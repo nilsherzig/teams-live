@@ -28,7 +28,7 @@ const directory = {
   ]),
 };
 
-function newWatcher({ teams = { rich_messages: true }, extra = 0, fetched = [], photo = true, sizes = [] } = {}) {
+function newWatcher({ teams = { rich_messages: true }, extra = 0, extraFor = null, fetched = [], photo = true, sizes = [] } = {}) {
   const watcher = new MergeRequestWatcher({
     config: { conversations: [], gitlab: { group: 'example-group', notify: {} }, teams },
     gitlab: { findMrLinks: () => [], mrLink: () => '', pipelineLink: () => '', getMr: async () => null },
@@ -44,7 +44,7 @@ function newWatcher({ teams = { rich_messages: true }, extra = 0, fetched = [], 
       fetchPhoto: async (mri, size) => {
         fetched.push(mri);
         sizes.push(size);
-        return photo ? { kind: 'photo', bytes: fakeJpeg(extra) } : { kind: 'none' };
+        return photo ? { kind: 'photo', bytes: fakeJpeg(extraFor ? extraFor(mri) : extra) } : { kind: 'none' };
       },
     });
   }
@@ -239,8 +239,26 @@ test('/mrs list: pictures are placed by their measured cost, so no further pictu
     assert.ok(pictures.length > 0 && pictures.length < count, `${count} rows: some, not all, have a picture`);
     // One more picture costs its data URI plus the column markup (about 220 bytes): less than that is left.
     const uriLength = pictures[0].url.length;
+    // (the column costs about 220 bytes, so this bound is loose by about 10)
     assert.ok(MAX_CARD_BYTES - bytes < uriLength + 230, `${count} rows: ${MAX_CARD_BYTES - bytes} bytes left would still fit another picture`);
   }
+});
+
+test('/mrs list: a picture that does not fit is skipped and a smaller one after it still gets the room', async () => {
+  // Alice's photo is too big for what the card leaves, Bob's is small.
+  const w = newWatcher({ extraFor: (mri) => (mri === ALICE ? 7000 : 200) });
+  const mrs = Array.from({ length: 8 }, (_, i) =>
+    mr(600 + i, i % 2 ? BOB_GL : ALICE_GL, `Example change number ${i} with a reasonably descriptive title`)
+  );
+  w.getOrFetchMrsData = async () => mrs;
+  const message = await w.getOrFetchMrsText({});
+  assert.ok(isRichMessage(message));
+  assert.ok(richMessageWireBytes(message) <= MAX_CARD_BYTES);
+  const pictures = photosIn(message);
+  assert.ok(pictures.length > 0, 'the small pictures are shown');
+  assert.ok(pictures.every((p) => p.url.length < 1000), 'the big picture is not');
+  const text = JSON.stringify(cardOf(message));
+  for (const m of mrs) assert.ok(text.includes(`!${m.iid}`), `row !${m.iid} kept`);
 });
 
 test('/mrs list: a list that only fits without pictures stays as it was', async () => {
