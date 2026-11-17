@@ -241,7 +241,13 @@ export class AvatarService {
 
   /** Cached picture (data URI) or null; never starts a request. */
   peek(person) {
-    const mri = this.resolveKnown(person);
+    let mri = this.resolveKnown(person);
+    if (!mri) {
+      // A name an earlier lookup resolved through the directory search.
+      const name = norm(typeof person === 'string' ? person : person?.name);
+      const found = this.identities.get(name);
+      if (found && found.expires > this.now()) mri = found.mri;
+    }
     return (mri && this.#cached(mri)) || null;
   }
 

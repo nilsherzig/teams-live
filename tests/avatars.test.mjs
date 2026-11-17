@@ -130,6 +130,7 @@ test('search fallback accepts exactly one equal-name hit with an orgid MRI', asy
   assert.ok(isImageDataUri(out['Frank Example']));
   await svc.avatarsFor(['Frank Example']);
   assert.equal(calls.length, 1, 'search result is cached');
+  assert.equal(svc.peek('Frank Example'), out['Frank Example'], 'peek sees search-resolved people');
 
   const ambiguous = new AvatarService({
     directory: defaultDirectory(),
