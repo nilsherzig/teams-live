@@ -355,10 +355,10 @@ export class GitLabClient {
     );
   }
 
-  async updateMr(project, iid, params = {}) {
+  async updateMr(project, iid, params = {}, { retry = true } = {}) {
     return await this.request(
       `projects/${encodeURIComponent(project)}/merge_requests/${iid}`,
-      { method: 'PUT', body: params }
+      { method: 'PUT', body: params, retry }
     );
   }
 
@@ -367,7 +367,9 @@ export class GitLabClient {
   }
 
   async reopenMr(project, iid) {
-    return await this.updateMr(project, iid, { state_event: 'reopen' });
+    // Sent once: a first attempt that landed must not be followed by a blind
+    // second one (its answer would be misread as a failure).
+    return await this.updateMr(project, iid, { state_event: 'reopen' }, { retry: false });
   }
 
   async getApprovals(project, iid) {

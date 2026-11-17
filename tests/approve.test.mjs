@@ -1219,7 +1219,7 @@ test('reopen failures are reported honestly and only a confirmed reopen consumes
   // Not applied: still closed, so nothing is consumed.
   const notApplied = await run(new Error('GitLab error (502): bad gateway'));
   assert.equal(notApplied.status, 502);
-  assert.match(notApplied.html, /not open\. Nothing was reopened/);
+  assert.match(notApplied.html, /still closed\. Nothing was reopened/);
   assert.equal(notApplied.link, 'open');
 });
 
@@ -1240,6 +1240,134 @@ test('an unanswered reopen whose result cannot be checked is reported as unknown
     assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
   } finally {
     await ctx.server.stop();
+  }
+});
+
+test('a reopen answer that does not say "opened" is read back and never counted as success', async () => {
+  const run = async (answer, after) => {
+    const gitlab = closedGitlab();
+    gitlab.reopenMr = async (project, iid) => {
+      gitlab.calls.reopen.push({ project, iid });
+      gitlab.mr = { ...gitlab.mr, ...after };
+      return answer;
+    };
+    const refreshes = [];
+    const ctx = await setup({
+      gitlab,
+      action: 'reopen',
+      refreshCards: async (...args) => {
+        refreshes.push(args);
+        return { edited: 1 };
+      },
+    });
+    try {
+      const readsBefore = gitlab.calls.getMr;
+      const res = await ctx.confirm();
+      return {
+        status: res.status,
+        html: await res.text(),
+        link: ctx.server.store.byId(ctx.record.id).status,
+        refreshes: refreshes.length,
+        sends: gitlab.calls.reopen.length,
+        readsAfterConfirm: gitlab.calls.getMr - readsBefore,
+      };
+    } finally {
+      await ctx.server.stop();
+    }
+  };
+
+  // The body says opened: no extra read is needed to accept it.
+  const ok = await run({ state: 'opened' }, { state: 'opened' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.link, 'used');
+  assert.equal(ok.refreshes, 1);
+
+  // The body says closed and the readback agrees: nothing used, nothing refreshed.
+  const closed = await run({ state: 'closed' }, { state: 'closed' });
+  assert.equal(closed.status, 502);
+  assert.match(closed.html, /still closed\. Nothing was reopened/);
+  assert.doesNotMatch(closed.html, /Reopened in GitLab/);
+  assert.equal(closed.link, 'open');
+  assert.equal(closed.refreshes, 0);
+  assert.equal(closed.sends, 1, 'sent once, never resent');
+
+  // Merged in the meantime: the link is retired, nothing refreshed.
+  const merged = await run({ state: 'merged' }, { state: 'merged' });
+  assert.equal(merged.status, 409);
+  assert.match(merged.html, /merged and cannot be reopened/);
+  assert.equal(merged.link, 'stale');
+  assert.equal(merged.refreshes, 0);
+
+  // A stale or odd body but the readback shows it open: confirmed, so it counts.
+  const confirmed = await run({ state: 'closed' }, { state: 'opened' });
+  assert.equal(confirmed.status, 200);
+  assert.match(confirmed.html, /Reopened in GitLab/);
+  assert.equal(confirmed.link, 'used');
+  assert.equal(confirmed.refreshes, 1);
+
+  // No usable body at all: read back too.
+  for (const answer of [null, {}, 'ok']) {
+    const odd = await run(answer, { state: 'closed' });
+    assert.equal(odd.status, 502, JSON.stringify(answer));
+    assert.equal(odd.link, 'open');
+    assert.equal(odd.refreshes, 0);
+  }
+
+  // An unexpected state is not success either.
+  const weird = await run({ state: 'locked' }, { state: 'locked' });
+  assert.equal(weird.status, 502);
+  assert.match(weird.html, /unexpected state/);
+  assert.equal(weird.link, 'open');
+  assert.equal(weird.refreshes, 0);
+});
+
+test('a reopen answer that is not "opened" and cannot be read back is reported as unknown', async () => {
+  const gitlab = closedGitlab();
+  gitlab.reopenMr = async () => ({ state: 'closed' });
+  let reads = 0;
+  gitlab.getMr = async () => {
+    reads++;
+    if (reads > 2) throw new Error('GitLab request failed (network)');
+    return gitlab.mr;
+  };
+  const refreshes = [];
+  const ctx = await setup({ gitlab, action: 'reopen', refreshCards: async (...a) => refreshes.push(a) });
+  try {
+    const res = await ctx.confirm();
+    assert.equal(res.status, 502);
+    assert.match(await res.text(), /may or may not be open again/);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
+    assert.equal(refreshes.length, 0);
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('reopenMr sends exactly once on a thrown fetch error, while closeMr and reads keep their retry', async () => {
+  const { GitLabClient } = await import('../src/gitlab.mjs');
+  const realFetch = globalThis.fetch;
+  const realTimeout = globalThis.setTimeout;
+  let calls = 0;
+  const bodies = [];
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    bodies.push(init?.body);
+    throw new TypeError('fetch failed', { cause: new Error('socket hang up') });
+  };
+  // The retry path waits one second; do not make the test wait for it.
+  globalThis.setTimeout = (fn, _ms, ...args) => realTimeout(fn, 0, ...args);
+  try {
+    const client = new GitLabClient({ baseUrl: 'https://gitlab.example.com', token: 'test-token' });
+    await assert.rejects(() => client.reopenMr('group/app', 7), /GitLab request failed/);
+    assert.equal(calls, 1, 'reopen is sent once');
+    assert.equal(bodies[0], JSON.stringify({ state_event: 'reopen' }));
+
+    calls = 0;
+    await assert.rejects(() => client.closeMr('group/app', 7), /GitLab request failed/);
+    assert.equal(calls, 2, 'other updateMr callers keep the default retry');
+  } finally {
+    globalThis.fetch = realFetch;
+    globalThis.setTimeout = realTimeout;
   }
 });
 

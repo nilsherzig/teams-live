@@ -964,18 +964,14 @@ export class ApproveServer {
    */
   async sendReopen(record, result) {
     const summary = this.summary(record, result.mr, result.user);
+    let response;
     try {
-      await this.gitlab.reopenMr(record.project, record.iid);
+      response = await this.gitlab.reopenMr(record.project, record.iid);
     } catch (err) {
       const status = gitlabStatus(err);
       log(`Reopen of ${record.project}!${record.iid} failed${status ? ` (HTTP ${status})` : ' (no response)'}`);
       if (status === null || status >= 500) {
-        const mr = await this.gitlab.getMr(record.project, record.iid).catch(() => null);
-        if (mr?.state === 'opened') return this.reopened(record, summary);
-        if (mr) {
-          return { code: 502, title: 'Reopen failed', body: `${summary}<p>GitLab did not confirm the request and the merge request is not open. Nothing was reopened. Reload the page to try again.</p>` };
-        }
-        return { code: 502, title: 'Outcome unknown', body: `${summary}<p>GitLab did not give a clear answer and the result could not be checked. The merge request may or may not be open again: check it in GitLab before retrying.</p>` };
+        return this.confirmReopen(record, summary);
       }
       if (status === 401 || status === 403) {
         return { code: 403, title: 'Reopen refused', body: `${summary}<p>GitLab refused the request (the configured account may not be allowed to reopen this merge request). Nothing was reopened.</p>` };
@@ -985,7 +981,31 @@ export class ApproveServer {
       }
       return { code: 409, title: 'Reopen failed', body: `${summary}<p>GitLab rejected the request (HTTP ${status}), for example because the merge request cannot be reopened. Nothing was reopened. Reload the page to review it again.</p>` };
     }
-    return this.reopened(record, summary);
+    // Only an answer that says "opened" counts. Anything else (closed, merged,
+    // an empty or odd body) is looked up again before a word is said.
+    if (response?.state === 'opened') return this.reopened(record, summary);
+    log(`Reopen of ${record.project}!${record.iid} answered with state ${JSON.stringify(response?.state ?? null)}`);
+    return this.confirmReopen(record, summary);
+  }
+
+  /**
+   * Reads the merge request back after a failed, unanswered or inconclusive
+   * reopen. Only a confirmed "opened" uses the link up and refreshes the card.
+   */
+  async confirmReopen(record, summary) {
+    const mr = await this.gitlab.getMr(record.project, record.iid).catch(() => null);
+    if (mr?.state === 'opened') return this.reopened(record, summary);
+    if (mr?.state === 'merged') {
+      this.store.invalidate(record.project, record.iid, 'reopen');
+      return { code: 409, title: 'Reopen failed', body: `${summary}<p>This merge request is merged and cannot be reopened. Nothing was reopened.</p>` };
+    }
+    if (mr?.state === 'closed') {
+      return { code: 502, title: 'Reopen failed', body: `${summary}<p>GitLab did not confirm the request and the merge request is still closed. Nothing was reopened. Reload the page to try again.</p>` };
+    }
+    if (mr) {
+      return { code: 502, title: 'Outcome unknown', body: `${summary}<p>GitLab reported an unexpected state for the merge request. It may or may not be open again: check it in GitLab before retrying.</p>` };
+    }
+    return { code: 502, title: 'Outcome unknown', body: `${summary}<p>GitLab did not give a clear answer and the result could not be checked. The merge request may or may not be open again: check it in GitLab before retrying.</p>` };
   }
 
   async reopened(record, summary) {
