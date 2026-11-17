@@ -41,7 +41,7 @@ const DEFAULTS = {
   maxDimension: 128, // px, either side
   breakerThreshold: 5, // consecutive failures
   breakerMs: 5 * 60 * 1000,
-  size: 'HR32x32', // server-side resize, a 24px badge stays sharp
+  size: 'HR32x32', // server-side resize, a 20px badge stays sharp
   searchLimit: 10, // directory hits asked for; a full page cannot prove a name is unique
 };
 

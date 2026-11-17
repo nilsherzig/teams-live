@@ -8,11 +8,11 @@
  * layout unchanged.
  */
 
-export const AVATAR_PX = 24;
+export const AVATAR_PX = 20;
 // Total size of the embedded pictures per card (characters of the data URIs).
 // Cards are limited on the wire (MAX_CARD_BYTES), so extra pictures are dropped
 // in favour of names before the card could outgrow it: a full MR card is already
-// about 17 KB without photos and a real 24px photo costs about 3 KB.
+// about 17 KB without photos and a real 32px photo costs about 3 KB.
 export const MAX_AVATAR_CHARS_PER_CARD = 6500;
 export const MAX_AVATARS_PER_ROW = 3;
 
