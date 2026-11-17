@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { normalizeTvConfig } from './tv.mjs';
 
 function stripYamlComments(text) {
   return text
@@ -342,6 +343,7 @@ export function loadConfig(configPath) {
     confluence,
     opsgenie,
     home_assistant: homeAssistant,
+    tv: normalizeTvConfig(fileConfig.tv),
     teams,
     conversations,
   };

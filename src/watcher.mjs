@@ -54,6 +54,14 @@ import {
   formatWhereisCard,
 } from './users.mjs';
 import { SnakeGame } from './snake.mjs';
+import {
+  TV_USAGE,
+  TvProgrammeService,
+  buildProgrammeCard,
+  formatProgrammeText,
+  normalizeTvConfig,
+  parseTvArgs,
+} from './tv.mjs';
 import { AvatarService } from './avatars.mjs';
 import { collectCardPeople, isImageDataUri } from './card-user-row.mjs';
 import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
@@ -484,6 +492,7 @@ const COMMAND_CATEGORIES = [
     commands: [
       '- `/meetings` (or `/cal`, `/calendar`): Summary of meetings for the rest of the current week.',
       '- `/poll "Question" "Opt1" "Opt2"`: Creates an interactive reaction poll.',
+      '- `/tv program` (or `/tv programme`): Shows what is on now and next on ARD and ZDF.',
       '- `/weather [location]`: Shows current weather for location (default: Berlin).',
       '- `/whereis [search]` (or `/where`): Checks if a person is available, in a meeting (with join link), or away.',
       '- `/whois <search>` (or `/who`): Looks up a person in the Teams directory and shows contact details.',
@@ -597,6 +606,7 @@ const KNOWN_COMMANDS = [
   '/sudo',
   '/ticket',
   '/today',
+  '/tv',
   '/unban',
   '/usage',
   '/weather',
@@ -1058,6 +1068,7 @@ export class MergeRequestWatcher {
     this.selfOid = null;
     this.editOwnUrlMessages = Boolean(config.teams?.edit_own_url_messages ?? false);
     this.richMessages = config.teams?.rich_messages === true;
+    this.tv = new TvProgrammeService(normalizeTvConfig(config.tv));
     // Rich mode covers every outward message, not only the ones built with richMessage() (see prepareRichMessages).
     setRichMessages(this.richMessages);
     this.approveFlow = null;
@@ -4608,6 +4619,37 @@ export class MergeRequestWatcher {
     }
   }
 
+  /** The `/tv program` reply: regular markdown, or with rich messages the programme card. */
+  formatTvProgrammeMessage(data) {
+    const markdown = formatProgrammeText(data);
+    if (!this.richMessages) return markdown;
+    return this.richMessage(markdown, () => buildProgrammeCard(data));
+  }
+
+  async executeTvCommand(event, args = []) {
+    const parsed = parseTvArgs(args);
+    if (parsed.action !== 'programme') {
+      await sendReply(event.conversationId, event, `\u2139\uFE0F ${TV_USAGE}`);
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
+      return;
+    }
+    log(`Executing /tv program in ${event.conversationId}...`);
+    try {
+      const data = await this.tv.getProgramme();
+      await sendReply(event.conversationId, event, this.formatTvProgrammeMessage(data));
+      const failed = data.channels.every((ch) => ch.error);
+      this.setCommandReaction(
+        event.conversationId,
+        event.messageId,
+        failed ? COMMAND_REACTIONS.failure : COMMAND_REACTIONS.success
+      ).catch(() => {});
+    } catch (err) {
+      log(`TV programme lookup failed: ${err.message}`);
+      await sendReply(event.conversationId, event, `\u274C TV programme lookup failed: ${err.message}`);
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+    }
+  }
+
   async executeWeatherCommand(event, args) {
     const location = args.join(' ').trim() || 'Berlin';
     log(`Executing /weather for "${location}" in ${event.conversationId}...`);
@@ -6983,6 +7025,8 @@ export class MergeRequestWatcher {
       await this.executeFlipCommand(event);
     } else if (command === '/roll' || command === '/dice') {
       await this.executeRollCommand(event, args);
+    } else if (command === '/tv') {
+      await this.executeTvCommand(event, args);
     } else if (command === '/weather') {
       await this.executeWeatherCommand(event, args);
     } else if (command === '/whois' || command === '/who') {
