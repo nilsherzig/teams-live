@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ADAPTIVE_CARD_CONTENT_TYPE,
@@ -10,11 +10,15 @@ import {
   messageMarkdown,
   renderReplyContent,
   sendDirectMessage,
+  setRichMessages,
   sendReply,
   transport,
   updateReply,
 } from '../src/teams.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
+
+// Regular mode unless a test builds a rich watcher (the switch is process-wide).
+beforeEach(() => setRichMessages(false));
 
 const CARD = { type: 'AdaptiveCard', version: '1.4', body: [{ type: 'TextBlock', text: 'Example' }] };
 const MARKDOWN = '💬 **Example**\n\n🎫 [EX-1](https://jira.example.com/browse/EX-1)';
@@ -244,15 +248,16 @@ test('sendReply restores the pending update id for the plain retry', async () =>
 
 const MENTION_MARKDOWN = 'Assigned to @[Alice Example](8:orgid:alice) in [EX-1](https://jira.example.com/browse/EX-1)';
 
-test('a rich message whose text has mentions is rendered as a regular message', async () => {
+test('a rich message whose text has mentions is still a card: names as text, no mention metadata', async () => {
   const rich = makeRichMessage(MENTION_MARKDOWN, CARD);
-  const plain = renderReplyContent(MENTION_MARKDOWN);
   const rendered = renderReplyContent(rich);
-  assert.equal(plain.mentions.length, 1);
-  assert.deepEqual(rendered.mentions, plain.mentions);
-  assert.equal(rendered.cards, undefined);
-  assert.ok(!rendered.html.includes(CARD_TAG));
-  assert.ok(rendered.html.includes('Alice Example'));
+  assert.deepEqual(rendered.mentions, []);
+  assert.ok(rendered.html.includes(CARD_TAG));
+  assert.equal(JSON.parse(rendered.cards).length, 1);
+  // The notification/preview text shows the name, not the raw mention markup.
+  const fallback = JSON.parse(rendered.cards)[0].content.fallbackText;
+  assert.ok(fallback.includes('**Alice Example**'));
+  assert.ok(!fallback.includes('8:orgid'));
 
   const rec = recordTransport();
   try {
@@ -266,12 +271,31 @@ test('a rich message whose text has mentions is rendered as a regular message', 
   assert.equal(rec.calls.length, 4);
   for (const { args } of rec.calls) {
     const { html, options } = args.length === 3 ? { html: args[1], options: args[2] } : { html: args[2], options: args[4] };
-    assert.ok(!html.includes(CARD_TAG));
-    assert.equal(options.properties.cards, '[]');
-    const mentions = JSON.parse(options.properties.mentions);
-    assert.equal(mentions.length, 1);
-    assert.equal(mentions[0].mri, '8:orgid:alice');
+    assert.ok(html.includes(CARD_TAG));
+    assert.equal(JSON.parse(options.properties.cards).length, 1);
+    assert.equal(options.properties.mentions, '[]');
   }
+});
+
+// The explicit card-rejection fallback is the one place where a mention works again: plain text.
+test('when Teams rejects the card, the plain retry keeps the mention', async () => {
+  const rich = makeRichMessage(MENTION_MARKDOWN, CARD);
+  const rec = recordTransport([failure('card rejected')]);
+  const warn = console.warn;
+  const error = console.error;
+  console.warn = () => {};
+  console.error = () => {};
+  try {
+    await sendReply(CONV, ORIGINAL, rich);
+  } finally {
+    console.warn = warn;
+    console.error = error;
+    rec.restore();
+  }
+  assert.equal(rec.calls.length, 2);
+  const retry = rec.calls[1].args[2];
+  assert.equal(retry.properties.cards, '[]');
+  assert.equal(JSON.parse(retry.properties.mentions).length, 1);
 });
 
 test('editOriginalMessage keeps the user URL and adds the card', async () => {

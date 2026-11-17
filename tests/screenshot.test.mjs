@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -7,6 +7,10 @@ import os from 'node:os';
 import { ScreenshotClient } from '../src/screenshot.mjs';
 import { extractCandidateUrls, MergeRequestWatcher } from '../src/watcher.mjs';
 import { BOT_WATERMARK, uploadImageToAms } from '../src/teams.mjs';
+import { useStubbedTransport } from './stub-transport.mjs';
+
+// Nothing in this file may reach a real Teams account.
+const stubbed = useStubbedTransport(beforeEach, afterEach);
 
 test('ScreenshotClient isConfigured and getSecret', () => {
   const unconf = new ScreenshotClient({});
@@ -245,9 +249,16 @@ test('maybeAttachLinkThumbnail attaches thumbnail only for self messages with un
     rawHtml: '<p>Cool comic: <a href="https://xkcd.com/327/">https://xkcd.com/327/</a></p>',
   };
 
-  // We mock the teams edit function by monkey-patching appendThumbnailToMessage in teams.mjs or verifying capture
-  await watcher.maybeAttachLinkThumbnail(validEvent);
+  // The Teams edit goes through the stubbed transport and the AMS upload through a stubbed fetch.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('not found', { status: 404 });
+  try {
+    await watcher.maybeAttachLinkThumbnail(validEvent);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
   assert.equal(capturedUrl, 'https://xkcd.com/327/');
+  assert.ok(stubbed.edited.every((edit) => edit.messageId === '1004'), 'only the thumbnail edit of the self message is attempted');
   assert.ok(watcher.thumbnailEditedMessageIds.has('1004'));
 
   // 5. Subsequent call for same message ID -> ignored

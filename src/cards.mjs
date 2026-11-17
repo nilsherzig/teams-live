@@ -84,6 +84,8 @@ const EMOJI_BRANDS = {
   availability: { emoji: '📍', name: 'Availability' },
   calendar: { emoji: '📅', name: 'Calendar' },
   standup: { emoji: '🌅', name: 'Standup' },
+  // Replies of the bot itself: help, status, errors, acknowledgements, notices.
+  bot: { emoji: '🧢', name: 'teams-live' },
 };
 
 /** Compact integration header: small service logo (or emoji) plus "Service - kind". */
@@ -618,9 +620,19 @@ export function stripMentionMarkup(markdown) {
     .replace(/@\[([^\]]+)\]\((?!https?:)([^)\s]+)\)/g, '**$1**');
 }
 
+/** HTML entities the regular formatters escape for Teams HTML (`escapeHtml`); a card shows text as is. */
+function unescapeEntities(text) {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
 /** Card text: mention markup removed, code spans shown as plain text (cards do not render them). */
 function cardText(markdown) {
-  return stripMentionMarkup(markdown).replace(/`([^`\n]*)`/g, '$1');
+  return unescapeEntities(stripMentionMarkup(markdown).replace(/`([^`\n]*)`/g, '$1'));
 }
 
 const BULLET_RE = /^(\s*)(?:([-•*])|(\d+)\.)\s+(.*)$/;
@@ -673,23 +685,72 @@ export function buildMarkdownCard(markdown, { service, kind, style = 'emphasis',
     .trim();
   if (!title) return null;
 
-  const nextNonEmpty = (from) => {
-    for (let k = from; k < lines.length; k += 1) if (lines[k].trim()) return lines[k];
+  const { items, bullets } = markdownBodyItems(lines, first + 1);
+  if (bullets === 0) return null;
+  return assembleCard({ service, kind, style, title, extraItems: items, fallbackText });
+}
+
+/** Escapes what a TextBlock would interpret as markdown, for verbatim (code) lines. */
+function verbatimText(line) {
+  const escaped = line.replace(/([\\*_[\]`])/g, '\\$1');
+  const indent = /^ */.exec(escaped)[0].length;
+  return `${' '.repeat(indent)}${escaped.slice(indent)}` || ' ';
+}
+
+/**
+ * A fenced code block: one monospace line per row, so the layout (indentation,
+ * grids, command output) survives; cards do not render markdown fences.
+ */
+function codeBlock(codeLines) {
+  return {
+    type: 'Container',
+    spacing: 'Small',
+    items: codeLines.map((line) => ({
+      type: 'TextBlock',
+      text: verbatimText(line),
+      wrap: true,
+      fontType: 'Monospace',
+      size: 'Small',
+      spacing: 'None',
+    })),
+  };
+}
+
+/**
+ * Card items for the markdown lines from `from` on (see buildMarkdownCard for
+ * the rules), plus fenced code blocks and `#` headings. `bullets` counts the
+ * list rows, which is what makes a text "list-like".
+ */
+function markdownBodyItems(lines, from) {
+  const nextNonEmpty = (start) => {
+    for (let k = start; k < lines.length; k += 1) if (lines[k].trim()) return lines[k];
     return null;
   };
 
   const items = [];
   let bullets = 0;
-  let i = first + 1;
+  let i = from;
   while (i < lines.length) {
     const line = lines[i];
     if (!line.trim()) {
       i += 1;
       continue;
     }
+    if (/^\s*```/.test(line)) {
+      const code = [];
+      i += 1;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) {
+        code.push(lines[i]);
+        i += 1;
+      }
+      i += 1; // closing fence (or the end of an unterminated block)
+      if (code.length > 0) items.push(codeBlock(code));
+      continue;
+    }
     const bullet = parseBullet(line);
     if (!bullet) {
-      const text = cardText(line.trim());
+      const heading = /^\s*#{1,6}\s+(.*)$/.exec(line);
+      const text = heading ? `**${cardText(heading[1]).replace(/\*\*/g, '')}**` : cardText(line.trim());
       const upcoming = nextNonEmpty(i + 1);
       if (/^_[^_].*_$/.test(text) || /^\*[^*].*\*$/.test(text)) {
         items.push(textBlock(text, { isSubtle: true, size: 'Small', spacing: 'Small' }));
@@ -725,8 +786,8 @@ export function buildMarkdownCard(markdown, { service, kind, style = 'emphasis',
     const body = cardText(bullet.body);
     let text;
     if (bullet.ordered) text = `${bullet.number}. ${body}`;
-    else if (bullet.indent > 0) text = LEADING_EMOJI_RE.test(body) ? body : `\u25e6 ${body}`;
-    else text = LEADING_EMOJI_RE.test(body) ? body : `\u2022 ${body}`;
+    else if (bullet.indent > 0) text = LEADING_EMOJI_RE.test(body) ? body : `◦ ${body}`;
+    else text = LEADING_EMOJI_RE.test(body) ? body : `• ${body}`;
     if (bullet.indent > 0) {
       items.push(indentedRow(textBlock(text, { size: 'Small', spacing: 'None' }), bullet.indent));
     } else {
@@ -735,7 +796,106 @@ export function buildMarkdownCard(markdown, { service, kind, style = 'emphasis',
     bullets += 1;
     i += 1;
   }
+  return { items, bullets };
+}
 
-  if (bullets === 0) return null;
-  return assembleCard({ service, kind, style, title, extraItems: items, fallbackText });
+// Kind label and container colour of a generic reply, from its leading emoji.
+const REPLY_TONES = [
+  [/^(?:❌|⛔|🚫|🚨)/u, { kind: 'Error', style: 'attention' }],
+  [/^(?:⚠️?)/u, { kind: 'Warning', style: 'warning' }],
+  [/^(?:✅|✔️?)/u, { kind: 'Done', style: 'good' }],
+];
+
+/**
+ * Card for any reply of the bot (help, status, errors, acknowledgements,
+ * admin notices, command output): the markdown is shown in full, nothing is
+ * left out. Text with a head line and a list gets the head line as the title
+ * (same layout as the command cards); everything else is a header plus the
+ * paragraphs, lists and code blocks of the text. The container colour follows
+ * a leading status emoji (error, warning, done).
+ *
+ * `part` is `[index, total]` for one card of a text that had to be split.
+ * Never returns null for non-empty text.
+ */
+export function buildReplyCard(markdown, { part = null, fallbackText } = {}) {
+  const text = String(markdown ?? '').trim();
+  if (!text) return null;
+  const tone = REPLY_TONES.find(([re]) => re.test(text))?.[1] || {};
+  const kind = part && part[1] > 1 ? `${part[0]}/${part[1]}` : tone.kind;
+  const style = tone.style || 'emphasis';
+
+  if (!part || part[0] === 1) {
+    const listCard = buildMarkdownCard(text, { service: 'bot', kind, style, fallbackText });
+    if (listCard) return listCard;
+  }
+  const { items } = markdownBodyItems(text.split('\n'), 0);
+  return assembleCard({
+    service: 'bot',
+    kind,
+    style,
+    title: items.length === 0 ? cardText(text) : '',
+    extraItems: items,
+    fallbackText,
+  });
+}
+
+/**
+ * Splits a markdown text into parts that each fit a card, in order, losing
+ * nothing. `fits(partMarkdown)` tells whether one part still fits (the caller
+ * measures the card on the wire). Lines are packed greedily; a part ends at a
+ * blank line when one is close, a code block cut in two is closed and reopened
+ * so each part stays well-formed, and a single line too long for a card is cut
+ * into pieces. At most `maxParts` parts are returned: the rest is dropped with
+ * a note on the last part (the one case where text is not shown in full).
+ */
+export function splitMarkdownForCards(markdown, fits, { maxParts = 10 } = {}) {
+  const queue = String(markdown ?? '').trim().split('\n');
+  const parts = [];
+  let cur = [];
+  let fenced = false; // a code block is open at the end of `cur`
+  const render = (lines, open) => (open ? [...lines, '```'] : lines).join('\n');
+  const isFence = (line) => /^\s*```/.test(line);
+
+  while (queue.length > 0) {
+    const line = queue.shift();
+    const nextFenced = isFence(line) ? !fenced : fenced;
+    const candidate = [...cur, line];
+    if (fits(render(candidate, nextFenced))) {
+      cur = candidate;
+      fenced = nextFenced;
+      continue;
+    }
+    const hasContent = cur.some((l) => l.trim() && l !== '```');
+    if (!hasContent) {
+      // The line alone is too long: keep the largest head that fits, queue the rest.
+      let n = line.length;
+      while (n > 1 && !fits(render([...cur, line.slice(0, n)], fenced))) n = Math.floor(n / 2);
+      parts.push(render([...cur, line.slice(0, n)], fenced));
+      cur = fenced ? ['```'] : [];
+      if (line.length > n) queue.unshift(line.slice(n));
+      continue;
+    }
+    let cut = cur.length;
+    if (!fenced) {
+      for (let k = cur.length - 1; k >= Math.max(1, cur.length - 8); k -= 1) {
+        if (!cur[k].trim()) {
+          cut = k;
+          break;
+        }
+      }
+    }
+    parts.push(render(cur.slice(0, cut), fenced));
+    const carry = cur.slice(cut).filter((l, idx) => idx > 0 || l.trim());
+    cur = fenced ? ['```', ...carry] : carry;
+    queue.unshift(line);
+  }
+  if (cur.some((l) => l.trim() && l !== '```')) parts.push(render(cur, fenced));
+
+  if (parts.length > maxParts) {
+    const dropped = parts.length - maxParts;
+    const kept = parts.slice(0, maxParts);
+    kept[maxParts - 1] += `\n\n_Output truncated: ${dropped} more part${dropped === 1 ? '' : 's'} not shown._`;
+    return kept;
+  }
+  return parts;
 }

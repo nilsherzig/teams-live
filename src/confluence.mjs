@@ -1,3 +1,4 @@
+import './test-guard.mjs';
 export class ConfluenceClient {
   constructor({ url = 'https://wiki.wiit.one', token = '', onAuthError = null, onSuccess = null } = {}) {
     this.baseUrl = (url || 'https://wiki.wiit.one').replace(/\/+$/, '');

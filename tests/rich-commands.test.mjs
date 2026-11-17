@@ -1,6 +1,8 @@
-import test from 'node:test';
+import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { isRichMessage, messageMarkdown, transport } from '../src/teams.mjs';
+import { isRichMessage, messageMarkdown, setRichMessages, transport } from '../src/teams.mjs';
+
+beforeEach(() => setRichMessages(false));
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 import { formatContactCard, formatSearchResultsList, formatWhereisCard } from '../src/users.mjs';
 
@@ -321,8 +323,8 @@ test('richCommandMessage: person, availability and search results use cards, men
   assert.equal(facts['\u{1F4BC} Role'], 'Engineer');
   assert.equal(facts['\u{1F4E7} Email'], 'alice@example.com');
   assert.ok(!JSON.stringify(contactCard.card).includes('8:orgid'));
-  // Parity: the regular markdown keeps its mention. Such a message is sent as the
-  // established plain reply (see the /whois test), so the notification stays.
+  // Parity: the regular markdown keeps its mention (regular mode and the card-rejection
+  // fallback send it as is); the card shows the name as text.
   assert.equal(messageMarkdown(contactCard), contact);
   assert.ok(messageMarkdown(contactCard).includes('8:orgid'));
 
@@ -343,13 +345,13 @@ test('richCommandMessage: person, availability and search results use cards, men
   assert.ok(rows.includes('alice@example.com'));
 });
 
-test('/whois keeps its mention (plain reply) when rich, and sends a card for a contact without one', async () => {
+test('/whois: a card in rich mode (name as text, no mention), the regular mention reply otherwise', async () => {
   const withMri = { displayName: 'Alice Example', mri: '8:orgid:alice', email: 'alice@example.com', jobTitle: 'Engineer' };
   const withoutMri = { displayName: 'Alice Example', email: 'alice@example.com', jobTitle: 'Engineer' };
   const cases = [
     // [teams config, person, expect a card]
     [{}, withMri, false],
-    [{ rich_messages: true }, withMri, false],
+    [{ rich_messages: true }, withMri, true],
     [{ rich_messages: true }, withoutMri, true],
   ];
   for (const [teams, person, expectCard] of cases) {
@@ -363,24 +365,29 @@ test('/whois keeps its mention (plain reply) when rich, and sends a card for a c
     const [, html, options] = calls[0].args;
     assert.equal(html.includes(CARD_TAG), expectCard);
     if (expectCard) {
-      assert.equal(factsOf(cardOf(options))['\u{1F4BC} Role'], 'Engineer');
+      const card = cardOf(options);
+      assert.equal(factsOf(card)['\u{1F4BC} Role'], 'Engineer');
+      assert.ok(JSON.stringify(card).includes('Alice Example'));
+      assert.ok(!JSON.stringify(card).includes('8:orgid'));
       assert.equal(options.properties.mentions, '[]');
     } else {
-      // Same message and notification as without rich messages.
+      // Same message and notification as ever.
       assert.equal(options.properties.cards, '[]');
       assert.equal(JSON.parse(options.properties.mentions).length, 1);
     }
   }
 });
 
-test('error and acknowledgement replies stay plain even with rich messages', async () => {
-  const watcher = newWatcher({ rich_messages: true });
-  watcher.userDirectory = { searchDirectory: async () => [], findSuggestions: () => [], findUser: () => null };
-  watcher.setCommandReaction = async () => {};
-  const calls = await run(() =>
-    watcher.executeWhoisCommand({ conversationId: CONV, messageId: '1700000000000', from: 'Alice Example' }, ['nobody'])
-  );
-  assert.equal(calls[0].args[1].includes(CARD_TAG), false);
+test('error and acknowledgement replies are cards in rich mode, plain otherwise', async () => {
+  for (const teams of [{ rich_messages: true }, {}]) {
+    const watcher = newWatcher(teams);
+    watcher.userDirectory = { searchDirectory: async () => [], findSuggestions: () => [], findUser: () => null };
+    watcher.setCommandReaction = async () => {};
+    const calls = await run(() =>
+      watcher.executeWhoisCommand({ conversationId: CONV, messageId: '1700000000000', from: 'Alice Example' }, ['nobody'])
+    );
+    assert.equal(calls[0].args[1].includes(CARD_TAG), teams.rich_messages === true);
+  }
 });
 
 test('size budget counts the fallback copy of the markdown, not just the bare card', () => {

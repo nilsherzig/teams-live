@@ -1,3 +1,4 @@
+import './test-guard.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -25,6 +26,7 @@ import {
   escapeHtml,
   makeRichMessage,
   richMessageWireBytes,
+  setRichMessages,
 } from './teams.mjs';
 import {
   buildMergeRequestCard,
@@ -1041,6 +1043,8 @@ export class MergeRequestWatcher {
     this.selfOid = null;
     this.editOwnUrlMessages = Boolean(config.teams?.edit_own_url_messages ?? false);
     this.richMessages = config.teams?.rich_messages === true;
+    // Rich mode covers every outward message, not only the ones built with richMessage() (see prepareRichMessages).
+    setRichMessages(this.richMessages);
     this.approveFlow = null;
     this.adminOids = new Set(
       (config.teams?.admin_ids || []).map(extractUserOid).filter(Boolean)
@@ -2316,13 +2320,15 @@ export class MergeRequestWatcher {
 
   /**
    * Returns the markdown message as is, or (with `teams.rich_messages`) wrapped
-   * together with its Adaptive Card. The markdown stays the fallback.
+   * together with its entity-specific Adaptive Card. The markdown stays the
+   * fallback.
    *
-   * `buildCard(markdown)` may return null (nothing card-worthy: the plain
-   * markdown is sent). A card over the size limit is never truncated: the
-   * complete plain markdown is sent instead. Mentions in the markdown are
-   * kept: a message that mentions someone is sent as plain text (a card cannot
-   * carry the mention), so notifications behave as with regular messages.
+   * `buildCard(markdown)` may return null (no specific card for this text).
+   * In that case, and when the card is over the size limit, the plain markdown
+   * is returned and the transport (prepareRichMessages) turns it into generic
+   * reply cards, split into several when needed: in rich mode every outward
+   * message is a card, so nothing is lost here. Mentions are rendered as names
+   * in cards and do not notify anyone.
    */
   richMessage(markdown, buildCard) {
     if (!this.richMessages) return markdown;
@@ -2333,12 +2339,12 @@ export class MergeRequestWatcher {
       // Measure what is actually sent: the card with its fallback copy of the markdown, escaped.
       const size = richMessageWireBytes(message);
       if (size > MAX_CARD_BYTES) {
-        log(`Adaptive Card too large (${size} bytes), using regular message`);
+        log(`Adaptive Card too large (${size} bytes), splitting into several cards`);
         return markdown;
       }
       return message;
     } catch (e) {
-      log(`building Adaptive Card failed, using regular message: ${e.message}`);
+      log(`building Adaptive Card failed, using generic card: ${e.message}`);
       return markdown;
     }
   }

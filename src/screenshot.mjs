@@ -1,3 +1,4 @@
+import './test-guard.mjs';
 import fs from 'node:fs';
 
 const log = (...args) => console.error(new Date().toISOString(), '[screenshot]', ...args);

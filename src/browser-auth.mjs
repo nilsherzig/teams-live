@@ -1,3 +1,4 @@
+import './test-guard.mjs';
 import { writeSessionState, clearTokenCache } from 'msteams-mcp/dist/auth/session-store.js';
 import { extractMessageAuth } from 'msteams-mcp/dist/auth/token-extractor.js';
 

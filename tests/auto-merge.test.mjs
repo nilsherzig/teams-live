@@ -1,9 +1,13 @@
-import test from 'node:test';
+import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
+import { useStubbedTransport } from './stub-transport.mjs';
+
+// Nothing in this file may reach a real Teams account.
+useStubbedTransport(beforeEach, afterEach);
 
 test('formatMrStatusMessage includes auto-merge line when enabled and omits when false', () => {
   const watcher = new MergeRequestWatcher({

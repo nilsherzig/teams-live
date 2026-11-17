@@ -229,13 +229,26 @@ link, count or truncation note is lost:
 | `/whereis` (`/where`) | Availability card, or a search-results list |
 | `/meetings`, `/standup` | Meetings and standup summary cards |
 
-Not carded, on purpose: help, errors, acknowledgements, admin notices, `/exec`,
-`/random`, `/weather`, `/flip`, `/retry`, and `/status` without arguments
-(runtime status). Mentions keep their regular behaviour: a reply that mentions
-someone (for example `/whois` for a contact with a Teams identity) is sent as the
-regular plain message so the notification is unchanged, and the card is used when
-nobody is mentioned. A card larger than the Teams payload limit falls back to the
-full regular message.
+Everything else is a card too: help, errors, acknowledgements, admin notices,
+runtime status, `/exec` output, `/random`, `/weather`, `/flip`, `/retry` and so
+on. The reply is built from the same markdown as the regular message and shown
+as a card with a bot header (paragraphs, bullet lists, headings and fenced code
+blocks are kept). In rich mode every outward message is a card; regular mode is
+unchanged.
+
+Limits and trade-offs:
+
+- Mentions do not notify. A card cannot carry a mention, so people appear as
+  plain names and nobody gets a notification (this includes admin
+  authentication notices).
+- Teams caps a message payload, so one card is at most 24000 bytes on the wire.
+  Longer content is split into several consecutive cards, at most 10; anything
+  beyond that is dropped and the last card says how many parts were not shown.
+  Code fences are closed and reopened at each split.
+- Editing the author's own message cannot be split: when the content needs more
+  than one card, that edit falls back to regular text.
+- If Teams rejects a card, the message is sent again as plain markdown; there
+  mentions work again.
 
 Merge request cards always show the approval and auto-merge lines on open
 merge requests, including "Not approved yet" and "Disabled", and say "Unknown
@@ -275,11 +288,8 @@ job and pipeline cards. The CI emojis come from one shared mapping.
 Replies, in-place updates and edits of the author's message behave as with
 regular messages: channel replies stay in the thread, chat replies quote the
 original, and the card replaces the previous message content. The regular text
-is kept as the card's `fallbackText` (used for notifications and previews). If
-Teams rejects a card, the message is sent again as regular text. A message
-whose text mentions someone is always sent as regular text, because a card
-cannot carry the mention. Updating a card message with regular text clears the
-card.
+is kept as the card's `fallbackText` (used for notifications and previews).
+Updating a card message with regular text clears the card.
 
 ```nix
 services.teams-live.settings.teams.rich_messages = true;

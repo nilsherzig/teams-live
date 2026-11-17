@@ -1,7 +1,11 @@
-import test from 'node:test';
+import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { MergeRequestWatcher, teamsReactionToGitLabEmoji } from '../src/watcher.mjs';
 import { recordBotMessageId } from '../src/teams.mjs';
+import { useStubbedTransport, withStubbedTransport } from './stub-transport.mjs';
+
+// Nothing in this file may reach a real Teams account.
+useStubbedTransport(beforeEach, afterEach);
 
 const TEST_SELF_OID = 'f94ccd0d-d140-4d1d-9fee-b00e642b9c11';
 const TEST_SELF_MRI = `8:orgid:${TEST_SELF_OID}`;
@@ -587,8 +591,11 @@ test('checkGitLabTokenExpiryAndAutoRenew auto-renews when token expires in <= 3 
     };
   };
 
-  await watcher.checkGitLabTokenExpiryAndAutoRenew();
-  assert.equal(renewCalled, true, 'Auto-renewal should be triggered when expiry <= 3 days');
+  await withStubbedTransport(async (sent) => {
+    await watcher.checkGitLabTokenExpiryAndAutoRenew();
+    assert.equal(renewCalled, true, 'Auto-renewal should be triggered when expiry <= 3 days');
+    assert.ok(sent.every((message) => message.conversationId === '48:notes'));
+  });
 });
 
 test('checkGitLabTokenExpiryAndAutoRenew alerts admin and tracks message ID when expires in <= 10 days', async () => {
@@ -611,8 +618,13 @@ test('checkGitLabTokenExpiryAndAutoRenew alerts admin and tracks message ID when
 
   // Since sendDirectMessage interacts with Teams API, we can observe that
   // pendingTokenRenewalMessageIds records message IDs and lastGitLabExpiryWarningAt is updated
-  await watcher.checkGitLabTokenExpiryAndAutoRenew();
-  assert.ok(watcher.lastGitLabExpiryWarningAt > 0, 'Warning timestamp should be recorded');
+  await withStubbedTransport(async (sent) => {
+    await watcher.checkGitLabTokenExpiryAndAutoRenew();
+    assert.ok(watcher.lastGitLabExpiryWarningAt > 0, 'Warning timestamp should be recorded');
+    assert.equal(sent.length, 1, 'exactly one warning goes to the admin conversation');
+    assert.match(sent[0].html, /Expiry Warning/);
+    assert.ok(watcher.pendingTokenRenewalMessageIds.has('180000000001'), 'the sent warning is tracked as renewable');
+  });
 });
 
 test('handleTokenRenewalReaction executes token rotation when admin reacts with thumbs up', async () => {
@@ -658,9 +670,19 @@ test('handleTokenRenewalReaction executes token rotation when admin reacts with 
     messageId: alertMsgId,
   };
 
-  await watcher.handleMessageUpdate(event);
-  assert.equal(renewReason, 'reaction', 'Token rotation should be triggered by admin thumbs-up reaction');
-  assert.equal(watcher.pendingTokenRenewalMessageIds.has(alertMsgId), false, 'Message ID should be removed from pending');
+  const reactions = [];
+  watcher.setCommandReaction = async (convId, msgId, key) => {
+    reactions.push({ convId, msgId, key });
+  };
+
+  await withStubbedTransport(async (sent) => {
+    await watcher.handleMessageUpdate(event);
+    assert.equal(renewReason, 'reaction', 'Token rotation should be triggered by admin thumbs-up reaction');
+    assert.equal(watcher.pendingTokenRenewalMessageIds.has(alertMsgId), false, 'Message ID should be removed from pending');
+    assert.equal(sent.length, 1, 'the result is replied to the alert message');
+    assert.match(sent[0].html, /Renewed via/);
+  });
+  assert.ok(reactions.length >= 1);
 });
 
 

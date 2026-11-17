@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isTestRun, refuseLiveWriteInTests } from './test-guard.mjs';
 import {
   sendMessage,
   getThreadMessages,
@@ -11,14 +12,13 @@ import { getCalendarView as mcpGetCalendarView } from 'msteams-mcp/dist/api/cale
 import { requireSkypeSpacesAuth, requireMessageAuthWithConfig } from 'msteams-mcp/dist/utils/auth-guards.js';
 import { httpRequest } from 'msteams-mcp/dist/utils/http.js';
 import { markdownToTeamsHtml } from 'msteams-mcp/dist/utils/parsers-markdown.js';
+import { buildReplyCard, splitMarkdownForCards, stripMentionMarkup, MAX_CARD_BYTES } from './cards.mjs';
 import { refreshTokensViaHttp } from 'msteams-mcp/dist/auth/token-refresh-http.js';
 import { searchPeople as mcpSearchPeople } from 'msteams-mcp/dist/api/substrate-api.js';
 import { resolveProfiles as mcpResolveProfiles } from 'msteams-mcp/dist/api/profile-api.js';
 
 export {
-  sendMessage,
   getThreadMessages,
-  editMessage,
   markdownToTeamsHtml,
   parseContentWithMentionsAndLinks,
 };
@@ -55,7 +55,11 @@ async function attemptTokenRefreshOnAuthError(res) {
   return false;
 }
 
-export async function addReaction(conversationId, messageId, emojiKey) {
+export { isTestRun };
+
+async function liveAddReaction(conversationId, messageId, emojiKey) {
+  const refused = refuseLiveWriteInTests('addReaction');
+  if (refused) return refused;
   let res = await mcpAddReaction(conversationId, messageId, emojiKey);
   if (!res.ok && (await attemptTokenRefreshOnAuthError(res))) {
     res = await mcpAddReaction(conversationId, messageId, emojiKey);
@@ -63,13 +67,18 @@ export async function addReaction(conversationId, messageId, emojiKey) {
   return res;
 }
 
-export async function removeReaction(conversationId, messageId, emojiKey) {
+async function liveRemoveReaction(conversationId, messageId, emojiKey) {
+  const refused = refuseLiveWriteInTests('removeReaction');
+  if (refused) return refused;
   let res = await mcpRemoveReaction(conversationId, messageId, emojiKey);
   if (!res.ok && (await attemptTokenRefreshOnAuthError(res))) {
     res = await mcpRemoveReaction(conversationId, messageId, emojiKey);
   }
   return res;
 }
+
+export const addReaction = (...args) => transport.addReaction(...args);
+export const removeReaction = (...args) => transport.removeReaction(...args);
 
 function isRetryableNetworkError(res) {
   if (!res || res.ok) return false;
@@ -230,7 +239,12 @@ export async function getUserPresence(mris) {
 
 // Send/edit entry points of the Teams chat service. Indirection so tests can
 // observe the exact payloads without a Teams session.
-export const transport = { sendMessage, editMessage };
+export const transport = {
+  sendMessage: async (...args) => refuseLiveWriteInTests('sendMessage') || sendMessage(...args),
+  editMessage: async (...args) => refuseLiveWriteInTests('editMessage') || editMessage(...args),
+  addReaction: liveAddReaction,
+  removeReaction: liveRemoveReaction,
+};
 
 export const botSentMessageIds = new Set();
 export const BOT_WATERMARK = '\u200B\u200C\u200B';
@@ -337,7 +351,8 @@ export function buildCardAttachment(message) {
   const id = randomUUID().replaceAll('-', '');
   const content = { ...message.card };
   if (!content.fallbackText && message.markdown) {
-    content.fallbackText = message.markdown;
+    // Notification and preview text: names, not the raw mention markup.
+    content.fallbackText = stripMentionMarkup(message.markdown);
   }
   return {
     id,
@@ -361,17 +376,67 @@ export function richMessageWireBytes(message) {
 }
 
 /**
+ * Rich mode (`teams.rich_messages`) switch for the whole transport: when on,
+ * every outward message (see prepareRichMessages) is an Adaptive Card. Set once
+ * at startup by the watcher; off by default, which leaves every message the
+ * regular markdown it always was.
+ */
+let richMessagesEnabled = false;
+
+export function setRichMessages(enabled) {
+  richMessagesEnabled = enabled === true;
+}
+
+export function isRichMessagesEnabled() {
+  return richMessagesEnabled;
+}
+
+/**
+ * The messages to send for one outward message. Regular mode: the message
+ * itself. Rich mode: a card for every message, whatever it is, so nothing
+ * leaves the bot as plain text:
+ * - a rich message (entity card) that fits is passed through unchanged (never
+ *   wrapped twice);
+ * - plain text, and a card that is too large, become generic reply cards built
+ *   from the markdown (buildReplyCard);
+ * - text too large for one card is split into several cards, in order, each
+ *   within MAX_CARD_BYTES on the wire (at most 10 cards, see
+ *   splitMarkdownForCards).
+ * Mentions are rendered as names in the card; nobody is notified.
+ */
+export function prepareRichMessages(message) {
+  if (!richMessagesEnabled) return [message];
+  const markdown = messageMarkdown(message).trim();
+  if (!markdown) return [message];
+  if (isRichMessage(message) && richMessageWireBytes(message) <= MAX_CARD_BYTES) return [message];
+
+  const asMessage = (text, part) => {
+    try {
+      return makeRichMessage(text, buildReplyCard(text, { part }));
+    } catch (err) {
+      console.warn(new Date().toISOString(), '[teams] Could not build a card, sending regular message:', err?.message || err);
+      return text;
+    }
+  };
+  const single = asMessage(markdown, null);
+  if (isRichMessage(single) && richMessageWireBytes(single) <= MAX_CARD_BYTES) return [single];
+
+  const texts = splitMarkdownForCards(markdown, (text) => {
+    const candidate = asMessage(text, [2, 2]);
+    return isRichMessage(candidate) && richMessageWireBytes(candidate) <= MAX_CARD_BYTES;
+  });
+  return texts.map((text, i) => asMessage(text, [i + 1, texts.length]));
+}
+
+/**
  * Renders a message to Teams HTML plus its mention and card properties.
  *
- * A rich message is sent as an Adaptive Card only when its text has no
- * mentions: a card cannot carry the mention metadata, so a message that
- * mentions someone is rendered from its regular markdown instead, and the
- * mention (and its notification) keeps working.
+ * A rich message is always an Adaptive Card. A card cannot carry the mention
+ * metadata, so mentions in it are shown as plain names and notify nobody (the
+ * regular message of the explicit card-failure fallback keeps them).
  */
 export function renderReplyContent(replyMarkdown) {
   if (isRichMessage(replyMarkdown)) {
-    const plain = renderPlainContent(replyMarkdown.markdown);
-    if (plain.mentions.length > 0) return plain;
     const attachment = buildCardAttachment(replyMarkdown);
     return {
       html: `${attachment.tag}<span style="display:none">${BOT_WATERMARK}</span>`,
@@ -477,7 +542,13 @@ async function withCardFallback(message, run) {
  * Sends a direct (non-reply) message to a conversation.
  */
 export async function sendDirectMessage(conversationId, markdown) {
-  return withCardFallback(markdown, (message) => sendDirectMessageOnce(conversationId, message));
+  let first = null;
+  for (const part of prepareRichMessages(markdown)) {
+    const result = await withCardFallback(part, (message) => sendDirectMessageOnce(conversationId, message));
+    if (!first) first = result;
+    if (!result.ok) return result;
+  }
+  return first;
 }
 
 async function sendDirectMessageOnce(conversationId, markdown) {
@@ -508,17 +579,26 @@ async function sendDirectMessageOnce(conversationId, markdown) {
  */
 export async function sendReply(conversationId, originalMessage, replyMarkdown, opts = {}) {
   const pendingUpdateId = originalMessage?.replyMessageIdToUpdate;
-  return withCardFallback(replyMarkdown, (message) => {
-    // sendReplyOnce consumes the pending update id; restore it for the plain retry
-    if (originalMessage && pendingUpdateId && !originalMessage.replyMessageIdToUpdate) {
-      originalMessage.replyMessageIdToUpdate = pendingUpdateId;
-    }
-    return sendReplyOnce(conversationId, originalMessage, message, opts);
-  });
+  let first = null;
+  // A text too large for one card goes out as several cards in the same thread/quote, in order.
+  // Only the first one may take over a pending in-place update; the result of the first is returned
+  // (its message id is what callers update later), unless a part fails.
+  for (const [index, part] of prepareRichMessages(replyMarkdown).entries()) {
+    const result = await withCardFallback(part, (message) => {
+      // sendReplyOnce consumes the pending update id; restore it for the plain retry
+      if (index === 0 && originalMessage && pendingUpdateId && !originalMessage.replyMessageIdToUpdate) {
+        originalMessage.replyMessageIdToUpdate = pendingUpdateId;
+      }
+      return sendReplyOnce(conversationId, originalMessage, message, index === 0 ? opts : { ...opts, updateMessageId: null, noUpdate: true });
+    });
+    if (!first) first = result;
+    if (!result.ok) return result;
+  }
+  return first;
 }
 
 async function sendReplyOnce(conversationId, originalMessage, replyMarkdown, opts = {}) {
-  const updateId = opts.updateMessageId || originalMessage?.replyMessageIdToUpdate;
+  const updateId = opts.noUpdate ? null : opts.updateMessageId || originalMessage?.replyMessageIdToUpdate;
   if (updateId) {
     if (originalMessage) originalMessage.replyMessageIdToUpdate = null;
     const updateResult = await updateReplyOnce(conversationId, updateId, originalMessage, replyMarkdown);
@@ -590,9 +670,18 @@ async function sendReplyOnce(conversationId, originalMessage, replyMarkdown, opt
  * Updates an existing reply message in-place.
  */
 export async function updateReply(conversationId, serverMessageId, originalMessage, replyMarkdown) {
-  return withCardFallback(replyMarkdown, (message) =>
+  const [head, ...rest] = prepareRichMessages(replyMarkdown);
+  const result = await withCardFallback(head, (message) =>
     updateReplyOnce(conversationId, serverMessageId, originalMessage, message)
   );
+  // A text that no longer fits one card: the message keeps the first card, the rest follows as new replies.
+  for (const part of result.ok ? rest : []) {
+    const sent = await withCardFallback(part, (message) =>
+      sendReplyOnce(conversationId, originalMessage, message, { noUpdate: true })
+    );
+    if (!sent.ok) return sent;
+  }
+  return result;
 }
 
 async function updateReplyOnce(conversationId, serverMessageId, originalMessage, replyMarkdown) {
@@ -786,7 +875,10 @@ export async function appendThumbnailToMessage(
  * Preserves the original URL link and appends the rendered card HTML.
  */
 export async function editOriginalMessage(conversationId, messageId, originalUrl, cardMarkdown) {
-  return withCardFallback(cardMarkdown, (message) =>
+  // One message cannot become several: a text too large for one card stays a regular message here.
+  const parts = prepareRichMessages(cardMarkdown);
+  const body = parts.length === 1 ? parts[0] : messageMarkdown(cardMarkdown);
+  return withCardFallback(body, (message) =>
     editOriginalMessageOnce(conversationId, messageId, originalUrl, message)
   );
 }

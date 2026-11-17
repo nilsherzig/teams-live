@@ -1,3 +1,4 @@
+import './test-guard.mjs';
 export class GitLabClient {
   constructor({ host = 'git.wiit.one', token = null, group = '', onAuthError = null, onSuccess = null } = {}) {
     this.host = (host || 'git.wiit.one').replace(/^https?:\/\//, '').replace(/\/+$/, '');

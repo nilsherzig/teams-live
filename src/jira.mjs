@@ -1,3 +1,4 @@
+import './test-guard.mjs';
 /** A failed Jira HTTP request; `status` is the HTTP status code. */
 export class JiraHttpError extends Error {
   constructor(message, status, { resource = false } = {}) {

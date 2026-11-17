@@ -1,3 +1,4 @@
+import './test-guard.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 

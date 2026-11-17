@@ -143,7 +143,10 @@ test('MergeRequestWatcher formats Confluence message and watches Confluence link
     config: { gitlab: {}, conversations: [] },
     gitlab: { findMrLinks: () => [], findJobLinks: () => [], findPipelineLinks: () => [] },
     jira: { findIssueLinks: () => [] },
-    confluence: new ConfluenceClient({ url: 'https://wiki.example.com', token: 'test' }),
+    // watch() starts a background check; keep it off the network.
+    confluence: Object.assign(new ConfluenceClient({ url: 'https://wiki.example.com', token: 'test' }), {
+      getPage: async () => null,
+    }),
     opsgenie: { findAlertLinks: () => [] },
     authManager: null,
   });

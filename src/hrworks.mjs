@@ -1,3 +1,4 @@
+import './test-guard.mjs';
 import fs from 'node:fs';
 import { normalizeName } from './users.mjs';
 

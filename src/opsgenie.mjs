@@ -1,3 +1,4 @@
+import './test-guard.mjs';
 export function humanizeRecipient(emailOrUsername) {
   if (!emailOrUsername) return '';
   const local = emailOrUsername.includes('@') ? emailOrUsername.split('@')[0] : emailOrUsername;
