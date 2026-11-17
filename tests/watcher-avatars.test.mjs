@@ -179,8 +179,8 @@ test('a card that would outgrow the wire budget with pictures is rebuilt without
 });
 
 const authorOf = (card) => card.body[0].items.find((i) => i.type === 'ColumnSet' && i.columns[0].items[0].text === 'Author');
-const plainAuthor = (card) =>
-  card.body[0].items.find((i) => i.type === 'FactSet')?.facts.find((f) => f.title === 'Author')?.value;
+// A picture-less author: a text row (the state badge row turns the facts into aligned rows).
+const plainAuthor = (card) => authorOf(card)?.columns.slice(1).flatMap((c) => c.items.map((i) => i.text))[0];
 
 test('MR card prefetches and shows the author with the picture, fetching it once', async () => {
   const fetched = [];

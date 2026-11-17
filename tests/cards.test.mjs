@@ -34,8 +34,8 @@ const rawFacts = (card) => {
         r.columns
           .slice(1)
           .flatMap((c) => c.items)
-          .filter((i) => i.type === 'TextBlock')
-          .map((i) => i.text)
+          .map((i) => (i.type === 'Image' && i.height === '22px' ? i.altText : i.type === 'TextBlock' ? i.text : null))
+          .filter(Boolean)
           .join(' '),
       ])
     ),
@@ -114,7 +114,7 @@ test('merge request card: open, approved, green pipeline, auto-merge', () => {
   assert.equal(mainTitle(card), 'Add example feature');
   assert.equal(style(card), 'emphasis');
   const f = facts(card);
-  assert.equal(f.Status, '\u{1F7E2} Open');
+  assert.equal(f.Status, 'Open');
   assert.equal(f.Approval, '\u{1F44D} By Alice Example, Bob Example');
   assert.equal(f.Pipeline, '\u2705 Passed (#7)');
   assert.equal(f['Auto-merge'], '\u{1F500} Enabled by Alice Example');
@@ -136,7 +136,7 @@ test('merge request card: failed pipeline shows in the pipeline row, the card st
   assert.equal(facts(card).Pipeline, '\u274c Failed (#8)');
 });
 
-test('merge request card: needs rebase and not approved', () => {
+test('merge request card: needs rebase and not approved (neutral card)', () => {
   const card = buildMergeRequestCard({ ...baseMr, approved: false, needsRebase: true, hasConflicts: true });
   assert.equal(style(card), 'emphasis');
   const f = facts(card);
@@ -147,20 +147,20 @@ test('merge request card: needs rebase and not approved', () => {
 test('merge request card: merged, closed, rebase and rebased states', () => {
   const merged = buildMergeRequestCard({ ...baseMr, state: 'merged', targetBranch: 'main', approved: false });
   assert.equal(style(merged), 'emphasis');
-  assert.equal(facts(merged).Status, '\u{1F7E3} Merged');
+  assert.equal(facts(merged).Status, 'Merged');
   assert.equal(facts(merged).Approval, undefined);
 
   const closed = buildMergeRequestCard({ ...baseMr, state: 'closed' });
   assert.equal(style(closed), 'emphasis');
-  assert.equal(facts(closed).Status, '\u{1F534} Closed (unmerged)');
+  assert.equal(facts(closed).Status, 'Closed');
 
   const rebase = buildMergeRequestCard({ ...baseMr, state: 'rebase', hasConflicts: false });
   assert.equal(style(rebase), 'emphasis');
-  assert.equal(facts(rebase).Status, '\u26a0\ufe0f Rebase required');
+  assert.equal(facts(rebase).Status, 'Open \u26a0\ufe0f Rebase required');
 
   const rebased = buildMergeRequestCard({ ...baseMr, state: 'rebased' });
   assert.equal(style(rebased), 'emphasis');
-  assert.equal(facts(rebased).Status, '\u2705 Rebased, up to date and conflict-free');
+  assert.equal(facts(rebased).Status, 'Open \u2705 Rebased, up to date and conflict-free');
   for (const c of [merged, closed, rebase, rebased]) assertValidCard(c);
 });
 
@@ -335,8 +335,11 @@ test('confluence page card', () => {
 test('cards never contain empty facts', () => {
   const card = buildMergeRequestCard({ iid: 1, title: '' });
   assertValidCard(card);
-  for (const fact of card.body[0].items.find((i) => i.type === 'FactSet').facts) {
-    assert.ok(fact.title && fact.value);
+  // The state is a badge image, so the facts of a merge request card are rows (see factRows).
+  const entries = Object.entries(rawFacts(card));
+  assert.ok(entries.length > 0);
+  for (const [title, value] of entries) {
+    assert.ok(title && value);
   }
   assert.equal(card.actions, undefined);
 });
@@ -365,7 +368,7 @@ test('every card has a compact branded header: logo plus "Service - kind"', () =
     assert.equal(icon.width, '16px');
     icons.add(`${service}:${icon.url}`);
     // Compact: header, title, optional subtitle, facts. No grid or roster.
-    assert.ok(items(card).length <= 5);
+    assert.ok(items(card).filter((i) => !factRows(card).includes(i)).length <= 5);
     assert.ok(!JSON.stringify(card.body).includes('"Table"'));
   }
   // One logo per service, shared by cards of the same service, never across services.
@@ -467,7 +470,7 @@ test('cross references inside the card are linked when their URL is known', () =
   assert.equal(rawFacts(mr).Pipeline, `\u2705 [Passed (#7)](${pipelineUrl})`);
   assert.equal(rawFacts(mr).Ticket, `[EX-123](${jiraUrl})`);
   // Status-like facts without a link stay plain.
-  assert.equal(rawFacts(mr).Status, '\u{1F7E2} Open');
+  assert.equal(rawFacts(mr).Status, 'Open');
 
   const job = buildJobCard({
     id: 5,
@@ -528,7 +531,7 @@ test('status emojis match the ones of the regular messages', () => {
     pipeline: { id: 3, status: 'running' },
   });
   assert.deepEqual(facts(open), {
-    Status: '\u{1F7E2} Open',
+    Status: 'Open',
     Approval: '\u23f3 Not approved yet',
     Pipeline: '\u23f3 Running (#3)',
     Rebase: '\u26a0\ufe0f Required: behind target branch',
@@ -572,7 +575,7 @@ test('merge request card: rebase line only when required, with its reason and st
   assert.equal(conflicts.Rebase, '\u26a0\ufe0f Required: merge conflicts');
 
   const rebase = buildMergeRequestCard({ ...baseMr, state: 'rebase', hasConflicts: true });
-  assert.equal(facts(rebase).Status, '\u26a0\ufe0f Rebase required (merge conflicts)');
+  assert.equal(facts(rebase).Status, 'Open \u26a0\ufe0f Rebase required (merge conflicts)');
   assert.ok(facts(rebase).Rebase.startsWith('\u26a0\ufe0f Required'));
   // Resolved: the line goes away again.
   const rebased = facts(buildMergeRequestCard({ ...baseMr, state: 'rebased', approved: true, autoMerge: false }));
@@ -743,10 +746,10 @@ test('merge request state badges follow GitLab: open green, merged purple, close
   const urls = new Set([open, draft, merged, closed].map((c) => headerGlyph(c).url));
   assert.equal(urls.size, 4, 'four distinct glyphs');
   assert.equal(headerGlyph(draft).url, GITLAB_ICONS['merge-request']);
-  assert.equal(facts(open).Status, '\u{1F7E2} Open');
-  assert.equal(facts(draft).Status, '\u26aa Draft');
-  assert.equal(facts(merged).Status, '\u{1F7E3} Merged');
-  assert.equal(facts(closed).Status, '\u{1F534} Closed (unmerged)');
+  assert.equal(facts(open).Status, 'Open');
+  assert.equal(facts(draft).Status, 'Draft');
+  assert.equal(facts(merged).Status, 'Merged');
+  assert.equal(facts(closed).Status, 'Closed');
   assert.equal(style(draft), 'emphasis');
   assert.equal(style(merged), 'emphasis');
   assert.equal(style(closed), 'emphasis');
@@ -755,14 +758,14 @@ test('merge request state badges follow GitLab: open green, merged purple, close
 
 test('a draft stays visible as a draft next to the rebase notice', () => {
   const rebase = buildMergeRequestCard({ ...baseMr, state: 'rebase', draft: true });
-  assert.equal(facts(rebase).Status, '\u26aa Draft \u00b7 \u26a0\ufe0f Rebase required');
+  assert.equal(facts(rebase).Status, 'Draft \u26a0\ufe0f Rebase required');
   assert.equal(
     facts(buildMergeRequestCard({ ...baseMr, state: 'rebase', draft: true, hasConflicts: true })).Status,
-    '\u26aa Draft \u00b7 \u26a0\ufe0f Rebase required (merge conflicts)',
+    'Draft \u26a0\ufe0f Rebase required (merge conflicts)',
   );
-  assert.equal(facts(buildMergeRequestCard({ ...baseMr, state: 'rebased', draft: true })).Status, '\u26aa Draft \u00b7 \u2705 Rebased, up to date and conflict-free');
+  assert.equal(facts(buildMergeRequestCard({ ...baseMr, state: 'rebased', draft: true })).Status, 'Draft \u2705 Rebased, up to date and conflict-free');
   // Not a draft: unchanged.
-  assert.equal(facts(buildMergeRequestCard({ ...baseMr, state: 'rebase' })).Status, '\u26a0\ufe0f Rebase required');
+  assert.equal(facts(buildMergeRequestCard({ ...baseMr, state: 'rebase' })).Status, 'Open \u26a0\ufe0f Rebase required');
   assertValidCard(rebase);
 });
 
@@ -903,7 +906,7 @@ test('merge request card: the Ticket fact keeps its bold label, then the embedde
   assert.equal(textColumn.items[0].text, `[EX-123](${url})`);
   // Every other fact is still there, none is lost to the rows.
   const f = facts(card);
-  assert.equal(f.Status, '\u{1F7E2} Open');
+  assert.equal(f.Status, 'Open');
   assert.equal(f.Target, 'main');
   // No external image URL anywhere in the card.
   const urls = [];
@@ -938,11 +941,17 @@ test('merge request card: with a Ticket every fact row shares one label width, s
   for (const r of rows) assert.equal(r.type, 'ColumnSet');
 });
 
-test('merge request card: without a Jira reference there is no logo row, the facts stay one FactSet', () => {
-  const card = buildMergeRequestCard({ ...baseMr, state: 'open', jira: null });
-  assert.equal(factRows(card).length, 0);
-  assert.equal(items(card).filter((i) => i.type === 'FactSet').length, 1);
-  const unusable = buildMergeRequestCard({ ...baseMr, state: 'open', jira: { url: 'nope' } });
-  assert.equal(factRows(unusable).length, 0);
-  assert.equal(items(unusable).filter((i) => i.type === 'FactSet').length, 1);
+test('merge request card: without a Jira reference there is no Ticket row, the state stays a badge row', () => {
+  for (const jira of [null, { url: 'nope' }]) {
+    const card = buildMergeRequestCard({ ...baseMr, state: 'open', jira });
+    // The state badge is an image, which a FactSet cannot hold: the facts are rows.
+    assert.equal(items(card).filter((i) => i.type === 'FactSet').length, 0);
+    const titles = factRows(card).map((r) => r.columns[0].items[0].text);
+    assert.equal(titles[0], 'Status');
+    assert.ok(!titles.includes('Ticket'));
+    assert.equal(
+      factRows(card).flatMap((r) => r.columns.flatMap((c) => c.items)).filter((i) => i.type === 'Image' && i.altText === 'Jira').length,
+      0
+    );
+  }
 });

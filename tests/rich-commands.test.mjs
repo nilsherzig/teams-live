@@ -48,13 +48,20 @@ function newWatcher(teams = {}) {
 const entry = () => ({ conversationId: CONV, messageId: '1700000000000', from: 'Alice Example', previewText: 'x' });
 const mrRef = (extra = {}) => ({ project: 'group/app', iid: 42, title: 'Add example feature', ...extra });
 const cardOf = (options) => JSON.parse(options.properties.cards)[0]?.content;
-// FactSet of a card as {title: value} (markdown links reduced to their labels).
-const factsOf = (card) =>
-  Object.fromEntries(
-    card.body[0].items
-      .find((i) => i.type === 'FactSet')
-      .facts.map((f) => [f.title, f.value.replace(/\[((?:\\.|[^\]\\])*)\]\([^)]*\)/g, '$1')])
-  );
+// Facts of a card as {title: value}, whether they sit in a FactSet or in aligned rows (markdown links
+// reduced to their labels). The state badge row reads as its state in words (the image altText).
+const unlink = (t) => t.replace(/\[((?:\\.|[^\]\\])*)\]\([^)]*\)/g, '$1');
+const factsOf = (card) => {
+  const out = {};
+  for (const i of card.body[0].items) {
+    if (i.type === 'FactSet') for (const f of i.facts) out[f.title] = unlink(f.value);
+    else if (i.type === 'ColumnSet' && i.columns[0]?.items[0]?.weight === 'Bolder') {
+      const parts = i.columns.slice(1).flatMap((c) => c.items.map((x) => (x.type === 'Image' ? x.altText : x.text)));
+      out[i.columns[0].items[0].text] = unlink(parts.filter(Boolean).join(' '));
+    }
+  }
+  return out;
+};
 const textsIn = (i) =>
   i.type === 'TextBlock' ? [i.text] : i.type === 'ColumnSet' ? i.columns.flatMap((c) => c.items.flatMap(textsIn)) : [];
 const rowsOf = (card) => card.body[0].items.flatMap(textsIn);
@@ -171,9 +178,9 @@ test('MR rebase comment: required keeps the reason, resolved is conflict-free an
   });
   assert.deepEqual(calls.map((c) => c.kind), ['send', 'edit']);
   const [required, resolved] = [cardOf(calls[0].args[2]), cardOf(calls[1].args[4])];
-  assert.equal(factsOf(required).Status, '⚠️ Rebase required');
+  assert.equal(factsOf(required).Status, 'Open ⚠️ Rebase required');
   assert.equal(factsOf(required).Rebase, '⚠️ Required: behind target branch (status: need_rebase)');
-  assert.equal(factsOf(resolved).Status, '✅ Rebased, up to date and conflict-free');
+  assert.equal(factsOf(resolved).Status, 'Open ✅ Rebased, up to date and conflict-free');
   assert.equal(factsOf(resolved).Rebase, undefined);
   assert.equal(factsOf(resolved).Approval, '\u{1F44D} Approved');
 });
@@ -188,7 +195,7 @@ test('MR merged and closed cards keep what is known', async () => {
     )
   );
   const mergedFacts = factsOf(cardOf(merged[0].args[2]));
-  assert.equal(mergedFacts.Status, '\u{1F7E3} Merged');
+  assert.equal(mergedFacts.Status, 'Merged');
   assert.equal(mergedFacts.Approval, '\u{1F44D} By Alice Example');
   assert.equal(mergedFacts['Auto-merge'], '\u{1F500} Enabled');
 
@@ -201,7 +208,7 @@ test('MR merged and closed cards keep what is known', async () => {
     )
   );
   const closedFacts = factsOf(cardOf(closed[0].args[2]));
-  assert.equal(closedFacts.Status, '\u{1F534} Closed (unmerged)');
+  assert.equal(closedFacts.Status, 'Closed');
   assert.equal(closedFacts.Approval, '\u{1F44D} Approved');
   assert.equal(closedFacts['Auto-merge'], '\u{1F500} Enabled');
 });
@@ -412,12 +419,10 @@ test('size budget counts the fallback copy of the markdown, not just the bare ca
 test('/status card: "none" when the MR has no pipeline, "unknown" when the lookup failed', async () => {
   const on = newWatcher({ rich_messages: true });
   const facts = (mrState) => {
-    const card = on.buildMrCard({ project: 'group/app', iid: 42, title: 'Add example feature' }, mrState, { state: 'open', pipeline: null }).body;
-    return card;
+    return on.buildMrCard({ project: 'group/app', iid: 42, title: 'Add example feature' }, mrState, { state: 'open', pipeline: null });
   };
   const base = { state: 'opened', approved: false, approvalKnown: true, status: 'pending', autoMerge: false, pipeline: null };
-  const pipelineOf = (mrState) =>
-    JSON.stringify(facts(mrState)).match(/"title":"Pipeline","value":"([^"]*)"/)?.[1] ?? null;
+  const pipelineOf = (mrState) => factsOf(facts(mrState)).Pipeline ?? null;
   assert.equal(pipelineOf({ ...base, pipelineKnown: true }), '\u{1F3D7}️ None');
   assert.equal(pipelineOf({ ...base, pipelineKnown: false }), '❔ Unknown (not retrieved)');
   // Callers that did not ask GitLab keep the previous behaviour (no pipeline fact).

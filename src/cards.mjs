@@ -7,8 +7,9 @@
 // regular markdown text next to the card as the fallback.
 //
 // The merge request card keeps the status emojis of the regular messages (see
-// the watcher): approval, CI, rebase, auto-merge, merged and closed. Job and
-// pipeline cards use the same CI status emojis.
+// the watcher): approval, CI, rebase and auto-merge. Its state (open, draft,
+// merged, closed) is a GitLab-style badge image. Job and pipeline cards use the
+// same CI status emojis.
 //
 // Layout of every card: a compact header with the logo of the service and a
 // label for the kind of entity (for example "GitLab - Merge request"), then the
@@ -20,6 +21,7 @@
 
 import { SERVICE_ICONS } from './card-icons.mjs';
 import { GITLAB_ICONS } from './gitlab-icons.mjs';
+import { MR_BADGES } from './mr-badges.mjs';
 import { GITLAB_ICONS_SMALL } from './gitlab-icons-small.mjs';
 import { MAX_AVATAR_CHARS_PER_CARD, avatarColumn, isImageDataUri, userRow } from './card-user-row.mjs';
 
@@ -87,9 +89,25 @@ function factLabelColumn(title, width) {
   };
 }
 
-/** A fact as a row: the shared-width bold label, then the value (with its logo when it has one). */
-function factRow(title, value, width, logo = null) {
+/**
+ * A fact as a row: the shared-width bold label, then the value (with its logo
+ * when it has one). A `badge` fact (see mrStateBadge) shows the state image
+ * instead of text; its value is only the text that follows the image.
+ */
+function factRow(title, value, width, logo = null, badge = null) {
   const columns = [factLabelColumn(title, width)];
+  if (badge) {
+    columns.push({
+      type: 'Column',
+      width: 'auto',
+      verticalContentAlignment: 'Center',
+      items: [{ type: 'Image', url: badge.url, altText: badge.alt, width: `${badge.width}px`, height: `${badge.height}px` }],
+    });
+    if (value) {
+      columns.push({ type: 'Column', width: 'stretch', verticalContentAlignment: 'Center', items: [textBlock(value)] });
+    }
+    return { type: 'ColumnSet', spacing: 'Small', columns };
+  }
   if (logo) {
     columns.push({
       type: 'Column',
@@ -109,7 +127,7 @@ function factRow(title, value, width, logo = null) {
  * one label width. The profile pictures of one card share a size budget.
  */
 function factBlocks(facts) {
-  if (!facts.some((f) => f?.[2]?.people || f?.[2]?.logo)) return [factSet(facts)];
+  if (!facts.some((f) => f?.[2]?.people || f?.[2]?.logo || f?.[2]?.badge)) return [factSet(facts)];
   const shown = facts.filter((f) => str(f[0]) && str(f[1]));
   const width = labelWidth(shown.map((f) => str(f[0])));
   let budget = MAX_AVATAR_CHARS_PER_CARD;
@@ -122,7 +140,9 @@ function factBlocks(facts) {
       budget -= built.usedChars;
       return built.row;
     }
-    return factRow(str(fact[0]), str(fact[1]), width, extra?.logo ? extra : null);
+    return extra?.badge
+      ? factRow(str(fact[0]), str(extra.trail), width, null, extra.badge)
+      : factRow(str(fact[0]), str(fact[1]), width, extra?.logo ? extra : null);
   });
 }
 
@@ -407,6 +427,16 @@ function mrGlyph(state, draft = false) {
   return { icon: 'merge-request-open', label: 'Open' };
 }
 
+/**
+ * The GitLab-style state badge (pill with the state glyph and the state in
+ * words) of a merge request: merged and closed win over a draft flag.
+ */
+export function mrStateBadge(state, draft = false) {
+  if (state === 'merged') return MR_BADGES.merged;
+  if (state === 'closed') return MR_BADGES.closed;
+  return draft ? MR_BADGES.draft : MR_BADGES.open;
+}
+
 /** Maps a GitLab pipeline/job status to a label and a container style. */
 export function ciStatusInfo(status) {
   switch (str(status).toLowerCase()) {
@@ -487,18 +517,16 @@ export function buildMergeRequestCard(mr) {
   const reason = mr.hasConflicts ? 'merge conflicts' : 'behind target branch';
 
   const draft = mr.draft === true && live;
-  // The coloured dots follow GitLab's state colours; the label carries the state too.
-  let statusLabel = draft ? '⚪ Draft' : '🟢 Open';
-  if (state === 'merged') {
-    statusLabel = '🟣 Merged';
-  } else if (state === 'closed') {
-    statusLabel = '🔴 Closed (unmerged)';
-  } else if (state === 'rebase') {
-    // A draft stays visible as a draft next to the rebase notice.
-    statusLabel = `${draft ? '⚪ Draft · ' : ''}${mr.hasConflicts ? '⚠️ Rebase required (merge conflicts)' : '⚠️ Rebase required'}`;
+  // The state is a GitLab-style badge image (see mrStateBadge); `trail` is the text next to it.
+  const badge = mrStateBadge(state, draft);
+  let trail = '';
+  if (state === 'rebase') {
+    trail = mr.hasConflicts ? '⚠️ Rebase required (merge conflicts)' : '⚠️ Rebase required';
   } else if (state === 'rebased') {
-    statusLabel = `${draft ? '⚪ Draft · ' : ''}✅ Rebased, up to date and conflict-free`;
+    trail = '✅ Rebased, up to date and conflict-free';
   }
+  // The fact value is the readable state; a FactSet (no picture support) or a screen reader gets it as text.
+  const statusLabel = [badge.alt, trail].filter(Boolean).join(' · ');
 
   const approvers = (mr.approvedBy || []).filter(Boolean);
   let approval = '';
@@ -537,7 +565,7 @@ export function buildMergeRequestCard(mr) {
     subtitle: mr.project,
     stats: mr.diffStats,
     facts: [
-      ['Status', statusLabel],
+      ['Status', statusLabel, { badge, trail }],
       author ? personFact('Author', author, [author], mr.avatars) : ['Author', ''],
       approved === true && approvers.length > 0
         ? personFact('Approval', approval, approvers.map(str), mr.avatars, '👍 By')

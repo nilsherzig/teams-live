@@ -769,8 +769,9 @@ test('merge request author gets a labeled picture row, aligned with the other fa
 
 test('merge request author without a picture is a plain Author fact; no author, no row', () => {
   const plain = buildMergeRequestCard({ ...MR, author: 'Dave Example' });
-  const set = items(plain).find((i) => i.type === 'FactSet');
-  assert.deepEqual(set.facts.find((f) => f.title === 'Author'), { title: 'Author', value: 'Dave Example' });
+  // The state badge turns the facts into aligned rows, so a plain Author is a text row.
+  assert.deepEqual(factOf(plain, 'Author').columns.map((c) => c.items[0].text), ['Author', 'Dave Example']);
+  assert.equal(factOf(plain, 'Author').columns[1].items[0].type, 'TextBlock');
   assert.equal(images(plain), 0);
   for (const author of [undefined, null, '', '  ']) {
     const card = buildMergeRequestCard({ ...MR, author, avatars: { 'Dave Example': URI } });
