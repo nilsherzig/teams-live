@@ -4,7 +4,11 @@
  * Tests build watchers around mocked connectors, but the process can still
  * find real Teams credentials and reach the real network. While running under
  * `node --test`:
- *   - every Teams write (messages, edits, reactions, uploads) is refused, and
+ *   - every Teams write (messages, edits, reactions, uploads) is refused,
+ *   - every Teams read through the shared wrappers (people search, profiles,
+ *     message lookups, profile pictures) is refused before it loads a session
+ *     or refreshes a token, so the outcome does not depend on whether the
+ *     machine running the tests holds a Teams session, and
  *   - every `fetch` to a non-loopback host is refused (GitLab, Jira, OpsGenie,
  *     Confluence, HRworks, screenshot and browser-auth adapters all use the
  *     global fetch).
@@ -48,6 +52,20 @@ export function refuseLiveWriteInTests(what) {
   return {
     ok: false,
     error: new Error(`Refused live Teams ${what} during a test run (stub transport.* in the test)`),
+  };
+}
+
+/**
+ * Like refuseLiveWriteInTests, for reads. It is checked before any session or
+ * token is touched: with no session a read would try a token refresh (and the
+ * browser fallback), with one it would reach the real tenant.
+ */
+export function refuseLiveReadInTests(what) {
+  if (!isTestRun()) return null;
+  refusals.push({ kind: 'teams', what });
+  return {
+    ok: false,
+    error: new Error(`Refused live Teams ${what} during a test run (stub the lookup in the test)`),
   };
 }
 

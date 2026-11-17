@@ -62,3 +62,17 @@ export function useStubbedTransport(beforeEachHook, afterEachHook) {
   });
   return state;
 }
+
+// A rich watcher looks people up (directory search, profiles, profile pictures)
+// through Teams. Tests that build one replace those lookups so that no code path
+// of the test reaches Teams, whether or not the machine holds a session; an
+// unstubbed lookup is refused and recorded by src/test-guard.mjs.
+export function stubDirectoryLookups(watcher) {
+  watcher.userDirectory.searchFn = async () => ({ ok: true, value: { results: [] } });
+  watcher.userDirectory.resolveProfilesFn = async () => ({ ok: true, value: [] });
+  if (watcher.avatarService) {
+    watcher.avatarService.searchFn = async () => [];
+    watcher.avatarService.fetchPhoto = async () => ({ kind: 'none' });
+  }
+  return watcher;
+}

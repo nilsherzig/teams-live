@@ -16,6 +16,7 @@ import {
   updateReply,
 } from '../src/teams.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
+import { stubDirectoryLookups } from './stub-transport.mjs';
 
 // Regular mode unless a test builds a rich watcher (the switch is process-wide).
 beforeEach(() => setRichMessages(false));
@@ -324,7 +325,7 @@ function newWatcher(teams) {
     opsgenie: null,
   });
   watcher.saveState = () => {};
-  return watcher;
+  return stubDirectoryLookups(watcher);
 }
 
 const jiraIssue = {

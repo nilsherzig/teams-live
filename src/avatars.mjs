@@ -23,6 +23,7 @@
 
 import { requireSkypeSpacesAuthWithConfig } from 'msteams-mcp/dist/utils/auth-guards.js';
 import { getSkypeAuthHeaders } from 'msteams-mcp/dist/utils/api-config.js';
+import { refuseLiveReadInTests } from './test-guard.mjs';
 import { PLACEHOLDER_AVATAR } from './placeholder-avatar.mjs';
 
 const log = (...args) => console.error(new Date().toISOString(), '[avatars]', ...args);
@@ -120,7 +121,8 @@ export function createTeamsPhotoFetcher({
   timeoutMs = DEFAULTS.requestTimeoutMs,
   maxBytes = DEFAULTS.maxBytes,
   fetchFn = (...args) => globalThis.fetch(...args),
-  loadAuth = requireSkypeSpacesAuthWithConfig,
+  // Never loads a real session in a test run (a test that exercises the fetcher passes its own).
+  loadAuth = () => refuseLiveReadInTests('profile picture') || requireSkypeSpacesAuthWithConfig(),
 } = {}) {
   if (!SIZE_PARAM.test(size)) throw new Error(`Unsupported avatar size: ${size}`);
   return async function fetchPhoto(mri, sizeOverride = size) {

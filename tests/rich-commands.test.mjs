@@ -4,6 +4,7 @@ import { isRichMessage, messageMarkdown, setRichMessages, transport } from '../s
 
 beforeEach(() => setRichMessages(false));
 import { MergeRequestWatcher } from '../src/watcher.mjs';
+import { stubDirectoryLookups } from './stub-transport.mjs';
 import { formatContactCard, formatSearchResultsList, formatWhereisCard } from '../src/users.mjs';
 
 const CARD_TAG = 'itemtype="http://schema.skype.com/InputExtension"';
@@ -42,7 +43,7 @@ function newWatcher(teams = {}) {
   });
   watcher.saveState = () => {};
   watcher.isRecentMrMessage = () => true;
-  return watcher;
+  return stubDirectoryLookups(watcher);
 }
 
 const entry = () => ({ conversationId: CONV, messageId: '1700000000000', from: 'Alice Example', previewText: 'x' });

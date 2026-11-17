@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { isTestRun, refuseLiveWriteInTests } from './test-guard.mjs';
+import { isTestRun, refuseLiveReadInTests, refuseLiveWriteInTests } from './test-guard.mjs';
 import {
   sendMessage,
   getThreadMessages,
@@ -25,6 +25,8 @@ export {
 };
 
 export async function getMessage(conversationId, messageId) {
+  const refused = refuseLiveReadInTests('getMessage');
+  if (refused) return refused;
   let res = await mcpGetMessage(conversationId, messageId);
   if (!res.ok && (await attemptTokenRefreshOnAuthError(res))) {
     res = await mcpGetMessage(conversationId, messageId);
@@ -143,6 +145,8 @@ async function retrySendWithRecovery(sendFn) {
 }
 
 export async function searchPeople(query, limit = 10) {
+  const refused = refuseLiveReadInTests('searchPeople');
+  if (refused) return refused;
   let res = await mcpSearchPeople(query, limit);
   if (!res.ok && (await attemptTokenRefreshOnAuthError(res))) {
     res = await mcpSearchPeople(query, limit);
@@ -151,6 +155,8 @@ export async function searchPeople(query, limit = 10) {
 }
 
 export async function resolveProfiles(mris) {
+  const refused = refuseLiveReadInTests('resolveProfiles');
+  if (refused) return refused;
   let res = await mcpResolveProfiles(mris);
   if (!res.ok && (await attemptTokenRefreshOnAuthError(res))) {
     res = await mcpResolveProfiles(mris);
