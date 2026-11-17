@@ -4,6 +4,7 @@ import { makeRichMessage, richMessageWireBytes, setRichMessages, transport } fro
 import { MAX_CARD_BYTES } from '../src/cards.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 import { AvatarService } from '../src/avatars.mjs';
+import { PLACEHOLDER_AVATAR } from '../src/placeholder-avatar.mjs';
 
 // Watcher wiring of profile pictures. All people, images and URLs are generic fakes.
 
@@ -47,7 +48,7 @@ function richWatcher(teams = { rich_messages: true }, { extra = 0, fetched = [] 
   return watcher;
 }
 
-const personImages = (card) => {
+const allPersonImages = (card) => {
   const found = [];
   const walk = (node) => {
     if (Array.isArray(node)) return node.forEach(walk);
@@ -58,6 +59,9 @@ const personImages = (card) => {
   walk(card);
   return found;
 };
+// Real photos only; the neutral placeholder of people without a photo is counted apart.
+const personImages = (card) => allPersonImages(card).filter((i) => i.url !== PLACEHOLDER_AVATAR);
+const placeholderImages = (card) => allPersonImages(card).filter((i) => i.url === PLACEHOLDER_AVATAR);
 
 const jiraIssue = {
   key: 'EX-1',
@@ -128,7 +132,10 @@ test('an unknown or failing lookup leaves the card with names only', async () =>
     rec.restore();
   }
   assert.equal(rec.calls.length, 2);
-  for (const call of rec.calls) assert.equal(personImages(sentCard(call)).length, 0);
+  for (const call of rec.calls) {
+    assert.equal(personImages(sentCard(call)).length, 0, 'no real photo');
+    assert.equal(placeholderImages(sentCard(call)).length, 1, 'the neutral placeholder stands in');
+  }
 });
 
 test('MR cards show the pictures of the approvers once they are prefetched', async () => {
@@ -219,7 +226,10 @@ test('MR card author without a picture (unknown person, regular mode) is a plain
   const mr = { project: 'group/app', iid: 7, title: 'Example' };
   const details = { title: 'Example', author: 'Zed Nobody' };
   await watcher.prefetchAvatars(watcher.mrCardPeopleData(mr, details));
-  assert.equal(plainAuthor(watcher.buildMrCard(mr, details)), 'Zed Nobody');
+  const card = watcher.buildMrCard(mr, details);
+  assert.equal(personImages(card).length, 0);
+  assert.equal(placeholderImages(card).length, 1, 'an unresolved author gets the placeholder, never a looked-up photo');
+  assert.deepEqual(authorOf(card).columns[1].items.flatMap((l) => l.columns.map((c) => c.items[0].text ?? c.items[0].altText)), ['Zed Nobody', 'Zed Nobody']);
 
   const fetched = [];
   const regular = richWatcher({}, { fetched });

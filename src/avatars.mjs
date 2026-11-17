@@ -23,6 +23,7 @@
 
 import { requireSkypeSpacesAuthWithConfig } from 'msteams-mcp/dist/utils/auth-guards.js';
 import { getSkypeAuthHeaders } from 'msteams-mcp/dist/utils/api-config.js';
+import { PLACEHOLDER_AVATAR } from './placeholder-avatar.mjs';
 
 const log = (...args) => console.error(new Date().toISOString(), '[avatars]', ...args);
 
@@ -312,6 +313,16 @@ export class AvatarService {
       if (found && found.expires > this.now()) mri = found.mri;
     }
     return (mri && this.#cached(mri, size)) || null;
+  }
+
+  /**
+   * The cached picture of a person, or the neutral placeholder silhouette when
+   * there is none (no match, ambiguous, no photo, denied, slow, failing): a
+   * person the card shows always gets an image, and nobody is ever shown with
+   * somebody else's. Never starts a request.
+   */
+  peekOrPlaceholder(person, opts) {
+    return this.peek(person, opts) || PLACEHOLDER_AVATAR;
   }
 
   get breakerOpen() {

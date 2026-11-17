@@ -4,6 +4,7 @@ import { isRichMessage, messageMarkdown, richMessageWireBytes, setRichMessages }
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 import { MAX_CARD_BYTES } from '../src/cards.mjs';
 import { AvatarService } from '../src/avatars.mjs';
+import { PLACEHOLDER_AVATAR } from '../src/placeholder-avatar.mjs';
 
 // Author pictures on the /mrs list card. All people, images and URLs are generic fakes.
 
@@ -78,6 +79,16 @@ const personsIn = (message) => {
   walk(cardOf(message));
   return found;
 };
+// Real photos only; the neutral placeholder of authors without a photo is counted apart.
+const photosIn = (message) => personsIn(message).filter((i) => i.url !== PLACEHOLDER_AVATAR);
+const placeholdersIn = (message) => personsIn(message).filter((i) => i.url === PLACEHOLDER_AVATAR);
+// The same list as the service-less (no picture at all) card.
+const noPictures = (mrs) => {
+  const w = newWatcher({ photo: false });
+  w.avatarService = null;
+  w.getOrFetchMrsData = async () => mrs;
+  return w.getOrFetchMrsText({});
+};
 
 test('/mrs list: a row whose author has an exact picture shows it at 18px, next to the author', async () => {
   const fetched = [];
@@ -86,14 +97,15 @@ test('/mrs list: a row whose author has an exact picture shows it at 18px, next 
   w.getOrFetchMrsData = async () => mrs;
   const message = await w.getOrFetchMrsText({});
   assert.ok(isRichMessage(message));
-  const images = personsIn(message);
+  const images = photosIn(message);
   assert.deepEqual(images.map((i) => i.altText).sort(), ['Alice Example', 'Bob Example']);
   for (const image of images) {
     assert.equal(image.width, '18px');
     assert.equal(image.height, '18px');
     assert.match(image.url, /^data:image\/jpeg;base64,/);
   }
-  // The author names stay on the meta lines; Carol has no Teams identity and is name only.
+  // The author names stay on the meta lines; Carol has no Teams identity: the neutral placeholder, never a photo.
+  assert.deepEqual(placeholdersIn(message).map((i) => i.altText), ['Carol Example']);
   const text = JSON.stringify(cardOf(message));
   for (const name of ['Alice Example', 'Bob Example', 'Carol Example']) assert.ok(text.includes(name));
   assert.deepEqual(fetched.sort(), [ALICE, BOB].sort());
@@ -114,9 +126,7 @@ test('/mrs list: every fact of the plain list card is kept, pictures only add a 
   const mrs = [mr(1, ALICE_GL), mr(2, BOB_GL), mr(3, ALICE_GL)];
   w.getOrFetchMrsData = async () => mrs;
   const withPictures = await w.getOrFetchMrsText({});
-  const plain = newWatcher({ photo: false });
-  plain.getOrFetchMrsData = async () => mrs;
-  const without = await plain.getOrFetchMrsText({});
+  const without = await noPictures(mrs);
   assert.equal(personsIn(without).length, 0);
   assert.equal(messageMarkdown(withPictures), messageMarkdown(without));
   const strip = (card) => JSON.stringify(card).replace(/\{"type":"Column","width":"auto","verticalContentAlignment":"Center","items":\[\{"type":"Image","url":"data:[^"]+","altText":"[^"]+","style":"Person","width":"18px","height":"18px"\}\]\},?/g, '');
@@ -141,7 +151,7 @@ test('/mrs list: each author is fetched once, under one deadline for the whole l
   assert.ok(calls[0].options.deadlineMs >= 2500 && calls[0].options.deadlineMs <= 3000, 'one list deadline, not per row');
 });
 
-test('/mrs list: no picture for an ambiguous name, a single word, a bot or an unknown author', async () => {
+test('/mrs list: a single word or an unknown author get the placeholder, an ambiguous name or a bot nothing, no photo or request', async () => {
   const fetched = [];
   const w = newWatcher({ fetched });
   w.getOrFetchMrsData = async () => [
@@ -154,17 +164,35 @@ test('/mrs list: no picture for an ambiguous name, a single word, a bot or an un
   ];
   const message = await w.getOrFetchMrsText({ mode: 'all' });
   assert.ok(isRichMessage(message));
-  assert.equal(personsIn(message).length, 0);
+  assert.equal(photosIn(message).length, 0);
+  assert.deepEqual(placeholdersIn(message).map((i) => i.altText), ['Bob', 'Dave Nobody'], 'ambiguous names and bots stay name only');
   assert.deepEqual(fetched, []);
 });
 
-test('/mrs list: without any picture the card is the plain list card', async () => {
+test('/mrs list: authors without a photo get the neutral 18px placeholder, in the same layout', async () => {
   const w = newWatcher({ photo: false });
   const mrs = [mr(1, ALICE_GL), mr(2, BOB_GL)];
   w.getOrFetchMrsData = async () => mrs;
   const message = await w.getOrFetchMrsText({});
   assert.ok(isRichMessage(message));
-  assert.equal(personsIn(message).length, 0);
+  assert.equal(photosIn(message).length, 0);
+  const images = placeholdersIn(message);
+  assert.deepEqual(images.map((i) => i.altText), ['Alice Example', 'Bob Example']);
+  for (const image of images) assert.deepEqual([image.width, image.height], ['18px', '18px']);
+  assert.equal(messageMarkdown(message), messageMarkdown(await noPictures(mrs)));
+});
+
+test('/mrs list: real photos come before placeholders when the picture budget is short', async () => {
+  const w = newWatcher({ extra: 1500 });
+  // The first rows are authors without any photo, the last ones have a photo: the photos still win the room.
+  const mrs = [
+    ...Array.from({ length: 4 }, (_, i) => mr(10 + i, { name: 'Dave Nobody', username: 'dave' })),
+    ...Array.from({ length: 4 }, (_, i) => mr(20 + i, i % 2 ? BOB_GL : ALICE_GL)),
+  ];
+  w.getOrFetchMrsData = async () => mrs;
+  const message = await w.getOrFetchMrsText({});
+  assert.ok(richMessageWireBytes(message) <= MAX_CARD_BYTES);
+  assert.ok(photosIn(message).length >= 3, 'photos are not pushed out by placeholders');
 });
 
 test('/mrs list: a list near the size limit gets as many pictures as fit and never loses a row or the state icons', async () => {
@@ -203,9 +231,7 @@ test('/mrs list: a list that only fits without pictures stays as it was', async 
   );
   w.getOrFetchMrsData = async () => mrs;
   const withService = await w.getOrFetchMrsText({});
-  const plain = newWatcher({ photo: false });
-  plain.getOrFetchMrsData = async () => mrs;
-  const without = await plain.getOrFetchMrsText({});
+  const without = await noPictures(mrs);
   assert.ok(isRichMessage(withService));
   assert.ok(richMessageWireBytes(withService) <= MAX_CARD_BYTES);
   assert.equal(personsIn(withService).length, 0, 'no room: names only');

@@ -56,7 +56,8 @@ const factsOf = (card) => {
   for (const i of card.body[0].items) {
     if (i.type === 'FactSet') for (const f of i.facts) out[f.title] = unlink(f.value);
     else if (i.type === 'ColumnSet' && i.columns[0]?.items[0]?.weight === 'Bolder') {
-      const parts = i.columns.slice(1).flatMap((c) => c.items.map((x) => (x.type === 'Image' ? (x.height === '22px' ? x.altText : null) : x.text)));
+      const flat = (x) => (x.type === 'ColumnSet' ? x.columns.flatMap((c) => c.items.flatMap(flat)) : [x]);
+      const parts = i.columns.slice(1).flatMap((c) => c.items.flatMap(flat).map((x) => (x.type === 'Image' ? (x.height === '22px' ? x.altText : null) : x.text)));
       out[i.columns[0].items[0].text] = unlink(parts.filter(Boolean).join(' '));
     }
   }
@@ -161,7 +162,7 @@ test('MR status card: in-place updates carry the new approval, auto-merge and re
   // Resolved: the line is gone, approval and auto-merge changed in place.
   const f = factsOf(resolved);
   assert.equal(f.Rebase, undefined);
-  assert.equal(f.Approval, 'Approved Alice Example');
+  assert.equal(f.Approval, 'Alice Example Approved');
   assert.equal(f['Auto-merge'], '\u{1F500} Enabled');
 });
 
@@ -196,7 +197,7 @@ test('MR merged and closed cards keep what is known', async () => {
   );
   const mergedFacts = factsOf(cardOf(merged[0].args[2]));
   assert.equal(mergedFacts.Status, 'Merged');
-  assert.equal(mergedFacts.Approval, 'Approved Alice Example');
+  assert.equal(mergedFacts.Approval, 'Alice Example Approved');
   assert.equal(mergedFacts['Auto-merge'], '\u{1F500} Enabled');
 
   const closed = await run(() =>

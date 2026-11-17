@@ -4,6 +4,7 @@ import { makeRichMessage, richMessageWireBytes, setRichMessages, transport, isRi
 import { MAX_CARD_BYTES } from '../src/cards.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 import { AvatarService } from '../src/avatars.mjs';
+import { PLACEHOLDER_AVATAR } from '../src/placeholder-avatar.mjs';
 import {
   LEADERBOARD_MAX_ENTRIES,
   PODIUM_AVATAR_PX,
@@ -264,7 +265,7 @@ test('with huge photos the card drops pictures from the lowest rank until it fit
   assert.deepEqual(images(message.card).map((i) => i.altText), ranked.slice(0, shown).map((e) => e.name), 'the best ranked keep theirs');
 });
 
-test('a failing photo lookup leaves names only', async () => {
+test('a failing photo lookup leaves the names with the neutral placeholder, no photo', async () => {
   setRichMessages(true);
   const watcher = leaderboardWatcher();
   watcher.avatarService = new AvatarService({
@@ -280,5 +281,7 @@ test('a failing photo lookup leaves names only', async () => {
     rec.restore();
   }
   assert.equal(rec.calls.length, 1);
-  assert.equal(images(sentCard(rec.calls[0])).length, 0);
+  const shown = images(sentCard(rec.calls[0]));
+  assert.ok(shown.length > 0);
+  for (const image of shown) assert.equal(image.url, PLACEHOLDER_AVATAR);
 });

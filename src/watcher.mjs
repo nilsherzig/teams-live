@@ -69,6 +69,7 @@ import {
   parseTvArgs,
 } from './tv.mjs';
 import { AvatarService } from './avatars.mjs';
+import { PLACEHOLDER_AVATAR } from './placeholder-avatar.mjs';
 import { collectCardPeople, isImageDataUri } from './card-user-row.mjs';
 import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
@@ -2529,8 +2530,7 @@ export class MergeRequestWatcher {
     const avatars = {};
     if (!this.avatarService || this.suppressAvatars) return avatars;
     for (const name of collectCardPeople(data)) {
-      const uri = this.avatarService.peek(name);
-      if (uri) avatars[name] = uri;
+      avatars[name] = this.avatarService.peekOrPlaceholder(name);
     }
     return avatars;
   }
@@ -5286,10 +5286,15 @@ export class MergeRequestWatcher {
     if (!this.avatarService || this.suppressAvatars) return null;
     let room = MAX_CARD_BYTES - richMessageWireBytes(message) - MRS_LIST_AVATAR_MARGIN;
     let shown = 0;
-    for (const section of listing.sections) {
-      for (const row of section.rows) {
-        const uri = row.authorPerson ? this.avatarService.peek(row.authorPerson, { size: MRS_LIST_AVATAR_SIZE }) : null;
-        if (!isImageDataUri(uri)) continue;
+    const rows = listing.sections.flatMap((section) => section.rows).filter((row) => row.authorPerson);
+    const photos = new Map(rows.map((row) => [row, this.avatarService.peek(row.authorPerson, { size: MRS_LIST_AVATAR_SIZE })]));
+    // Real pictures first (row order); the neutral placeholder only takes what they leave.
+    for (const real of [true, false]) {
+      for (const row of rows) {
+        if (row.avatar) continue;
+        const photo = photos.get(row);
+        if (isImageDataUri(photo) !== real) continue;
+        const uri = real ? photo : PLACEHOLDER_AVATAR;
         const cost = Math.ceil(uri.length * 1.1) + MRS_LIST_AVATAR_ROW_OVERHEAD;
         if (cost > room) continue;
         room -= cost;
@@ -6502,7 +6507,7 @@ export class MergeRequestWatcher {
       avatar:
         i >= LEADERBOARD_MAX_ENTRIES || this.suppressAvatars || !this.avatarService
           ? undefined
-          : this.avatarService.peek({ name: u.name, mri: u.mri }, { size: leaderboardAvatarSize(i) }),
+          : this.avatarService.peekOrPlaceholder({ name: u.name, mri: u.mri }, { size: leaderboardAvatarSize(i) }),
     }));
     const build = (withPictures) =>
       buildLeaderboardCard({ entries: entries.map((e, i) => (i < withPictures ? e : { ...e, avatar: undefined })), fallbackText: markdown });

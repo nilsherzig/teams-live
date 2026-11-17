@@ -8,6 +8,8 @@
  * layout unchanged.
  */
 
+import { PLACEHOLDER_AVATAR } from './placeholder-avatar.mjs';
+
 export const AVATAR_PX = 18;
 // Total size of the embedded pictures per card (characters of the data URIs).
 // Cards are limited on the wire (MAX_CARD_BYTES), so extra pictures are dropped
@@ -103,14 +105,19 @@ export function userRow(label, people, { headline = '', pill = null, charBudget 
   for (const person of people || []) {
     const name = text(person?.name);
     if (!name) continue;
-    const avatar = person.avatar;
-    if (isImageDataUri(avatar) && shown < maxAvatars && avatar.length <= remaining) {
-      remaining -= avatar.length;
-      used += avatar.length;
-      shown += 1;
-      entries.push({ name, avatar });
-    } else {
-      entries.push({ name, avatar: null });
+    entries.push({ name, avatar: null, candidate: isImageDataUri(person.avatar) ? person.avatar : null });
+  }
+  // Real pictures take the room first (row order); the neutral placeholder
+  // (a few hundred characters) only takes what is left of the caps.
+  for (const real of [true, false]) {
+    for (const entry of entries) {
+      if (!entry.candidate || entry.avatar || (entry.candidate !== PLACEHOLDER_AVATAR) !== real) continue;
+      if (shown < maxAvatars && entry.candidate.length <= remaining) {
+        remaining -= entry.candidate.length;
+        used += entry.candidate.length;
+        shown += 1;
+        entry.avatar = entry.candidate;
+      }
     }
   }
   if (shown === 0) return null;
