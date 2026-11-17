@@ -933,7 +933,8 @@ test('merge request card: with a Ticket every fact row shares one label width, s
   const widths = new Set(rows.map((r) => r.columns[0].width));
   assert.equal(widths.size, 1);
   const px = Number.parseInt([...widths][0], 10);
-  assert.ok(px >= 'Auto-merge'.length * 7 && px <= 140, `label width ${px}px`);
+  assert.ok(px >= 112 && px >= Math.ceil('Auto-merge'.length * 9.5), `label width ${px}px keeps Auto-merge on one line`);
+  assert.ok(px <= 168, `label width ${px}px leaves the value room`);
   for (const r of rows) assert.equal(r.type, 'ColumnSet');
 });
 

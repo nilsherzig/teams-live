@@ -64,13 +64,18 @@ function logoFact(title, value, service) {
 
 // Rows with a picture cannot sit in a FactSet, whose title column sizes itself.
 // So when a card has any, every fact becomes a row with one shared label width.
-const LABEL_PX_PER_CHAR = 8;
-const LABEL_PX_MIN = 56;
-const LABEL_PX_MAX = 140;
+// A bold label is wider than 8px per character in the Teams font (the 8px formula
+// wrapped "Auto-merge" onto two lines), so the width is generous: about 9.5px per
+// character plus padding, never below 112px, so every label stays on one line.
+// The value column takes the rest and wraps, so a phone width only shortens that.
+const LABEL_PX_PER_CHAR = 9.5;
+const LABEL_PX_PAD = 16;
+const LABEL_PX_MIN = 112;
+const LABEL_PX_MAX = 168;
 
 function labelWidth(labels) {
   const longest = Math.max(0, ...labels.map((label) => label.length));
-  return `${Math.min(LABEL_PX_MAX, Math.max(LABEL_PX_MIN, Math.ceil(longest * LABEL_PX_PER_CHAR) + 8))}px`;
+  return `${Math.min(LABEL_PX_MAX, Math.max(LABEL_PX_MIN, Math.ceil(longest * LABEL_PX_PER_CHAR) + LABEL_PX_PAD))}px`;
 }
 
 function factLabelColumn(title, width) {
