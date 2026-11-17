@@ -81,7 +81,7 @@ test('the card is valid and shows stats, ranked rows with medals, counts and sha
   assertValidCard(card);
   const t = texts(card);
   assert.ok(t.includes('Bot interaction leaderboard'));
-  assert.ok(t.includes('interactions') && t.includes('users') && t.includes('top command'));
+  assert.ok(t.includes('interactions') && t.includes('users') && t.includes('most used'));
   for (const medal of ['\u{1F947}', '\u{1F948}', '\u{1F949}']) assert.ok(t.includes(medal), medal);
   assert.ok(t.includes('#4') && t.includes('#5'));
   assert.ok(t.includes('Ranked by interactions with the bot'));
@@ -91,19 +91,20 @@ test('the card is valid and shows stats, ranked rows with medals, counts and sha
   assert.ok(t.some((x) => /^\d+%$/.test(x)), 'share of all interactions');
 });
 
-test('the leader sits on a highlighted container and the others do not', () => {
-  const card = buildLeaderboardCard({ entries: people(4) });
-  const containers = [];
-  walkAll(card, (n) => n.type === 'Container' && n.style === 'good' && containers.push(n));
-  assert.equal(containers.length, 1);
-  assert.ok(JSON.stringify(containers[0]).includes('\u{1F947}'));
+test('bars are runs of block characters relative to the leader, gold for the leader', () => {
+  const card = buildLeaderboardCard({ entries: [{ name: 'Amy Example', count: 10 }, { name: 'Bob Example', count: 5 }, { name: 'Cy Example', count: 1 }] });
+  const bars = [];
+  walkAll(card, (n) => n.type === 'TextBlock' && /^\u2588+$/.test(n.text) && bars.push(n));
+  assert.deepEqual(bars.map((b) => b.text.length), [10, 5, 1]);
+  assert.deepEqual(bars.map((b) => b.color), ['Warning', 'Accent', 'Accent']);
+  assert.ok(bars.every((b) => b.wrap === false));
 });
 
-test('bars are relative to the leader', () => {
-  const card = buildLeaderboardCard({ entries: [{ name: 'Amy Example', count: 10 }, { name: 'Bob Example', count: 5 }] });
-  const widths = [];
-  walkAll(card, (n) => n.type === 'Column' && n.style && typeof n.width === 'number' && widths.push(n.width));
-  assert.deepEqual(widths, [100, 50]);
+test('no highlighted container: rows stay aligned (nothing insets the leader)', () => {
+  const card = buildLeaderboardCard({ entries: people(4) });
+  let containers = 0;
+  walkAll(card, (n) => n.type === 'Container' && n.style === 'good' && (containers += 1));
+  assert.equal(containers, 0);
 });
 
 test('pictures: bigger on the podium, smaller below, a spacer keeps names aligned', () => {

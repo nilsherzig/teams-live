@@ -7,7 +7,7 @@
  * - header and title, then three stat tiles (interactions, users, top command);
  * - a podium: the top three with a medal, a larger picture, the name, their
  *   most used commands, a bar relative to the leader and the count with its
- *   share of all interactions; the leader sits on a highlighted background;
+ *   share of all interactions; the leader's bar and count are gold;
  * - the remaining ranks (up to `LEADERBOARD_MAX_ENTRIES` in all) as compact rows
  *   without a bar (the wire budget is tight), with a small picture when there
  *   is room for one;
@@ -69,17 +69,15 @@ function statTile(value, label) {
 
 function statsRow({ total, users, topCommand }) {
   const tiles = [statTile(String(total), 'interactions'), statTile(String(users), users === 1 ? 'user' : 'users')];
-  if (topCommand) tiles.push(statTile(topCommand.command, 'top command'));
+  if (topCommand) tiles.push(statTile(topCommand.command, 'most used'));
   return { type: 'ColumnSet', spacing: 'Medium', separator: true, columns: tiles };
 }
 
-/** A bar relative to the leader: a coloured segment next to an empty one. */
-function bar(share, style) {
-  const filled = Math.min(100, Math.max(3, Math.round(share * 100)));
-  const segment = { type: 'Column', width: filled, style, bleed: false, items: [textBlock(' ', { size: 'Small', spacing: 'None', wrap: false })] };
-  const rest = 100 - filled;
-  const columns = rest > 0 ? [segment, { type: 'Column', width: rest, items: [textBlock(' ', { size: 'Small', spacing: 'None', wrap: false })] }] : [segment];
-  return { type: 'ColumnSet', spacing: 'Small', columns };
+/** A bar relative to the leader: a run of block characters (thin, coloured, visible on any background). */
+const BAR_CELLS = 10;
+function bar(share, color) {
+  const cells = Math.min(BAR_CELLS, Math.max(1, Math.round(share * BAR_CELLS)));
+  return textBlock('\u2588'.repeat(cells), { size: 'Small', color, spacing: 'None', wrap: false });
 }
 
 function pictureCell(name, avatar, px) {
@@ -95,7 +93,7 @@ function row({ entry, rank, share, leaderCount, podium, withPictures }) {
   const columns = [
     {
       type: 'Column',
-      width: podium ? '32px' : '28px',
+      width: '32px',
       verticalContentAlignment: 'Center',
       items: [
         podium
@@ -112,7 +110,7 @@ function row({ entry, rank, share, leaderCount, podium, withPictures }) {
     items: [
       textBlock(entry.name, { weight: 'Bolder', spacing: 'None' }),
       ...(commands ? [textBlock(commands, { size: 'Small', isSubtle: true, spacing: 'None' })] : []),
-      ...(podium ? [bar(entry.count / leaderCount, rank === 1 ? 'good' : 'accent')] : []),
+      ...(podium ? [bar(entry.count / leaderCount, rank === 1 ? 'Warning' : 'Accent')] : []),
     ],
   });
   columns.push({
@@ -120,7 +118,7 @@ function row({ entry, rank, share, leaderCount, podium, withPictures }) {
     width: 'auto',
     verticalContentAlignment: 'Center',
     items: [
-      textBlock(String(entry.count), { size: podium ? 'Large' : 'Medium', weight: 'Bolder', horizontalAlignment: 'Right', spacing: 'None', wrap: false }),
+      textBlock(String(entry.count), { size: podium ? 'Large' : 'Medium', weight: 'Bolder', ...(rank === 1 ? { color: 'Warning' } : {}), horizontalAlignment: 'Right', spacing: 'None', wrap: false }),
       textBlock(`${Math.round(share * 100)}%`, { size: 'Small', isSubtle: true, horizontalAlignment: 'Right', spacing: 'None', wrap: false }),
     ],
   });
@@ -147,9 +145,7 @@ export function buildLeaderboardCard({ entries, fallbackText } = {}) {
 
   const rows = shown.map((entry, index) => {
     const podium = index < PODIUM_SIZE;
-    const built = row({ entry, rank: index + 1, share: entry.count / total, leaderCount, podium, withPictures: podium ? podiumPictures : rowPictures });
-    // The leader stands out on a highlighted background.
-    return index === 0 ? { type: 'Container', style: 'good', bleed: false, spacing: 'Medium', items: [{ ...built, spacing: 'None' }] } : built;
+    return row({ entry, rank: index + 1, share: entry.count / total, leaderCount, podium, withPictures: podium ? podiumPictures : rowPictures });
   });
   const hidden = ranked.length - shown.length;
   const note = hidden > 0 ? `Top ${shown.length} of ${ranked.length} users, ranked by interactions` : 'Ranked by interactions with the bot';
