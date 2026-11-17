@@ -20,7 +20,7 @@ Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, C
 - **Confluence Integration**: Detects linked Confluence docs in watched chats and replies with page title, link, space, and author; includes `/doc` command lookup.
 - **Link Preview Thumbnails**: Automatically captures a webpage screenshot via browser-daemon and edits the author's message with an inline preview whenever the user pastes an unrecognized link (excluding recognized GitLab, Jira, Confluence, and OpsGenie links).
 - **Calendar & Meetings**: Queries Microsoft Teams EMEA MiddleTier calendar for remaining weekly meetings with clickable Teams join links.
-- **Rich Messages (optional)**: Set `teams.rich_messages` to post GitLab, Jira, OpsGenie and Confluence updates as Adaptive Cards instead of regular text. Off by default; see [docs/nix.md](docs/nix.md#rich-messages).
+- **Rich Messages (optional)**: Set `teams.rich_messages` to post GitLab, Jira, OpsGenie and Confluence updates, and the replies of structured commands (`/mrs`, `/whois`, `/whereis`, `/alerts`, ...), as Adaptive Cards instead of regular text. Off by default; see [docs/nix.md](docs/nix.md#rich-messages).
 - **Slash Commands**:
   - **GitLab**:
     - `/approve [link|all]`: Approves target GitLab MR (or `/approve all` for all eligible human MRs with green/no pipeline in the group).

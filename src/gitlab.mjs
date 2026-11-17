@@ -371,7 +371,33 @@ export class GitLabClient {
     return await this.request(`projects/${encodeURIComponent(project)}/merge_requests/${iid}/approvals`);
   }
 
-  async getGroupMrs(group = null, { enrich = true } = {}) {
+  /**
+   * Approval state of a merge request as `{known, approved, approvedBy}`.
+   * `known` is false when the approvals could not be retrieved, so callers can
+   * tell "not approved" from "unknown".
+   */
+  async getApprovalSummary(project, iid) {
+    try {
+      const approvals = await this.getApprovals(project, iid);
+      const approvedBy = Array.isArray(approvals?.approved_by)
+        ? approvals.approved_by
+            .map((a) => a.user?.name || a.user?.username || a.name || a.username)
+            .filter(Boolean)
+        : [];
+      const required = typeof approvals?.approvals_required === 'number' ? approvals.approvals_required : 0;
+      const approved = required > 0 ? Boolean(approvals.approved) : approvedBy.length > 0;
+      return { known: true, approved, approvedBy };
+    } catch {
+      return { known: false, approved: false, approvedBy: [] };
+    }
+  }
+
+  /**
+   * Open merge requests of the group. `enrich` adds pipeline and rebase data;
+   * `approvals` additionally fetches the approval state of every merge request
+   * (one request each) into `approval_summary`.
+   */
+  async getGroupMrs(group = null, { enrich = true, approvals = false } = {}) {
     const targetGroup = group || this.group;
     if (!targetGroup) {
       throw new Error('No GitLab group configured');
@@ -389,19 +415,27 @@ export class GitLabClient {
 
     const enriched = await Promise.all(
       filtered.map(async (mr) => {
+        let result = mr;
         try {
           const details = await this.getMr(mr.project_id, mr.iid);
-          return {
+          result = {
             ...mr,
             head_pipeline: details.head_pipeline || mr.head_pipeline || null,
             diverged_commits_count: details.diverged_commits_count ?? mr.diverged_commits_count ?? null,
             rebase_in_progress: details.rebase_in_progress ?? mr.rebase_in_progress ?? false,
             has_conflicts: details.has_conflicts ?? mr.has_conflicts ?? false,
             detailed_merge_status: details.detailed_merge_status || mr.detailed_merge_status,
+            auto_merge_enabled: details.auto_merge_enabled ?? mr.auto_merge_enabled,
+            merge_when_pipeline_succeeds:
+              details.merge_when_pipeline_succeeds ?? mr.merge_when_pipeline_succeeds,
           };
         } catch {
-          return mr;
+          // keep the list data
         }
+        if (approvals) {
+          result = { ...result, approval_summary: await this.getApprovalSummary(mr.project_id, mr.iid) };
+        }
+        return result;
       })
     );
 
@@ -498,6 +532,9 @@ export class GitLabClient {
     let approved = false;
     let approvedBy = [];
     let status = state;
+    // true only when the approvals were retrieved; merged/closed merge requests
+    // and failed lookups are unknown, not "not approved".
+    let approvalKnown = false;
 
     if (state !== 'merged' && state !== 'closed') {
       try {
@@ -511,6 +548,7 @@ export class GitLabClient {
           typeof approvals.approvals_required === 'number' ? approvals.approvals_required : 0;
         approved = approvalsRequired > 0 ? Boolean(approvals.approved) : approvedBy.length > 0;
         status = approved ? 'approved' : 'pending';
+        approvalKnown = true;
       } catch {
         status = 'pending';
       }
@@ -559,12 +597,20 @@ export class GitLabClient {
       state,
       approved,
       approvedBy,
+      approvalKnown,
       status, // 'pending' | 'approved' | 'merged' | 'closed'
       detailedMergeStatus,
       hasConflicts,
       needsRebase,
       pipeline: latestPipeline,
-      autoMerge: Boolean(mr.merge_when_pipeline_succeeds),
+      // `merge_when_pipeline_succeeds` is deprecated in favour of
+      // `auto_merge_enabled`; null when GitLab reports neither.
+      autoMerge:
+        typeof mr.auto_merge_enabled === 'boolean'
+          ? mr.auto_merge_enabled
+          : typeof mr.merge_when_pipeline_succeeds === 'boolean'
+            ? mr.merge_when_pipeline_succeeds
+            : null,
       autoMergeUser: mr.merge_user ? (mr.merge_user.name || mr.merge_user.username) : null,
       autoMergeStrategy: mr.auto_merge_strategy || null,
     };

@@ -7,6 +7,8 @@ import {
   buildJiraIssueCard,
   buildOpsGenieAlertCard,
   buildConfluencePageCard,
+  buildMarkdownCard,
+  stripMentionMarkup,
   ciStatusEmoji,
   ciStatusInfo,
   mdLink,
@@ -89,11 +91,11 @@ test('merge request card: failed pipeline wins over everything else for open MRs
 });
 
 test('merge request card: needs rebase and not approved', () => {
-  const card = buildMergeRequestCard({ ...baseMr, needsRebase: true, hasConflicts: true });
+  const card = buildMergeRequestCard({ ...baseMr, approved: false, needsRebase: true, hasConflicts: true });
   assert.equal(style(card), 'warning');
   const f = facts(card);
   assert.equal(f.Approval, '\u23f3 Not approved yet');
-  assert.equal(f.Rebase, '\u26a0\ufe0f Required (merge conflicts)');
+  assert.equal(f.Rebase, '\u26a0\ufe0f Required: merge conflicts');
 });
 
 test('merge request card: merged, closed, rebase and rebased states', () => {
@@ -112,7 +114,7 @@ test('merge request card: merged, closed, rebase and rebased states', () => {
 
   const rebased = buildMergeRequestCard({ ...baseMr, state: 'rebased' });
   assert.equal(style(rebased), 'good');
-  assert.equal(facts(rebased).Status, '\u2705 Rebased, up to date');
+  assert.equal(facts(rebased).Status, '\u2705 Rebased, up to date and conflict-free');
   for (const c of [merged, closed, rebase, rebased]) assertValidCard(c);
 });
 
@@ -179,17 +181,17 @@ test('jira issue card styles by status and shows assignee/priority', () => {
   const card = buildJiraIssueCard(issue);
   assertValidCard(card);
   assert.equal(mainTitle(card), 'Something is broken');
-  assert.equal(headerLabel(card), 'Jira \u00b7 Bug');
+  assert.equal(headerLabel(card), 'Jira \u00b7 \u{1F41B} Bug');
   assert.equal(subtitle(card), 'EX-1');
   assert.equal(style(card), 'accent');
-  assert.deepEqual(facts(card), { Status: 'In Progress', Priority: 'High', Assignee: 'Alice Example' });
+  assert.deepEqual(facts(card), { Status: '\u{1F7E1} In Progress', Priority: '\u{1F534} High', Assignee: 'Alice Example' });
   assert.equal(rawTitle(card), `[Something is broken](${issue.url})`);
 
   assert.equal(style(buildJiraIssueCard({ ...issue, status: 'Done', statusCategory: 'done' })), 'good');
   assert.equal(style(buildJiraIssueCard({ ...issue, status: 'Open', statusCategory: 'new' })), 'emphasis');
   const bare = buildJiraIssueCard({ ...issue, assignee: '', priority: '' });
   assert.equal(facts(bare).Assignee, 'Unassigned');
-  assert.equal(facts(bare).Priority, 'None');
+  assert.equal(facts(bare).Priority, '\u{1F7E1} None');
 });
 
 test('opsgenie alert card styles by priority, acknowledgement and status', () => {
@@ -207,14 +209,58 @@ test('opsgenie alert card styles by priority, acknowledgement and status', () =>
   assert.equal(mainTitle(card), 'Disk almost full');
   assert.equal(headerLabel(card), 'OpsGenie \u00b7 Alert');
   assert.equal(subtitle(card), '#123');
-  assert.equal(style(card), 'attention');
-  assert.equal(facts(card).Status, 'open, unacknowledged');
+  // The container stays neutral: the badges carry the colours.
+  assert.equal(style(card), 'emphasis');
+  assert.equal(facts(card).Status, '\u{1F7E2} open (unacknowledged)');
   assert.equal(facts(card).Owner, 'Alice Example');
-
-  assert.equal(style(buildOpsGenieAlertCard({ ...alert, acknowledged: true })), 'accent');
-  assert.equal(style(buildOpsGenieAlertCard({ ...alert, priority: 'P3' })), 'warning');
-  assert.equal(style(buildOpsGenieAlertCard({ ...alert, status: 'closed' })), 'emphasis');
   assert.equal(facts(buildOpsGenieAlertCard({ ...alert, owner: '' })).Owner, 'Unassigned');
+});
+
+const badges = (card) =>
+  items(card)
+    .find((i) => i.type === 'ColumnSet' && i !== header(card))
+    .columns.map((c) => ({ text: c.items[0].text, style: c.style, color: c.items[0].color }));
+
+test('opsgenie status badge: OPEN, ACK\'D and CLOSED (closed wins), non-interactive', () => {
+  const alert = { message: 'Disk almost full', tinyId: '1', priority: 'P1', status: 'open', acknowledged: false };
+  assert.deepEqual(badges(buildOpsGenieAlertCard(alert))[1], { text: 'OPEN', style: 'attention', color: 'Attention' });
+  assert.deepEqual(badges(buildOpsGenieAlertCard({ ...alert, acknowledged: true }))[1], {
+    text: "ACK'D",
+    style: 'warning',
+    color: 'Warning',
+  });
+  assert.deepEqual(badges(buildOpsGenieAlertCard({ ...alert, status: 'closed' }))[1], {
+    text: 'CLOSED',
+    style: 'emphasis',
+    color: undefined,
+  });
+  // Closed takes precedence over acknowledged.
+  assert.equal(badges(buildOpsGenieAlertCard({ ...alert, status: 'closed', acknowledged: true }))[1].text, 'CLOSED');
+  const json = JSON.stringify(buildOpsGenieAlertCard(alert));
+  assert.ok(!json.includes('Action.') && !json.includes('selectAction'));
+});
+
+test('opsgenie priority badges: P1 red, P2 orange, P3 amber, P4 green, P5 subdued', () => {
+  const expected = {
+    P1: ['\u{1F534} P1', 'attention'],
+    P2: ['\u{1F7E0} P2', 'warning'],
+    P3: ['\u{1F7E1} P3', 'warning'],
+    P4: ['\u{1F7E2} P4', 'good'],
+    P5: ['\u26aa P5', 'emphasis'],
+  };
+  for (const [priority, [text, style]] of Object.entries(expected)) {
+    const [badge] = badges(buildOpsGenieAlertCard({ message: 'M', priority, status: 'open' }));
+    assert.equal(badge.text, text);
+    assert.equal(badge.style, style);
+    // Never colour alone: the label is part of the badge.
+    assert.ok(badge.text.endsWith(priority));
+  }
+});
+
+test('opsgenie card without a tiny id falls back to a short alert id', () => {
+  const card = buildOpsGenieAlertCard({ message: 'M', id: 'abcdef1234567890', status: 'open' });
+  assert.equal(subtitle(card), 'Alert abcdef12');
+  assert.equal(subtitle(buildOpsGenieAlertCard({ message: 'M', tinyId: '7' })), '#7');
 });
 
 test('confluence page card', () => {
@@ -248,7 +294,7 @@ test('every card has a compact branded header: logo plus "Service - kind"', () =
     [buildMergeRequestCard({ ...baseMr, state: 'open' }), 'GitLab', 'GitLab \u00b7 Merge request', '!42 in group/project'],
     [buildJobCard({ id: 5, name: 'build', status: 'failed', project: 'group/project' }), 'GitLab', 'GitLab \u00b7 CI job', '#5 in group/project'],
     [buildPipelineCard({ id: 9, status: 'success', project: 'group/project' }), 'GitLab', 'GitLab \u00b7 Pipeline', 'group/project'],
-    [buildJiraIssueCard({ key: 'EX-1', summary: 'S', issueType: 'Story', status: 'Open' }), 'Jira', 'Jira \u00b7 Story', 'EX-1'],
+    [buildJiraIssueCard({ key: 'EX-1', summary: 'S', issueType: 'Story', status: 'Open' }), 'Jira', 'Jira \u00b7 \u{1F4D6} Story', 'EX-1'],
     [buildOpsGenieAlertCard({ message: 'M', tinyId: '7' }), 'OpsGenie', 'OpsGenie \u00b7 Alert', '#7'],
     [buildConfluencePageCard({ title: 'T', spaceKey: 'EX' }), 'Confluence', 'Confluence \u00b7 Page', undefined],
   ];
@@ -267,7 +313,7 @@ test('every card has a compact branded header: logo plus "Service - kind"', () =
     assert.equal(icon.width, '16px');
     icons.add(`${service}:${icon.url}`);
     // Compact: header, title, optional subtitle, facts. No grid or roster.
-    assert.ok(items(card).length <= 4);
+    assert.ok(items(card).length <= 5);
     assert.ok(!JSON.stringify(card.body).includes('"Table"'));
   }
   // One logo per service, shared by cards of the same service, never across services.
@@ -433,7 +479,7 @@ test('status emojis match the ones of the regular messages', () => {
     Status: 'Open',
     Approval: '\u23f3 Not approved yet',
     Pipeline: '\u23f3 Running (#3)',
-    Rebase: '\u26a0\ufe0f Required',
+    Rebase: '\u26a0\ufe0f Required: behind target branch',
     'Auto-merge': '\u{1F500} Enabled',
   });
   assert.equal(facts(buildMergeRequestCard({ ...baseMr, pipeline: { id: 4, status: 'canceled' } })).Pipeline, '\u26a0\ufe0f Canceled (#4)');
@@ -445,5 +491,158 @@ test('status emojis match the ones of the regular messages', () => {
     assert.equal(facts(buildPipelineCard({ id: 1, status })).Status, `${ciStatusEmoji(status)} ${label}`);
   }
   // A pipeline without a known status keeps the neutral emoji of the regular messages.
-  assert.equal(facts(buildJobCard({ id: 1, status: 'failed', pipeline: { id: 9 } })).Pipeline, '\u{1F3D7}\ufe0f #9');
+  assert.equal(facts(buildJobCard({ id: 1, status: 'failed', pipeline: { id: 9 } })).Pipeline, '\u{1F539} Unknown (#9)');
+});
+
+test('merge request card: open cards always show approval and auto-merge, unknown differs from false', () => {
+  const unknown = facts(buildMergeRequestCard({ ...baseMr, state: 'open', approved: null, autoMerge: null }));
+  assert.equal(unknown.Approval, '\u2754 Unknown (not retrieved)');
+  assert.equal(unknown['Auto-merge'], '\u2754 Unknown (not retrieved)');
+
+  const disabled = facts(buildMergeRequestCard({ ...baseMr, state: 'open', approved: false, autoMerge: false }));
+  assert.equal(disabled.Approval, '\u23f3 Not approved yet');
+  assert.equal(disabled['Auto-merge'], '\u23f8\ufe0f Disabled');
+
+  // Approved without approver names still says so.
+  const approved = facts(buildMergeRequestCard({ ...baseMr, state: 'open', approved: true, approvedBy: [], autoMerge: true }));
+  assert.equal(approved.Approval, '\u{1F44D} Approved');
+  assert.equal(approved['Auto-merge'], '\u{1F500} Enabled');
+});
+
+test('merge request card: rebase line only when required, with its reason and status', () => {
+  const upToDate = facts(buildMergeRequestCard({ ...baseMr, state: 'open', needsRebase: false }));
+  assert.equal(upToDate.Rebase, undefined);
+  assert.equal(facts(buildMergeRequestCard({ ...baseMr, state: 'open' })).Rebase, undefined);
+
+  const behind = facts(buildMergeRequestCard({ ...baseMr, state: 'open', needsRebase: true, detailedMergeStatus: 'need_rebase' }));
+  assert.equal(behind.Rebase, '\u26a0\ufe0f Required: behind target branch (status: need_rebase)');
+  const conflicts = facts(buildMergeRequestCard({ ...baseMr, state: 'open', needsRebase: true, hasConflicts: true }));
+  assert.equal(conflicts.Rebase, '\u26a0\ufe0f Required: merge conflicts');
+
+  const rebase = buildMergeRequestCard({ ...baseMr, state: 'rebase', hasConflicts: true });
+  assert.equal(facts(rebase).Status, '\u26a0\ufe0f Rebase required (merge conflicts)');
+  assert.ok(facts(rebase).Rebase.startsWith('\u26a0\ufe0f Required'));
+  // Resolved: the line goes away again.
+  const rebased = facts(buildMergeRequestCard({ ...baseMr, state: 'rebased', approved: true, autoMerge: false }));
+  assert.equal(rebased.Rebase, undefined);
+  assert.equal(rebased.Approval, '\u{1F44D} Approved');
+  assert.equal(rebased['Auto-merge'], '\u23f8\ufe0f Disabled');
+});
+
+test('merge request card: merged and closed cards keep what is known', () => {
+  const merged = facts(buildMergeRequestCard({ ...baseMr, state: 'merged', approved: true, approvedBy: ['Alice Example'], autoMerge: true }));
+  assert.equal(merged.Approval, '\u{1F44D} Approved by Alice Example');
+  assert.equal(merged['Auto-merge'], '\u{1F500} Enabled');
+  // Not approved / disabled are not worth a line once merged.
+  const mergedPlain = facts(buildMergeRequestCard({ ...baseMr, state: 'merged', approved: false, autoMerge: false }));
+  assert.equal(mergedPlain.Approval, undefined);
+  assert.equal(mergedPlain['Auto-merge'], undefined);
+
+  const closed = facts(buildMergeRequestCard({ ...baseMr, state: 'closed', approved: true, autoMerge: true, needsRebase: true }));
+  assert.equal(closed.Approval, '\u{1F44D} Approved');
+  assert.equal(closed['Auto-merge'], '\u{1F500} Enabled');
+  assert.equal(closed.Rebase, '\u26a0\ufe0f Required: behind target branch');
+  const closedUnknown = facts(buildMergeRequestCard({ ...baseMr, state: 'closed', approved: null }));
+  assert.equal(closedUnknown.Approval, undefined);
+  assert.equal(closedUnknown.Rebase, undefined);
+});
+
+test('merge request card: Jira reference without a key uses a linked fallback label', () => {
+  const card = buildMergeRequestCard({ ...baseMr, state: 'open', jira: { url: 'https://jira.example.com/browse/EX-9' } });
+  assert.equal(rawFacts(card).Jira, '[Jira issue](https://jira.example.com/browse/EX-9)');
+  assert.equal(facts(buildMergeRequestCard({ ...baseMr, state: 'open', jira: { url: 'nope' } })).Jira, undefined);
+});
+
+test('ciStatusEmoji normalizes case and knows cancelled', () => {
+  assert.equal(ciStatusEmoji('FAILED'), ciStatusEmoji('failed'));
+  assert.equal(ciStatusEmoji('Success'), '\u2705');
+  assert.equal(ciStatusEmoji('cancelled'), ciStatusEmoji('canceled'));
+  assert.equal(ciStatusInfo('CANCELLED').label, 'Canceled');
+});
+
+test('pipeline with an id but no status reads Unknown', () => {
+  const card = buildMergeRequestCard({ ...baseMr, state: 'open', pipeline: { id: 9, url: 'https://gitlab.example.com/-/pipelines/9' } });
+  assert.equal(rawFacts(card).Pipeline, '\u{1F539} [Unknown (#9)](https://gitlab.example.com/-/pipelines/9)');
+});
+
+// ---------------------------------------------------------------------------
+// Command reply cards generated from markdown
+// ---------------------------------------------------------------------------
+
+const bodyItems = (card) => card.body[0].items;
+
+test('buildMarkdownCard: head line, fact bullets and list rows', () => {
+  const card = buildMarkdownCard(
+    [
+      '\u{1F4CB} **Open merge requests** (2):',
+      '',
+      '- \u{1F4DD} [!1 Draft thing](https://gitlab.example.com/g/p/-/merge_requests/1) by Alice Example \u2022 _not approved_',
+      '- \u2705 [!2 Ready](https://gitlab.example.com/g/p/-/merge_requests/2) by Bob Example',
+      '',
+      '_Tip: use /status_',
+    ].join('\n'),
+    { service: 'gitlab', kind: 'Merge requests' }
+  );
+  assertValidCard(card);
+  assert.equal(headerLabel(card), 'GitLab \u00b7 Merge requests');
+  assert.equal(mainTitle(card), 'Open merge requests (2)');
+  const rows = bodyItems(card).filter((i) => i.type === 'TextBlock').map((i) => i.text);
+  // Status emojis and inline links stay.
+  assert.ok(rows.some((t) => t.startsWith('\u{1F4DD} [!1 Draft thing](https://gitlab.example.com/g/p/-/merge_requests/1)')));
+  assert.ok(rows.some((t) => t.includes('_not approved_')));
+  assert.ok(rows.some((t) => t === '_Tip: use /status_'));
+  assert.equal(JSON.stringify(card).includes('Action.'), false);
+});
+
+test('buildMarkdownCard: bullets of "icon **Label**: value" become a fact set', () => {
+  const card = buildMarkdownCard(
+    [
+      '\u{1FAAA} **Contact Card**: **Alice Example**',
+      '',
+      '- \u{1F4BC} **Role**: Engineer',
+      '- \u{1F4E7} **Email**: [alice@example.com](mailto:alice@example.com)',
+    ].join('\n'),
+    { service: 'directory', kind: 'Contact' }
+  );
+  const set = bodyItems(card).find((i) => i.type === 'FactSet');
+  assert.deepEqual(
+    set.facts.map((f) => [f.title, f.value]),
+    [
+      ['\u{1F4BC} Role', 'Engineer'],
+      ['\u{1F4E7} Email', '[alice@example.com](mailto:alice@example.com)'],
+    ]
+  );
+  assert.equal(mainTitle(card), 'Contact Card: Alice Example');
+  // Directory cards use an emoji brand instead of a logo.
+  assert.equal(headerIcon(card).type, 'TextBlock');
+});
+
+test('buildMarkdownCard: mentions are turned into plain bold names, code spans lose their backticks', () => {
+  assert.equal(
+    stripMentionMarkup('**Alice Example** (@[Alice Example](8:orgid:abc)) and @[Bob Example](8:orgid:def#contact)'),
+    '**Alice Example** and **Bob Example**'
+  );
+  const card = buildMarkdownCard('Head\n\n- see `/whois alice@example.com` for @[Alice Example](8:orgid:abc)', {
+    service: 'directory',
+    kind: 'x',
+  });
+  const text = JSON.stringify(card);
+  assert.ok(!text.includes('8:orgid'));
+  assert.ok(!text.includes('`'));
+});
+
+test('buildMarkdownCard: nothing list-like gives no card', () => {
+  assert.equal(buildMarkdownCard('Just a sentence.', { service: 'gitlab', kind: 'x' }), null);
+  assert.equal(buildMarkdownCard('', { service: 'gitlab', kind: 'x' }), null);
+});
+
+test('buildMarkdownCard: ordered and indented rows keep their structure', () => {
+  const card = buildMarkdownCard(
+    ['\u{1F50D} **Multiple contacts**:', '1. \u{1F464} **Alice Example**', '   - \u{1F4E7} alice@example.com', '2. \u{1F464} **Bob Example**'].join('\n'),
+    { service: 'directory', kind: 'Search results' }
+  );
+  const rows = bodyItems(card).filter((i) => i.type === 'TextBlock').map((i) => i.text);
+  assert.ok(rows.includes('1. \u{1F464} **Alice Example**'));
+  assert.ok(rows.some((t) => t.trim() === '\u{1F4E7} alice@example.com' || t.trim().endsWith('alice@example.com')));
+  assert.ok(rows.includes('2. \u{1F464} **Bob Example**'));
 });

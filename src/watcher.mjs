@@ -32,7 +32,12 @@ import {
   buildJiraIssueCard,
   buildOpsGenieAlertCard,
   buildConfluencePageCard,
+  buildMarkdownCard,
+  stripMentionMarkup,
+  MAX_CARD_BYTES,
+  opsGeniePriorityBadge,
   ciStatusEmoji as getCiStatusEmoji,
+  ciStatusInfo,
 } from './cards.mjs';
 import {
   UserDirectory,
@@ -808,7 +813,12 @@ function sortAlerts(alerts) {
   });
 }
 
-function getAlertPriorityBadge(priority) {
+function getAlertPriorityBadge(priority, { rich = false } = {}) {
+  if (rich) {
+    // OpsGenie colours: P1 red, P2 orange, P3 amber, P4 green, P5 subdued.
+    const badge = opsGeniePriorityBadge(priority || 'P?');
+    return badge.text.replace(/^(\S+) (.*)$/, '$1 **$2**');
+  }
   switch (priority) {
     case 'P1':
       return '🚨 **P1**';
@@ -893,8 +903,8 @@ function parsePollArgs(args) {
   };
 }
 
-function formatAlertLine(alert) {
-  const pBadge = getAlertPriorityBadge(alert.priority);
+function formatAlertLine(alert, { rich = false } = {}) {
+  const pBadge = getAlertPriorityBadge(alert.priority, { rich });
   const linkRef = alert.tinyId ? `#${alert.tinyId}` : (alert.id ? alert.id.slice(0, 8) : 'alert');
   const link = `[${linkRef}](${alert.url})`;
   const ackBadge = alert.acknowledged ? ' `✔️ ACK\'ED`' : '';
@@ -904,7 +914,7 @@ function formatAlertLine(alert) {
   return `- ${pBadge} ${link}: ${alert.message}${ackBadge}${snoozeBadge}${countStr}${timeStr}`;
 }
 
-function formatAlertsText(data, mode = 'all') {
+function formatAlertsText(data, mode = 'all', { rich = false } = {}) {
   if (!data) return '❌ Failed to fetch OpsGenie alerts.';
 
   const {
@@ -944,7 +954,7 @@ function formatAlertsText(data, mode = 'all') {
     } else if (sortedOnCall.length === 0) {
       sections.push(`📞 **On-Call Queue**${dutyTag}: 🎉 _No open alerts_`);
     } else {
-      const lines = sortedOnCall.map(formatAlertLine).join('\n');
+      const lines = sortedOnCall.map((a) => formatAlertLine(a, { rich })).join('\n');
       sections.push(`📞 **On-Call Queue**${dutyTag} (${sortedOnCall.length} open):\n\n${lines}`);
     }
   }
@@ -956,7 +966,7 @@ function formatAlertsText(data, mode = 'all') {
     } else if (sortedSupport.length === 0) {
       sections.push(`💼 **Support Queue**${dutyTag}: 🎉 _No open alerts_`);
     } else {
-      const lines = sortedSupport.map(formatAlertLine).join('\n');
+      const lines = sortedSupport.map((a) => formatAlertLine(a, { rich })).join('\n');
       sections.push(`💼 **Support Queue**${dutyTag} (${sortedSupport.length} open):\n\n${lines}`);
     }
   }
@@ -1664,7 +1674,7 @@ export class MergeRequestWatcher {
   }
 
   getPrecomputeCacheLines() {
-    const mrsAge = this.mrsCache?.text ? `${Math.round((Date.now() - this.mrsCache.timestamp) / 1000)}s ago` : 'empty';
+    const mrsAge = this.mrsCache?.data ? `${Math.round((Date.now() - this.mrsCache.timestamp) / 1000)}s ago` : 'empty';
     const alertsAge = this.alertsCache?.data ? `${Math.round((Date.now() - this.alertsCache.timestamp) / 1000)}s ago` : 'empty';
     const sprintAge = this.sprintCache?.text ? `${Math.round((Date.now() - this.sprintCache.timestamp) / 1000)}s ago` : 'empty';
     const meetingsAge = this.meetingsCache?.text ? `${Math.round((Date.now() - this.meetingsCache.timestamp) / 1000)}s ago` : 'empty';
@@ -2247,15 +2257,33 @@ export class MergeRequestWatcher {
   /**
    * Returns the markdown message as is, or (with `teams.rich_messages`) wrapped
    * together with its Adaptive Card. The markdown stays the fallback.
+   *
+   * `buildCard(markdown)` may return null (nothing card-worthy: the plain
+   * markdown is sent). A card over the size limit is never truncated: the
+   * complete plain markdown is sent instead. With `stripMentions` the card
+   * and its fallback show contacts by name instead of pinging them.
    */
-  richMessage(markdown, buildCard) {
+  richMessage(markdown, buildCard, { stripMentions = false } = {}) {
     if (!this.richMessages) return markdown;
     try {
-      return makeRichMessage(markdown, buildCard());
+      const text = stripMentions ? stripMentionMarkup(markdown) : markdown;
+      const card = buildCard(text);
+      if (!card) return markdown;
+      const size = Buffer.byteLength(JSON.stringify(card));
+      if (size > MAX_CARD_BYTES) {
+        log(`Adaptive Card too large (${size} bytes), using regular message`);
+        return markdown;
+      }
+      return makeRichMessage(text, card);
     } catch (e) {
       log(`building Adaptive Card failed, using regular message: ${e.message}`);
       return markdown;
     }
+  }
+
+  /** Rich message for a command reply, generated from the regular markdown (see buildMarkdownCard). */
+  richCommandMessage(markdown, spec) {
+    return this.richMessage(markdown, (text) => buildMarkdownCard(text, spec), { stripMentions: true });
   }
 
   findMrJiraTicket(mrDetails, title) {
@@ -2290,10 +2318,35 @@ export class MergeRequestWatcher {
     return null;
   }
 
-  /** Builds the merge request card. `state` is open, merged, closed, rebase or rebased. */
+  /**
+   * Approval state for a card: true/false when known, null when it was not
+   * retrieved (a failed lookup must not read as "not approved").
+   */
+  mrCardApproval(mrDetails, { fallbackToLastReported = null } = {}) {
+    if (mrDetails?.approvalKnown === false && mrDetails?.status !== 'approved') {
+      return fallbackToLastReported;
+    }
+    if (mrDetails?.approved === true || mrDetails?.status === 'approved') return true;
+    if (mrDetails?.approved === false || mrDetails?.status === 'pending') return false;
+    return fallbackToLastReported;
+  }
+
+  /**
+   * Builds the merge request card. `state` is open, merged, closed, rebase or
+   * rebased. Approval and auto-merge are tri-state (true, false, null for
+   * unknown) so the card can tell "disabled" from "not retrieved".
+   */
   buildMrCard(mr, mrDetails, { state = 'open', pipeline = null, title = null } = {}) {
     const cardTitle = title || mrDetails?.title || mr.title;
     const jiraTicket = this.findMrJiraTicket(mrDetails, cardTitle);
+    let approved = this.mrCardApproval(mrDetails);
+    let approvedBy = mrDetails?.approvedBy;
+    if (approved === null && (state === 'merged' || state === 'closed') && typeof mr.lastReportedApprovalStatus === 'boolean') {
+      // The approvals of a merged or closed merge request are not fetched: use what was last reported.
+      approved = mr.lastReportedApprovalStatus;
+      approvedBy =
+        approved && mr.lastReportedApprovedBy ? String(mr.lastReportedApprovedBy).split(', ') : [];
+    }
     return buildMergeRequestCard({
       state,
       iid: mr.iid,
@@ -2301,11 +2354,12 @@ export class MergeRequestWatcher {
       title: cardTitle,
       url: mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid),
       targetBranch: mrDetails?.target_branch,
-      approved: Boolean(mrDetails?.approved || mrDetails?.status === 'approved'),
-      approvedBy: mrDetails?.approvedBy,
-      needsRebase: Boolean(mrDetails?.needsRebase),
-      hasConflicts: Boolean(mrDetails?.hasConflicts),
-      autoMerge: Boolean(mrDetails?.autoMerge),
+      approved,
+      approvedBy,
+      needsRebase: mrDetails?.needsRebase === true,
+      hasConflicts: mrDetails?.hasConflicts === true,
+      detailedMergeStatus: mrDetails?.detailedMergeStatus,
+      autoMerge: typeof mrDetails?.autoMerge === 'boolean' ? mrDetails.autoMerge : null,
       autoMergeUser: mrDetails?.autoMergeUser,
       pipeline,
       jira: jiraTicket ? { key: jiraTicket.key, url: jiraTicket.url } : null,
@@ -2427,7 +2481,10 @@ export class MergeRequestWatcher {
       lines.push(`⚠️ **Rebase required** for [${mrRef}](${mrUrl})`);
       lines.push(`Branch has ${reason} (status: \`${mrDetails.detailedMergeStatus}\`).`);
       const msg = this.richMessage(lines.join('\n\n'), () =>
-        this.buildMrCard(mr, mrDetails, { state: 'rebase' })
+        this.buildMrCard(mr, mrDetails, {
+          state: 'rebase',
+          pipeline: this.mrCardPipeline(mr, mrDetails?.pipeline, { useLastReported: true }),
+        })
       );
 
       if (mr.rebaseMessageServerId) {
@@ -2458,7 +2515,10 @@ export class MergeRequestWatcher {
       }
       lines.push(`✅ **Rebased** [${mrRef}](${mrUrl}) is now up to date and conflict-free.`);
       const msg = this.richMessage(lines.join('\n\n'), () =>
-        this.buildMrCard(mr, mrDetails, { state: 'rebased' })
+        this.buildMrCard(mr, mrDetails, {
+          state: 'rebased',
+          pipeline: this.mrCardPipeline(mr, mrDetails?.pipeline, { useLastReported: true }),
+        })
       );
       if (mr.rebaseMessageServerId) {
         log(`updating rebase comment to resolved for ${mr.project}!${mr.iid} (msg ${mr.rebaseMessageServerId})`);
@@ -3227,8 +3287,12 @@ export class MergeRequestWatcher {
 
         statuses.push(mrState.status);
 
+        // An approval lookup that failed is unknown, not "not approved": it
+        // must neither trigger the heads-up nor count as a change.
+        const approvalUnknown = mrState.approvalKnown === false && mrState.status === 'pending';
+
         // Heads-up: was approved, but now pending
-        if (mr.status === 'approved' && mrState.status === 'pending') {
+        if (mr.status === 'approved' && mrState.status === 'pending' && !approvalUnknown) {
           await this.sendHeadsup(entry, mr);
         }
 
@@ -3236,13 +3300,18 @@ export class MergeRequestWatcher {
         const pipe = mrState.pipeline;
         const pipelineChanged =
           pipe && (mr.lastReportedPipelineId !== pipe.id || mr.lastReportedPipelineStatus !== pipe.status);
-        const isApproved = Boolean(mrState.approved || mrState.status === 'approved');
+        const isApproved = approvalUnknown
+          ? (mr.lastReportedApprovalStatus ?? null)
+          : Boolean(mrState.approved || mrState.status === 'approved');
         const approvalChanged = mr.lastReportedApprovalStatus !== isApproved;
-        const approversKey = (mrState.approvedBy || []).filter(Boolean).slice().sort().join(', ');
+        const approversKey = approvalUnknown
+          ? (mr.lastReportedApprovedBy ?? null)
+          : (mrState.approvedBy || []).filter(Boolean).slice().sort().join(', ');
         const approversChanged = mr.lastReportedApprovedBy !== approversKey;
         const needsRebase = Boolean(mrState.needsRebase);
         const rebaseChanged = mr.lastReportedNeedsRebase !== needsRebase;
-        const isAutoMerge = Boolean(mrState.autoMerge);
+        const isAutoMerge =
+          typeof mrState.autoMerge === 'boolean' ? mrState.autoMerge : (mr.lastReportedAutoMerge ?? null);
         const autoMergeChanged = mr.lastReportedAutoMerge !== isAutoMerge;
         const autoMergeUser = mrState.autoMergeUser || null;
         const autoMergeUserChanged = mr.lastReportedAutoMergeUser !== autoMergeUser;
@@ -3325,7 +3394,7 @@ export class MergeRequestWatcher {
           }
         }
 
-        mr.status = mrState.status;
+        mr.status = approvalUnknown && mr.status ? mr.status : mrState.status;
       }
 
       if (updatedMrs.length !== (entry.mrs || []).length) {
@@ -4340,7 +4409,15 @@ export class MergeRequestWatcher {
           : 'disabled';
         const statusText = `Status: **${mrState.status}**\n\nApproval: ${approvalText}\n\nPipeline: ${pipeText}\n\nBranch: ${rebaseText}\n\nAuto-merge: ${autoMergeText}`;
 
-        await sendReply(event.conversationId, event, `📊 [${mrRef}](${mrUrl})\n\n${titleLine}${jiraLine}${statusText}`);
+        const statusMarkdown = `📊 [${mrRef}](${mrUrl})\n\n${titleLine}${jiraLine}${statusText}`;
+        const statusState = mrState.state === 'merged' ? 'merged' : mrState.state === 'closed' ? 'closed' : 'open';
+        const statusMessage = this.richMessage(statusMarkdown, () =>
+          this.buildMrCard({ project: mr.project, iid: mr.iid, title: mr.title }, mrState, {
+            state: statusState,
+            pipeline: this.mrCardPipeline(mr, pipe),
+          })
+        );
+        await sendReply(event.conversationId, event, statusMessage);
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
       } catch (err) {
         const titleText = mr.title ? `: ${mr.title}` : '';
@@ -4425,7 +4502,10 @@ export class MergeRequestWatcher {
 
       // If exactly 1 result, show full contact card
       if (results.length === 1) {
-        const text = formatContactCard(results[0], { userDirectory: this.userDirectory });
+        const text = this.richCommandMessage(
+          formatContactCard(results[0], { userDirectory: this.userDirectory }),
+          { service: 'directory', kind: 'Contact' }
+        );
         await sendReply(event.conversationId, event, text);
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
         return;
@@ -4443,11 +4523,17 @@ export class MergeRequestWatcher {
       });
 
       if (exactMatches.length === 1) {
-        const text = formatContactCard(exactMatches[0], { userDirectory: this.userDirectory });
+        const text = this.richCommandMessage(
+          formatContactCard(exactMatches[0], { userDirectory: this.userDirectory }),
+          { service: 'directory', kind: 'Contact' }
+        );
         await sendReply(event.conversationId, event, text);
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
       } else {
-        const text = formatSearchResultsList(results, query);
+        const text = this.richCommandMessage(formatSearchResultsList(results, query), {
+          service: 'directory',
+          kind: 'Search results',
+        });
         await sendReply(event.conversationId, event, text);
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
       }
@@ -4503,7 +4589,10 @@ export class MergeRequestWatcher {
         if (exactMatches.length === 1) {
           targetPerson = exactMatches[0];
         } else {
-          const text = formatSearchResultsList(results, query, { command: '/whereis' });
+          const text = this.richCommandMessage(
+            formatSearchResultsList(results, query, { command: '/whereis' }),
+            { service: 'availability', kind: 'Search results' }
+          );
           await sendReply(event.conversationId, event, text);
           this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
           return;
@@ -4564,11 +4653,14 @@ export class MergeRequestWatcher {
         }
       }
 
-      const text = formatWhereisCard(targetPerson, presenceData, {
-        activeMeeting,
-        hrworksAbsence,
-        userDirectory: this.userDirectory,
-      });
+      const text = this.richCommandMessage(
+        formatWhereisCard(targetPerson, presenceData, {
+          activeMeeting,
+          hrworksAbsence,
+          userDirectory: this.userDirectory,
+        }),
+        { service: 'availability', kind: 'Availability' }
+      );
 
       await sendReply(event.conversationId, event, text);
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
@@ -4608,7 +4700,7 @@ export class MergeRequestWatcher {
 
     this.mrsCache.loading = (async () => {
       try {
-        const mrs = await this.gitlab.getGroupMrs();
+        const mrs = await this.gitlab.getGroupMrs(null, { approvals: this.richMessages });
         this.mrsCache.data = mrs;
         this.mrsCache.timestamp = Date.now();
         return mrs;
@@ -4631,7 +4723,7 @@ export class MergeRequestWatcher {
       return '📋 No open merge requests found.';
     }
 
-    const { mode = 'default', userFilter = null, userFilterLabel = null } =
+    const { mode = 'default', userFilter = null, userFilterLabel = null, rich = false } =
       typeof opts === 'string' ? { mode: opts } : (opts || {});
 
     const groupPrefix = this.config.gitlab?.group
@@ -4661,9 +4753,16 @@ export class MergeRequestWatcher {
         rebaseBadge = ' ⚠️ _rebase!_';
       }
 
-      const autoMergeBadge = mr.merge_when_pipeline_succeeds ? ' 🔀 _auto-merge_' : '';
+      // Rich lists also carry the approval (when it was retrieved) and honour the
+      // newer auto-merge flag; the regular list is unchanged.
+      const autoMerge = rich ? mr.merge_when_pipeline_succeeds || mr.auto_merge_enabled : mr.merge_when_pipeline_succeeds;
+      const autoMergeBadge = autoMerge ? ' 🔀 _auto-merge_' : '';
+      let approvalBadge = '';
+      if (rich && mr.approval_summary?.known) {
+        approvalBadge = mr.approval_summary.approved ? ' 👍 _approved_' : ' ⏳ _not approved_';
+      }
 
-      return `- ${statusEmoji} [${displayRef}](${mr.web_url})${jiraBadge}: ${mr.title} (${mention})${rebaseBadge}${autoMergeBadge}`;
+      return `- ${statusEmoji} [${displayRef}](${mr.web_url})${jiraBadge}: ${mr.title} (${mention})${approvalBadge}${rebaseBadge}${autoMergeBadge}`;
     };
 
     if (mode === 'user' && userFilter) {
@@ -4716,7 +4815,15 @@ export class MergeRequestWatcher {
         }
       }
     }
-    return this.formatMrsText(data, parsed);
+    return this.formatMrsMessage(data, parsed);
+  }
+
+  /** The /mrs reply: regular markdown, or with rich messages the list card. */
+  formatMrsMessage(mrs, parsed = {}) {
+    return this.richCommandMessage(this.formatMrsText(mrs, { ...parsed, rich: this.richMessages }), {
+      service: 'gitlab',
+      kind: 'Merge requests',
+    });
   }
 
   async executeCachedCommand(event, { name, getOrFetch, getCached, errorLabel }) {
@@ -4733,7 +4840,7 @@ export class MergeRequestWatcher {
         (async () => {
           try {
             const freshText = await getOrFetch({ force: true });
-            if (freshText && freshText !== cached && replyRes?.ok && replyRes.value) {
+            if (freshText && JSON.stringify(freshText) !== JSON.stringify(cached) && replyRes?.ok && replyRes.value) {
               const serverMsgId = replyRes.value.timestamp || replyRes.value.messageId;
               log(`Updating /${name} reply (msg ${serverMsgId}) in ${event.conversationId} with fresh data`);
               await updateReply(event.conversationId, serverMsgId, event, freshText);
@@ -4764,7 +4871,7 @@ export class MergeRequestWatcher {
     const parsed = parseMrsArgs(args, event, this.userDirectory);
     await this.executeCachedCommand(event, {
       name: 'mrs',
-      getCached: () => (this.mrsCache.data ? this.formatMrsText(this.mrsCache.data, parsed) : null),
+      getCached: () => (this.mrsCache.data ? this.formatMrsMessage(this.mrsCache.data, parsed) : null),
       getOrFetch: (opts) => this.getOrFetchMrsText({ ...opts, ...parsed }),
       errorLabel: 'Group MRs lookup',
     });
@@ -4809,7 +4916,15 @@ export class MergeRequestWatcher {
 
   async getOrFetchAlertsText({ force = false, mode = 'all' } = {}) {
     const data = await this.getOrFetchAlertsData({ force });
-    return formatAlertsText(data, mode);
+    return this.formatAlertsMessage(data, mode);
+  }
+
+  /** The /alerts reply: regular markdown, or with rich messages the alerts card. */
+  formatAlertsMessage(data, mode = 'all') {
+    return this.richCommandMessage(formatAlertsText(data, mode, { rich: this.richMessages }), {
+      service: 'opsgenie',
+      kind: 'Alerts',
+    });
   }
 
   async executeAlertsCommand(event, args = []) {
@@ -4829,7 +4944,7 @@ export class MergeRequestWatcher {
 
     await this.executeCachedCommand(event, {
       name: 'alerts',
-      getCached: () => (this.alertsCache.data ? formatAlertsText(this.alertsCache.data, mode) : null),
+      getCached: () => (this.alertsCache.data ? this.formatAlertsMessage(this.alertsCache.data, mode) : null),
       getOrFetch: (opts) => this.getOrFetchAlertsText({ ...opts, mode }),
       errorLabel: 'OpsGenie alerts lookup',
     });
@@ -4883,7 +4998,10 @@ export class MergeRequestWatcher {
           sections.push(`**To Do** (${todo.length}):\n${todo.map(formatTaskLine).join('\n')}`);
         }
 
-        const text = `🏃 **Current Sprint Tasks** (${total} active):\n\n${sections.join('\n\n')}`;
+        const text = this.richCommandMessage(
+          `🏃 **Current Sprint Tasks** (${total} active):\n\n${sections.join('\n\n')}`,
+          { service: 'jira', kind: 'Sprint' }
+        );
         this.sprintCache.text = text;
         this.sprintCache.timestamp = Date.now();
         return text;
@@ -5021,9 +5139,10 @@ export class MergeRequestWatcher {
           text = `${header} (${meetings.length}):\n\n${sections.join('\n\n')}`;
         }
 
-        this.meetingsCache.text = text;
+        const message = this.richCommandMessage(text, { service: 'calendar', kind: 'Meetings' });
+        this.meetingsCache.text = message;
         this.meetingsCache.timestamp = Date.now();
-        return text;
+        return message;
       } catch (err) {
         if (this.meetingsCache.text) {
           log(`Failed to refresh /meetings cache (${err.message}), serving stale cache`);
@@ -5928,7 +6047,11 @@ export class MergeRequestWatcher {
         `- 🚨 **CKS Platform**: **${onCallPerson}**\n` +
         `- 💼 **Support Queue**: **${supportPerson}**`;
 
-      await sendReply(event.conversationId, event, text);
+      await sendReply(
+        event.conversationId,
+        event,
+        this.richCommandMessage(text, { service: 'opsgenie', kind: 'On-call' })
+      );
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
     } catch (err) {
       log(`Failed to execute /oncall: ${err.message}`);
@@ -5981,7 +6104,7 @@ export class MergeRequestWatcher {
 
     try {
       const issue = await this.jira.getIssue(key);
-      const text = this.formatJiraIssueMessage(issue);
+      const text = this.richMessage(this.formatJiraIssueMessage(issue), () => buildJiraIssueCard(issue));
       await sendReply(event.conversationId, event, text);
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
     } catch (err) {
@@ -6031,7 +6154,7 @@ export class MergeRequestWatcher {
         return;
       }
 
-      const text = this.formatConfluencePageMessage(page);
+      const text = this.richMessage(this.formatConfluencePageMessage(page), () => buildConfluencePageCard(page));
       await sendReply(event.conversationId, event, text);
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
     } catch (err) {
@@ -6151,7 +6274,15 @@ export class MergeRequestWatcher {
           } else if (pipeline.status === 'success' || pipeline.status === 'passed') {
             lines.push(`\n✅ All ${jobs.length} jobs completed successfully.`);
           }
-          await sendReply(event.conversationId, event, lines.join('\n'));
+          await sendReply(
+            event.conversationId,
+            event,
+            this.richCommandMessage(lines.join('\n'), {
+              service: 'gitlab',
+              kind: 'Pipeline',
+              style: ciStatusInfo(pipeline.status).style,
+            })
+          );
           this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
           return;
         } catch (err) {
@@ -6232,7 +6363,15 @@ export class MergeRequestWatcher {
         lines.push(`\n✅ All ${jobs.length} jobs completed successfully.`);
       }
 
-      await sendReply(event.conversationId, event, lines.join('\n'));
+      await sendReply(
+        event.conversationId,
+        event,
+        this.richCommandMessage(lines.join('\n'), {
+          service: 'gitlab',
+          kind: 'Pipeline',
+          style: ciStatusInfo(pipeline.status).style,
+        })
+      );
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
     } catch (err) {
       log(`Failed to fetch CI status for ${project}!${iid}: ${err.message}`);
@@ -6314,7 +6453,11 @@ export class MergeRequestWatcher {
         sections.push('\n🦊 **GitLab MRs**: _No open MRs as author or reviewer_');
       }
 
-      await sendReply(event.conversationId, event, sections.join('\n'));
+      await sendReply(
+        event.conversationId,
+        event,
+        this.richCommandMessage(sections.join('\n'), { service: 'standup', kind: 'Summary' })
+      );
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
     } catch (err) {
       log(`Failed to execute /standup: ${err.message}`);

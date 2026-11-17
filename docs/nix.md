@@ -158,11 +158,43 @@ out for what the entity is:
 
 | Entity | Card |
 | --- | --- |
-| GitLab merge request (open, merged, closed, rebase required, rebased) | Title, state colour, approval, pipeline, rebase, auto-merge, target branch, Jira key, links |
+| GitLab merge request (open, merged, closed, rebase required, rebased) | Title, state colour, approval, auto-merge, pipeline, rebase (only when required), target branch, Jira key, links |
 | GitLab job and pipeline | Status colour, stage, ref, duration, failure reason, linked merge request |
 | Jira issue | Summary, type, status, priority, assignee |
-| OpsGenie alert | Message, priority, status, owner |
+| OpsGenie alert | Message, priority badge (P1 red to P5 subdued), OPEN / ACK'D / CLOSED badge, owner |
 | Confluence page | Title, space, author |
+
+Command replies use the same gate. Commands that return structured data answer
+with a card built from the very same markdown as the regular reply, so no fact,
+link, count or truncation note is lost:
+
+| Command | Card |
+| --- | --- |
+| `/mrs` | List card, one row per merge request with approval, auto-merge, draft and rebase/conflict badges |
+| `/alerts`, `/oncall` | OpsGenie list and on-call card |
+| `/sprint`, `/issue`, `/doc` | Jira sprint, issue and Confluence page cards |
+| `/status <MR>` | Merge request card (open, merged or closed) |
+| `/ci` | Pipeline card |
+| `/whois` (`/who`) | Contact card, or a search-results list |
+| `/whereis` (`/where`) | Availability card, or a search-results list |
+| `/meetings`, `/standup` | Meetings and standup summary cards |
+
+Not carded, on purpose: help, errors, acknowledgements, admin notices, `/exec`,
+`/random`, `/weather`, `/flip`, `/retry`, and `/status` without arguments
+(runtime status). In a command card, people are named in bold instead of being
+mentioned, so a card never pings or downgrades to plain text. A card larger than
+the Teams payload limit falls back to the full regular message.
+
+Merge request cards always show the approval and auto-merge lines on open
+merge requests, including "Not approved yet" and "Disabled", and say "Unknown
+(not retrieved)" when GitLab could not be asked. The rebase line appears only
+while a rebase is required (with the reason, merge conflicts when known, and the
+GitLab status) and disappears once it is resolved. Merged and closed cards keep
+the last known approval, auto-merge and rebase state.
+
+OpsGenie priority and status badges are textual (P1, OPEN, ACK'D, CLOSED) and use
+the closest Teams card colours (good, attention, warning, accent); Teams does
+not allow arbitrary colours, so the shades are approximate, not pixel-exact.
 
 Every card starts with a compact header: the logo of the service (GitLab, Jira,
 OpsGenie or Confluence, embedded as a small PNG, no image fetch) and a label

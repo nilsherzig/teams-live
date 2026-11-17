@@ -75,9 +75,22 @@ const SERVICES = {
   confluence: 'Confluence',
 };
 
-/** Compact integration header: small service logo plus "Service - kind". */
+// Brands without a logo: the header shows an emoji instead (used by the
+// command reply cards, which are not about one service entity).
+const EMOJI_BRANDS = {
+  directory: { emoji: '🪪', name: 'Directory' },
+  availability: { emoji: '📍', name: 'Availability' },
+  calendar: { emoji: '📅', name: 'Calendar' },
+  standup: { emoji: '🌅', name: 'Standup' },
+};
+
+/** Compact integration header: small service logo (or emoji) plus "Service - kind". */
 function header(service, kind) {
-  const name = SERVICES[service];
+  const emojiBrand = EMOJI_BRANDS[service];
+  const name = emojiBrand ? emojiBrand.name : SERVICES[service];
+  const lead = emojiBrand
+    ? textBlock(emojiBrand.emoji, { size: 'Small' })
+    : { type: 'Image', url: SERVICE_ICONS[service], altText: name, width: '16px', height: '16px' };
   return {
     type: 'ColumnSet',
     columns: [
@@ -85,13 +98,13 @@ function header(service, kind) {
         type: 'Column',
         width: 'auto',
         verticalContentAlignment: 'Center',
-        items: [{ type: 'Image', url: SERVICE_ICONS[service], altText: name, width: '16px', height: '16px' }],
+        items: [lead],
       },
       {
         type: 'Column',
         width: 'stretch',
         verticalContentAlignment: 'Center',
-        items: [textBlock(kind ? `${name} \u00b7 ${kind}` : name, { size: 'Small', weight: 'Bolder', isSubtle: true })],
+        items: [textBlock(kind ? `${name} · ${kind}` : name, { size: 'Small', weight: 'Bolder', isSubtle: true })],
       },
     ],
   };
@@ -102,6 +115,8 @@ function header(service, kind) {
  * `titleUrl` turns the title into a hyperlink to the entity.
  * `style` is an Adaptive Card container style (`good`, `attention`,
  * `warning`, `accent`, `emphasis`) and conveys the state at a glance.
+ * `badges` is a row of non-interactive status badges, `extraItems` are
+ * appended after the facts.
  */
 function assembleCard({
   service,
@@ -110,14 +125,18 @@ function assembleCard({
   title,
   titleUrl,
   subtitle,
+  badges = [],
   facts = [],
+  extraItems = [],
   fallbackText,
 }) {
   const items = [
     header(service, kind),
     textBlock(mdLink(title || subtitle || 'Update', titleUrl), { weight: 'Bolder', size: 'Medium' }),
     subtitle && title ? textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }) : null,
+    badgeRow(badges),
     factSet(facts),
+    ...extraItems,
   ].filter(Boolean);
 
   const card = {
@@ -132,11 +151,29 @@ function assembleCard({
 }
 
 /**
+ * Row of status badges: small coloured columns with a bold label. They show
+ * state only; they are not buttons and carry no action.
+ */
+function badgeRow(badges) {
+  const columns = badges
+    .filter((b) => b && str(b.text))
+    .map((b) => ({
+      type: 'Column',
+      width: 'auto',
+      style: b.style || 'emphasis',
+      bleed: false,
+      items: [textBlock(b.text, { size: 'Small', weight: 'Bolder', color: b.color, spacing: 'None' })],
+    }));
+  if (columns.length === 0) return null;
+  return { type: 'ColumnSet', spacing: 'Small', columns };
+}
+
+/**
  * Status emoji of a GitLab pipeline/job. This is the one mapping shared with
  * the regular (markdown) messages of the watcher.
  */
 export function ciStatusEmoji(status) {
-  switch (status) {
+  switch (str(status).toLowerCase()) {
     case 'success':
     case 'passed':
       return '\u2705';
@@ -150,6 +187,7 @@ export function ciStatusEmoji(status) {
     case 'created':
       return '\u23f1\ufe0f';
     case 'canceled':
+    case 'cancelled':
       return '\u26a0\ufe0f';
     case 'skipped':
       return '\u23ed\ufe0f';
@@ -191,11 +229,14 @@ export function ciStatusInfo(status) {
 function pipelineFact(pipeline) {
   if (!pipeline) return null;
   const status = str(pipeline.status);
-  const label = status ? ciStatusInfo(status).label : '';
   const id = pipeline.id ? `#${pipeline.id}` : '';
-  const text = mdLink(label && id ? `${label} (${id})` : label || id || 'Pipeline', pipeline.url);
-  // 🏗️ when the status is not known yet, as in the regular messages.
-  return ['Pipeline', `${status ? ciStatusEmoji(status) : '\ud83c\udfd7\ufe0f'} ${text}`];
+  if (!status) {
+    // A pipeline without a known status reads "unknown", as in the regular messages.
+    return ['Pipeline', `\ud83d\udd39 ${mdLink(id ? `Unknown (${id})` : 'Unknown', pipeline.url)}`];
+  }
+  const label = ciStatusInfo(status).label;
+  const text = mdLink(id ? `${label} (${id})` : label, pipeline.url);
+  return ['Pipeline', `${ciStatusEmoji(status)} ${text}`];
 }
 
 /** "!42 Title" reference to a merge request, linked when its URL is known. */
@@ -204,47 +245,71 @@ function mrReference(mr) {
   return mdLink(`!${mr.iid}${mr.title ? ` ${mr.title}` : ''}`, mr.url);
 }
 
+const tri = (value) => (value === true ? true : value === false ? false : null);
+
 /**
  * GitLab merge request.
  * `state`: `open` (status update), `merged`, `closed`, `rebase` (rebase
  * required) or `rebased` (rebase resolved).
+ *
+ * `approved` and `autoMerge` are tri-state: true, false, or null/undefined
+ * when the value was not retrieved. An open merge request always shows both
+ * (unknown reads "Unknown (not retrieved)", never "no"). The rebase fact
+ * appears only while a rebase is required. Merged and closed merge requests
+ * keep the details that are known.
  */
 export function buildMergeRequestCard(mr) {
   const state = mr.state || 'open';
+  const live = state === 'open' || state === 'rebase' || state === 'rebased';
   const ci = mr.pipeline ? ciStatusInfo(mr.pipeline.status) : null;
+  const approved = tri(mr.approved);
+  const autoMerge = tri(mr.autoMerge);
+  const rebaseRequired = state === 'rebase' || (state !== 'rebased' && mr.needsRebase === true);
+  const reason = mr.hasConflicts ? 'merge conflicts' : 'behind target branch';
 
   let statusLabel = 'Open';
   let style = 'accent';
   if (state === 'merged') {
-    statusLabel = '\ud83c\udf89 Merged';
+    statusLabel = '🎉 Merged';
     style = 'good';
   } else if (state === 'closed') {
-    statusLabel = '\ud83d\udeab Closed (unmerged)';
+    statusLabel = '🚫 Closed (unmerged)';
     style = 'attention';
   } else if (state === 'rebase') {
-    statusLabel = mr.hasConflicts ? '\u26a0\ufe0f Rebase required (merge conflicts)' : '\u26a0\ufe0f Rebase required';
+    statusLabel = mr.hasConflicts ? '⚠️ Rebase required (merge conflicts)' : '⚠️ Rebase required';
     style = 'warning';
   } else if (state === 'rebased') {
-    statusLabel = '\u2705 Rebased, up to date';
+    statusLabel = '✅ Rebased, up to date and conflict-free';
     style = 'good';
   } else if (ci?.style === 'attention') {
     style = 'attention';
-  } else if (mr.approved && ci?.style === 'good') {
+  } else if (approved === true && ci?.style === 'good') {
     style = 'good';
-  } else if (mr.needsRebase) {
+  } else if (rebaseRequired) {
     style = 'warning';
   }
 
-  const open = state === 'open';
   const approvers = (mr.approvedBy || []).filter(Boolean);
-  const approval = open
-    ? mr.approved
-      ? `\ud83d\udc4d Approved${approvers.length > 0 ? ` by ${approvers.join(', ')}` : ''}`
-      : '\u23f3 Not approved yet'
-    : '';
-  const rebase = open && mr.needsRebase ? `\u26a0\ufe0f Required${mr.hasConflicts ? ' (merge conflicts)' : ''}` : '';
-  const autoMerge = open && mr.autoMerge ? `\ud83d\udd00 Enabled${mr.autoMergeUser ? ` by ${mr.autoMergeUser}` : ''}` : '';
-  const pipelineLabel = pipelineFact(mr.pipeline);
+  let approval = '';
+  if (approved === true) {
+    approval = `👍 Approved${approvers.length > 0 ? ` by ${approvers.join(', ')}` : ''}`;
+  } else if (live || (state === 'closed' && approved === false)) {
+    approval = approved === false ? '⏳ Not approved yet' : '❔ Unknown (not retrieved)';
+  }
+
+  let autoMergeText = '';
+  if (autoMerge === true) {
+    autoMergeText = `🔀 Enabled${mr.autoMergeUser ? ` by ${mr.autoMergeUser}` : ''}`;
+  } else if (live) {
+    autoMergeText = autoMerge === false ? '⏸️ Disabled' : '❔ Unknown (not retrieved)';
+  }
+
+  let rebase = '';
+  if (rebaseRequired && state !== 'merged') {
+    rebase = `⚠️ Required: ${reason}${mr.detailedMergeStatus ? ` (status: ${mr.detailedMergeStatus})` : ''}`;
+  }
+
+  const jiraLabel = str(mr.jira?.key) || (safeHttpUrl(mr.jira?.url) ? 'Jira issue' : '');
 
   return assembleCard({
     service: 'gitlab',
@@ -256,11 +321,11 @@ export function buildMergeRequestCard(mr) {
     facts: [
       ['Status', statusLabel],
       ['Approval', approval],
-      pipelineLabel,
+      pipelineFact(mr.pipeline),
       ['Rebase', rebase],
-      ['Auto-merge', autoMerge],
+      ['Auto-merge', autoMergeText],
       ['Target', mr.targetBranch],
-      ['Jira', mdLink(mr.jira?.key, mr.jira?.url)],
+      ['Jira', mdLink(jiraLabel, mr.jira?.url)],
     ].filter(Boolean),
     fallbackText: mr.fallbackText,
   });
@@ -310,6 +375,34 @@ export function buildPipelineCard(pipeline) {
   });
 }
 
+const JIRA_TYPE_ICONS = {
+  bug: '🐛',
+  story: '📖',
+  task: '📋',
+  subtask: '📄',
+  spike: '⚡',
+  epic: '🏔️',
+  improvement: '💡',
+};
+
+/** Status icon of a Jira issue, as in the regular messages. */
+function jiraStatusIcon(status, category) {
+  const cat = str(category).toLowerCase();
+  const name = str(status).toLowerCase();
+  if (cat === 'done' || name === 'done' || name === 'closed' || name === 'resolved') return '🟢';
+  if (name.includes('review')) return '🟣';
+  if (cat === 'indeterminate' || name.includes('progress') || name.includes('active')) return '🟡';
+  return '⚪';
+}
+
+/** Priority icon of a Jira issue, as in the regular messages. */
+function jiraPriorityIcon(priority) {
+  const p = str(priority).toLowerCase();
+  if (p.includes('high') || p.includes('blocker') || p.includes('critical')) return '🔴';
+  if (p.includes('low') || p.includes('trivial')) return '🟢';
+  return '🟡';
+}
+
 /** Jira issue. */
 export function buildJiraIssueCard(issue) {
   const category = str(issue.statusCategory).toLowerCase();
@@ -320,42 +413,75 @@ export function buildJiraIssueCard(issue) {
   } else if (category === 'indeterminate' || name.includes('progress') || name.includes('review') || name.includes('active')) {
     style = 'accent';
   }
+  const type = issue.issueType || 'Task';
+  const typeIcon = JIRA_TYPE_ICONS[str(type).toLowerCase()] || JIRA_TYPE_ICONS.task;
+  const status = str(issue.status);
+  const priority = issue.priority || 'None';
 
   return assembleCard({
     service: 'jira',
-    kind: issue.issueType || 'Issue',
+    kind: `${typeIcon} ${type}`,
     style,
     title: issue.summary || issue.key,
     titleUrl: issue.url,
     subtitle: issue.key,
     facts: [
-      ['Status', issue.status],
-      ['Priority', issue.priority || 'None'],
+      ['Status', status ? `${jiraStatusIcon(status, category)} ${status}` : ''],
+      ['Priority', `${jiraPriorityIcon(issue.priority)} ${priority}`],
       ['Assignee', issue.assignee || 'Unassigned'],
     ],
     fallbackText: issue.fallbackText,
   });
 }
 
+// OpsGenie priority colours. Teams cards only offer a few theme colours, so
+// the shades are approximated: P2 (orange) and P3 (amber) share the "warning"
+// style and differ by their dot and label. Closed has precedence over the
+// acknowledgement state.
+const OPSGENIE_PRIORITIES = {
+  P1: { dot: '🔴', style: 'attention', color: 'Attention' },
+  P2: { dot: '🟠', style: 'warning', color: 'Warning' },
+  P3: { dot: '🟡', style: 'warning', color: 'Warning' },
+  P4: { dot: '🟢', style: 'good', color: 'Good' },
+  P5: { dot: '⚪', style: 'emphasis', color: undefined },
+};
+
+const OPSGENIE_PRIORITY_ICONS = { P1: '🚨', P2: '🔥', P3: '⚠️', P4: 'ℹ️', P5: '🔹' };
+
+/** OpsGenie priority badge: coloured dot and label (P1 red ... P5 subdued). */
+export function opsGeniePriorityBadge(priority) {
+  const label = str(priority) || 'P3';
+  const spec = OPSGENIE_PRIORITIES[label.toUpperCase()] || { dot: '🔹', style: 'emphasis', color: undefined };
+  return { text: `${spec.dot} ${label}`, style: spec.style, color: spec.color };
+}
+
+/** OpsGenie status badge: CLOSED (wins), ACK'D or OPEN. */
+export function opsGenieStatusBadge(alert) {
+  if (str(alert.status).toLowerCase() === 'closed') return { text: 'CLOSED', style: 'emphasis', color: undefined };
+  if (alert.acknowledged) return { text: "ACK'D", style: 'warning', color: 'Warning' };
+  return { text: 'OPEN', style: 'attention', color: 'Attention' };
+}
+
 /** OpsGenie alert. */
 export function buildOpsGenieAlertCard(alert) {
-  const closed = alert.status === 'closed';
+  const closed = str(alert.status).toLowerCase() === 'closed';
   const priority = str(alert.priority) || 'P3';
-  let style = 'warning';
-  if (closed) style = 'emphasis';
-  else if (alert.acknowledged) style = 'accent';
-  else if (priority === 'P1' || priority === 'P2') style = 'attention';
+  const id = str(alert.id);
+  const subtitle = alert.tinyId ? `#${alert.tinyId}` : id ? `Alert ${id.slice(0, 8)}` : '';
+  const statusIcon = closed ? '⚪' : '🟢';
 
   return assembleCard({
     service: 'opsgenie',
     kind: 'Alert',
-    style,
+    // The badges carry the colour: the container stays neutral so they stand out.
+    style: 'emphasis',
     title: alert.message || 'Alert',
     titleUrl: alert.url,
-    subtitle: alert.tinyId ? `#${alert.tinyId}` : '',
+    subtitle,
+    badges: [opsGeniePriorityBadge(priority), opsGenieStatusBadge(alert)],
     facts: [
-      ['Priority', priority],
-      ['Status', `${alert.status || 'open'}, ${alert.acknowledged ? 'acknowledged' : 'unacknowledged'}`],
+      ['Priority', `${OPSGENIE_PRIORITY_ICONS[priority.toUpperCase()] || '⚠️'} ${priority}`],
+      ['Status', `${statusIcon} ${alert.status || 'open'} (${alert.acknowledged ? 'acknowledged' : 'unacknowledged'})`],
       ['Owner', alert.owner || 'Unassigned'],
     ],
     fallbackText: alert.fallbackText,
@@ -377,4 +503,131 @@ export function buildConfluencePageCard(page) {
     ],
     fallbackText: page.fallbackText,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Command reply cards
+//
+// The structured replies of the commands (/mrs, /whois, /whereis, /alerts,
+// /sprint, ...) are formatted as markdown by the regular formatters. The card
+// is generated from that same markdown, so every field of the regular reply
+// reaches the card and the regular output stays untouched.
+// ---------------------------------------------------------------------------
+
+/** Largest card payload (bytes of JSON) sent; a bigger one falls back to the full markdown. */
+export const MAX_CARD_BYTES = 24000;
+
+/**
+ * Replaces contact mentions (`@[Name](mri)`) by the bold name, and drops a
+ * mention that only repeats a bold name next to it. A card must not ping
+ * people for a status reply.
+ */
+export function stripMentionMarkup(markdown) {
+  return String(markdown ?? '')
+    .replace(/(\*\*([^*]+)\*\*) \(@\[\2\]\([^)\s]+\)\)/g, '$1')
+    .replace(/@\[([^\]]+)\]\((?!https?:)([^)\s]+)\)/g, '**$1**');
+}
+
+/** Card text: mention markup removed, code spans shown as plain text (cards do not render them). */
+function cardText(markdown) {
+  return stripMentionMarkup(markdown).replace(/`([^`\n]*)`/g, '$1');
+}
+
+const BULLET_RE = /^(\s*)(?:([-•*])|(\d+)\.)\s+(.*)$/;
+const FACT_RE = /^(?:([^\s[\]*_`A-Za-z0-9]+)\s+)?\*\*([^*]+)\*\*:\s*(.*)$/;
+const LEADING_EMOJI_RE = /^[\p{Extended_Pictographic}[]/u;
+
+function parseBullet(line) {
+  const m = BULLET_RE.exec(line);
+  if (!m) return null;
+  return { indent: m[1].replace(/\t/g, '  ').length, ordered: m[3] !== undefined, number: m[3], body: m[4].trim() };
+}
+
+/**
+ * Builds a card from a markdown reply made of a head line, optional
+ * paragraphs and bullet lists. Returns null when there is nothing list-like to
+ * show (the caller then sends the plain markdown).
+ *
+ * - The first line becomes the title (inline links kept).
+ * - A run of `- icon **Label**: value` bullets becomes a fact set.
+ * - Any other bullet becomes one compact row (links and status emojis kept);
+ *   indented bullets become indented rows below their parent.
+ * - Paragraphs stay paragraphs, `_notes_` become small subtle notes.
+ */
+export function buildMarkdownCard(markdown, { service, kind, style = 'emphasis', fallbackText } = {}) {
+  const lines = String(markdown ?? '').split('\n');
+  const first = lines.findIndex((l) => l.trim());
+  if (first < 0) return null;
+
+  const title = cardText(lines[first])
+    .replace(/\*\*/g, '')
+    .replace(/^[^\p{L}\p{N}[(#@!]+/u, '')
+    .replace(/:\s*$/, '')
+    .trim();
+  if (!title) return null;
+
+  const nextNonEmpty = (from) => {
+    for (let k = from; k < lines.length; k += 1) if (lines[k].trim()) return lines[k];
+    return null;
+  };
+
+  const items = [];
+  let bullets = 0;
+  let i = first + 1;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) {
+      i += 1;
+      continue;
+    }
+    const bullet = parseBullet(line);
+    if (!bullet) {
+      const text = cardText(line.trim());
+      const upcoming = nextNonEmpty(i + 1);
+      if (/^_[^_].*_$/.test(text) || /^\*[^*].*\*$/.test(text)) {
+        items.push(textBlock(text, { isSubtle: true, size: 'Small', spacing: 'Small' }));
+      } else {
+        items.push(textBlock(text, { spacing: upcoming && parseBullet(upcoming) ? 'Medium' : 'Small' }));
+      }
+      i += 1;
+      continue;
+    }
+
+    // A run of top-level unordered bullets, possibly all facts.
+    if (bullet.indent === 0 && !bullet.ordered) {
+      const run = [];
+      let j = i;
+      while (j < lines.length) {
+        const b = parseBullet(lines[j]);
+        if (!b || b.indent !== 0 || b.ordered) break;
+        run.push(b);
+        j += 1;
+      }
+      const facts = run.map((b) => FACT_RE.exec(b.body));
+      if (facts.every(Boolean)) {
+        const set = factSet(
+          facts.map((m) => [`${m[1] ? `${m[1]} ` : ''}${m[2]}`, cardText(m[3]).replace(/\*\*/g, '')])
+        );
+        if (set) items.push(set);
+        bullets += run.length;
+        i = j;
+        continue;
+      }
+    }
+
+    const body = cardText(bullet.body);
+    let text;
+    if (bullet.ordered) text = `${bullet.number}. ${body}`;
+    else text = LEADING_EMOJI_RE.test(body) ? body : `• ${body}`;
+    if (bullet.indent > 0) {
+      items.push(textBlock(`    ${text}`, { spacing: 'None', size: 'Small' }));
+    } else {
+      items.push(textBlock(text, { spacing: 'Small' }));
+    }
+    bullets += 1;
+    i += 1;
+  }
+
+  if (bullets === 0) return null;
+  return assembleCard({ service, kind, style, title, extraItems: items, fallbackText });
 }
