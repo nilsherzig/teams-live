@@ -363,7 +363,8 @@ test('Jira handler sends a regular reply by default and a card with rich_message
     assert.equal(html.includes(CARD_TAG), expectCard);
     if (expectCard) {
       const card = JSON.parse(options.properties.cards)[0].content;
-      assert.equal(card.body[0].items[1].text, 'Something is broken');
+      // The title links to the issue.
+      assert.equal(card.body[0].items[1].text.replace(/^\[(.*)\]\(.*\)$/, '$1'), 'Something is broken');
       // The regular text is kept as the card's fallback.
       assert.ok(card.fallbackText.includes('EX-1'));
     } else {

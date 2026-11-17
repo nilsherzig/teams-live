@@ -28,6 +28,40 @@ function factSet(facts) {
   return entries.length > 0 ? { type: 'FactSet', facts: entries, spacing: 'Small' } : null;
 }
 
+/**
+ * Returns the URL as a safe markdown link target, or '' when it is missing or
+ * not an http(s) URL. Parentheses are percent-encoded so they cannot end the
+ * link early.
+ */
+function safeHttpUrl(url) {
+  const raw = str(url);
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+    return parsed.href.replace(/\(/g, '%28').replace(/\)/g, '%29');
+  } catch {
+    return '';
+  }
+}
+
+/** Escapes the characters that would break a markdown link label. */
+function escapeLinkLabel(text) {
+  return text.replace(/[\\[\]]/g, (c) => `\\${c}`);
+}
+
+/**
+ * Markdown hyperlink for text inside a card. Without a usable http(s) URL
+ * (or without text) the text is returned unchanged, so a missing URL never
+ * leaves stray brackets behind.
+ */
+export function mdLink(text, url) {
+  const label = str(text);
+  const target = safeHttpUrl(url);
+  if (!label || !target) return label;
+  return `[${escapeLinkLabel(label)}](${target})`;
+}
+
 /** Link button; `service` picks the logo shown next to the label. */
 function openUrl(title, url, service) {
   const target = str(url);
@@ -68,13 +102,24 @@ function header(service, kind) {
 
 /**
  * Wraps the entity body in a coloured container and assembles the card.
+ * `titleUrl` turns the title into a hyperlink to the entity.
  * `style` is an Adaptive Card container style (`good`, `attention`,
  * `warning`, `accent`, `emphasis`) and conveys the state at a glance.
  */
-function assembleCard({ service, kind, style = 'emphasis', title, subtitle, facts = [], actions = [], fallbackText }) {
+function assembleCard({
+  service,
+  kind,
+  style = 'emphasis',
+  title,
+  titleUrl,
+  subtitle,
+  facts = [],
+  actions = [],
+  fallbackText,
+}) {
   const items = [
     header(service, kind),
-    textBlock(title || subtitle || 'Update', { weight: 'Bolder', size: 'Medium' }),
+    textBlock(mdLink(title || subtitle || 'Update', titleUrl), { weight: 'Bolder', size: 'Medium' }),
     subtitle && title ? textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }) : null,
     factSet(facts),
   ].filter(Boolean);
@@ -123,7 +168,13 @@ function pipelineFact(pipeline) {
   if (!pipeline) return null;
   const { label } = ciStatusInfo(pipeline.status);
   const id = pipeline.id ? ` (#${pipeline.id})` : '';
-  return ['Pipeline', `${label}${id}`];
+  return ['Pipeline', mdLink(`${label}${id}`, pipeline.url)];
+}
+
+/** "!42 Title" reference to a merge request, linked when its URL is known. */
+function mrReference(mr) {
+  if (!mr?.iid) return '';
+  return mdLink(`!${mr.iid}${mr.title ? ` ${mr.title}` : ''}`, mr.url);
 }
 
 /**
@@ -173,6 +224,7 @@ export function buildMergeRequestCard(mr) {
     kind: 'Merge request',
     style,
     title: mr.title || `Merge request !${mr.iid}`,
+    titleUrl: mr.url,
     subtitle: `!${mr.iid}${mr.project ? ` in ${mr.project}` : ''}`,
     facts: [
       ['Status', statusLabel],
@@ -181,7 +233,7 @@ export function buildMergeRequestCard(mr) {
       ['Rebase', rebase],
       ['Auto-merge', autoMerge],
       ['Target', mr.targetBranch],
-      ['Jira', mr.jira?.key],
+      ['Jira', mdLink(mr.jira?.key, mr.jira?.url)],
     ].filter(Boolean),
     actions: [
       openUrl('Open merge request', mr.url, 'gitlab'),
@@ -200,6 +252,7 @@ export function buildJobCard(job) {
     kind: 'CI job',
     style: info.style,
     title: job.name || `Job #${job.id}`,
+    titleUrl: job.url,
     subtitle: `#${job.id}${job.project ? ` in ${job.project}` : ''}`,
     facts: [
       ['Status', info.label],
@@ -208,7 +261,7 @@ export function buildJobCard(job) {
       ['Duration', job.duration],
       ['Failure reason', job.status === 'failed' ? job.failureReason : ''],
       pipelineFact(job.pipeline),
-      ['Merge request', job.mr?.iid ? `!${job.mr.iid}${job.mr.title ? ` ${job.mr.title}` : ''}` : ''],
+      ['Merge request', mrReference(job.mr)],
     ].filter(Boolean),
     actions: [
       openUrl('Open job', job.url, 'gitlab'),
@@ -227,13 +280,14 @@ export function buildPipelineCard(pipeline) {
     kind: 'Pipeline',
     style: info.style,
     title: `Pipeline #${pipeline.id}`,
+    titleUrl: pipeline.url,
     subtitle: pipeline.project,
     facts: [
       ['Status', info.label],
       ['Ref', pipeline.ref],
       ['Duration', pipeline.duration],
       ['YAML errors', pipeline.yamlErrors],
-      ['Merge request', pipeline.mr?.iid ? `!${pipeline.mr.iid}${pipeline.mr.title ? ` ${pipeline.mr.title}` : ''}` : ''],
+      ['Merge request', mrReference(pipeline.mr)],
     ].filter(Boolean),
     actions: [openUrl('Open pipeline', pipeline.url, 'gitlab'), openUrl('Open merge request', pipeline.mr?.url, 'gitlab')],
     fallbackText: pipeline.fallbackText,
@@ -256,6 +310,7 @@ export function buildJiraIssueCard(issue) {
     kind: issue.issueType || 'Issue',
     style,
     title: issue.summary || issue.key,
+    titleUrl: issue.url,
     subtitle: issue.key,
     facts: [
       ['Status', issue.status],
@@ -281,6 +336,7 @@ export function buildOpsGenieAlertCard(alert) {
     kind: 'Alert',
     style,
     title: alert.message || 'Alert',
+    titleUrl: alert.url,
     subtitle: alert.tinyId ? `#${alert.tinyId}` : '',
     facts: [
       ['Priority', priority],
@@ -300,6 +356,7 @@ export function buildConfluencePageCard(page) {
     kind: 'Page',
     style: 'emphasis',
     title: page.title || 'Confluence page',
+    titleUrl: page.url,
     facts: [
       ['Space', space],
       ['Last edited by', page.author],

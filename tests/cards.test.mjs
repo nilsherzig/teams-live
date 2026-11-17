@@ -8,17 +8,22 @@ import {
   buildOpsGenieAlertCard,
   buildConfluencePageCard,
   ciStatusInfo,
+  mdLink,
 } from '../src/cards.mjs';
 import { SERVICE_ICONS } from '../src/card-icons.mjs';
 
 const items = (card) => card.body[0].items;
-const facts = (card) => Object.fromEntries(items(card).find((i) => i.type === 'FactSet').facts.map((f) => [f.title, f.value]));
+// Text with markdown links reduced to their labels (and escapes removed).
+const plain = (text) => text.replace(/\[((?:\\.|[^\]\\])*)\]\([^)]*\)/g, '$1').replace(/\\([\\[\]])/g, '$1');
+const rawFacts = (card) => Object.fromEntries(items(card).find((i) => i.type === 'FactSet').facts.map((f) => [f.title, f.value]));
+const facts = (card) => Object.fromEntries(Object.entries(rawFacts(card)).map(([k, v]) => [k, plain(v)]));
 const style = (card) => card.body[0].style;
 const actionUrls = (card) => (card.actions || []).map((a) => a.url);
 const header = (card) => items(card)[0];
 const headerLabel = (card) => header(card).columns[1].items[0].text;
 const headerIcon = (card) => header(card).columns[0].items[0];
-const mainTitle = (card) => items(card)[1].text;
+const rawTitle = (card) => items(card)[1].text;
+const mainTitle = (card) => plain(rawTitle(card));
 const subtitle = (card) => items(card).find((i) => i.type === 'TextBlock' && i.isSubtle && i !== header(card))?.text;
 
 function assertValidCard(card) {
@@ -331,4 +336,90 @@ test('link buttons carry the logo of the service they open', () => {
   // A Jira cross-link without a key keeps a clear label and the Jira logo.
   const noKey = buildMergeRequestCard({ ...baseMr, state: 'open', jira: { url: 'https://jira.example.com/browse/EX-9' } });
   assert.deepEqual(iconOf(noKey), { 'Open merge request': SERVICE_ICONS.gitlab, 'Open Jira issue': SERVICE_ICONS.jira });
+});
+
+test('mdLink builds safe markdown links and keeps plain text without a valid http(s) URL', () => {
+  assert.equal(mdLink('Title', 'https://example.com/a'), '[Title](https://example.com/a)');
+  // Label delimiters are escaped so they cannot break the link.
+  assert.equal(mdLink('Fix [WIP] a\\b', 'https://example.com/a'), '[Fix \\[WIP\\] a\\\\b](https://example.com/a)');
+  // Parentheses in the URL are percent-encoded; spaces are encoded by URL parsing.
+  assert.equal(mdLink('x', 'https://example.com/a_(b)'), '[x](https://example.com/a_%28b%29)');
+  assert.equal(mdLink('x', 'https://example.com/a b'), '[x](https://example.com/a%20b)');
+  // Missing or non-http(s) URLs leave the text untouched (no stray brackets).
+  for (const bad of [undefined, null, '', '   ', 'not a url', 'javascript:alert(1)', 'ftp://example.com/x', 'data:text/html,hi']) {
+    assert.equal(mdLink('Plain [text]', bad), 'Plain [text]');
+  }
+  assert.equal(mdLink('', 'https://example.com'), '');
+  assert.equal(mdLink(undefined, 'https://example.com'), '');
+});
+
+test('card titles link to the entity URL', () => {
+  const cases = [
+    [buildMergeRequestCard({ ...baseMr, state: 'open' }), 'Add example feature', baseMr.url],
+    [buildJobCard({ id: 5, name: 'build', status: 'failed', url: 'https://gitlab.example.com/-/jobs/5' }), 'build', 'https://gitlab.example.com/-/jobs/5'],
+    [buildPipelineCard({ id: 9, status: 'success', url: 'https://gitlab.example.com/-/pipelines/9' }), 'Pipeline #9', 'https://gitlab.example.com/-/pipelines/9'],
+    [buildJiraIssueCard({ key: 'EX-1', summary: 'Broken', url: 'https://jira.example.com/browse/EX-1' }), 'Broken', 'https://jira.example.com/browse/EX-1'],
+    [buildOpsGenieAlertCard({ message: 'Disk full', url: 'https://opsgenie.example.com/alert/1' }), 'Disk full', 'https://opsgenie.example.com/alert/1'],
+    [buildConfluencePageCard({ title: 'Runbook', url: 'https://confluence.example.com/pages/1' }), 'Runbook', 'https://confluence.example.com/pages/1'],
+  ];
+  for (const [card, label, url] of cases) {
+    assertValidCard(card);
+    assert.equal(rawTitle(card), `[${label}](${url})`);
+  }
+});
+
+test('card titles stay plain text without a usable URL and escape brackets', () => {
+  assert.equal(rawTitle(buildMergeRequestCard({ ...baseMr, url: undefined, title: 'Fix [WIP] thing' })), 'Fix [WIP] thing');
+  assert.equal(rawTitle(buildJiraIssueCard({ key: 'EX-1', summary: 'Broken', url: 'javascript:alert(1)' })), 'Broken');
+  assert.equal(rawTitle(buildConfluencePageCard({ title: 'Runbook' })), 'Runbook');
+  assert.equal(
+    rawTitle(buildMergeRequestCard({ ...baseMr, title: 'Fix [WIP] (a) thing' })),
+    `[Fix \\[WIP\\] (a) thing](${baseMr.url})`,
+  );
+});
+
+test('cross references inside the card are linked when their URL is known', () => {
+  const pipelineUrl = 'https://gitlab.example.com/group/project/-/pipelines/7';
+  const jiraUrl = 'https://jira.example.com/browse/EX-123';
+  const mr = buildMergeRequestCard({
+    ...baseMr,
+    state: 'open',
+    pipeline: { id: 7, status: 'success', url: pipelineUrl },
+    jira: { key: 'EX-123', url: jiraUrl },
+  });
+  assert.equal(rawFacts(mr).Pipeline, `[Passed (#7)](${pipelineUrl})`);
+  assert.equal(rawFacts(mr).Jira, `[EX-123](${jiraUrl})`);
+  // Status-like facts without a link stay plain.
+  assert.equal(rawFacts(mr).Status, 'Open');
+
+  const job = buildJobCard({
+    id: 5,
+    name: 'build',
+    status: 'failed',
+    url: 'https://gitlab.example.com/-/jobs/5',
+    pipeline: { id: 9, status: 'failed', url: 'https://gitlab.example.com/-/pipelines/9' },
+    mr: { iid: 42, title: 'Fix [x]', url: baseMr.url },
+  });
+  assert.equal(rawFacts(job).Pipeline, '[Failed (#9)](https://gitlab.example.com/-/pipelines/9)');
+  assert.equal(rawFacts(job)['Merge request'], `[!42 Fix \\[x\\]](${baseMr.url})`);
+
+  const pipeline = buildPipelineCard({ id: 9, status: 'success', mr: { iid: 42, title: 'Title', url: baseMr.url } });
+  assert.equal(rawFacts(pipeline)['Merge request'], `[!42 Title](${baseMr.url})`);
+});
+
+test('cross references stay plain text when their URL is missing or invalid', () => {
+  const mr = buildMergeRequestCard({
+    ...baseMr,
+    url: undefined,
+    state: 'open',
+    pipeline: { id: 7, status: 'success' },
+    jira: { key: 'EX-123', url: 'not a url' },
+  });
+  assert.equal(rawFacts(mr).Pipeline, 'Passed (#7)');
+  assert.equal(rawFacts(mr).Jira, 'EX-123');
+
+  const job = buildJobCard({ id: 5, status: 'failed', pipeline: { id: 9, status: 'failed' }, mr: { iid: 42, title: 'T' } });
+  assert.equal(rawFacts(job).Pipeline, 'Failed (#9)');
+  assert.equal(rawFacts(job)['Merge request'], '!42 T');
+  for (const card of [mr, job]) assert.ok(!JSON.stringify(card).includes(']('));
 });
