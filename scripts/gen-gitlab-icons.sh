@@ -3,11 +3,11 @@
 # (compact list icons) from the upstream @gitlab/svgs package (MIT). Needs npm,
 # tar and ImageMagick (with the librsvg delegate).
 #
-# Usage: scripts/gen-gitlab-icons.sh [VERSION]   (default: latest)
+# Usage: scripts/gen-gitlab-icons.sh [VERSION]   (default: 3.174.0)
 
 set -euo pipefail
 
-version="${1:-latest}"
+version="${1:-3.174.0}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -20,22 +20,23 @@ pkg_version="$(jq -r .version "$work/pkg/package/package.json")"
   exit 1
 }
 
-# name:colour (GitLab's own status colours: open green, merged purple, closed
-# red, draft neutral)
+# name:colour, the same state colours as the badges and CI icons (gen-mr-badges.sh,
+# gen-ci-icons.sh): open and passed teal, merged light blue, closed and failed
+# red, running and manual blue, everything else neutral gray
 icons=(
-  merge-request-open:#2da160
-  merge:#7b58cf
+  merge-request-open:#17a085
+  merge:#428fdc
   merge-request-close:#dd2b0e
-  merge-request:#737278
-  pipeline:#1f75cb
-  status_success:#2da160
+  merge-request:#8a8a92
+  pipeline:#2f7ed8
+  status_success:#17a085
   status_failed:#dd2b0e
-  status_running:#1f75cb
-  status_pending:#c17d10
-  status_canceled:#737278
-  status_skipped:#737278
-  status_manual:#1f75cb
-  status_created:#737278
+  status_running:#2f7ed8
+  status_pending:#8a8a92
+  status_canceled:#8a8a92
+  status_skipped:#8a8a92
+  status_manual:#2f7ed8
+  status_created:#8a8a92
 )
 
 out="$root/src/gitlab-icons.mjs"
@@ -45,7 +46,7 @@ out="$root/src/gitlab-icons.mjs"
 // scripts/gen-gitlab-icons.sh, do not edit by hand).
 //
 // The glyphs come from @gitlab/svgs ${pkg_version} (MIT, Copyright (c) 2011-present
-// GitLab Inc.), flattened to one GitLab status colour each so they stay legible
+// GitLab Inc.), flattened to one state colour each (shared with the badges and CI icons) so they stay legible
 // on light and dark themes.
 
 export const GITLAB_ICONS = {
@@ -66,18 +67,18 @@ echo "wrote $out"
 # each matter): 32x32 palette PNGs shown at 16px. `draft` is the neutral
 # merge request glyph.
 small_icons=(
-  merge-request-open:#2da160
-  merge:#7b58cf
+  merge-request-open:#17a085
+  merge:#428fdc
   merge-request-close:#dd2b0e
-  merge-request:#737278
-  status_success:#2da160
+  merge-request:#8a8a92
+  status_success:#17a085
   status_failed:#dd2b0e
-  status_running:#1f75cb
-  status_pending:#c17d10
-  status_canceled:#737278
-  status_skipped:#737278
-  status_manual:#1f75cb
-  status_created:#737278
+  status_running:#2f7ed8
+  status_pending:#8a8a92
+  status_canceled:#8a8a92
+  status_skipped:#8a8a92
+  status_manual:#2f7ed8
+  status_created:#8a8a92
 )
 
 small_out="$root/src/gitlab-icons-small.mjs"

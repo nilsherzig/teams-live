@@ -722,7 +722,7 @@ test('buildMarkdownCard: a nested bullet without an emoji gets an explicit sub-b
   assert.equal(nested.columns[1].items[0].text, '\u25e6 child');
 });
 
-test('merge request state badges follow GitLab: open green, merged purple, closed red, draft neutral', () => {
+test('merge request header glyphs share the badge colours: open teal, merged light blue, closed red, draft neutral', () => {
   // Palette of a compact (PNG8) glyph as hex RGB triplets.
   const palette = (url) => {
     const png = Buffer.from(url.split(',')[1], 'base64');
@@ -732,10 +732,10 @@ test('merge request state badges follow GitLab: open green, merged purple, close
     for (let i = 0; i < length; i += 3) colours.push(png.subarray(at + 4 + i, at + 7 + i).toString('hex'));
     return colours;
   };
-  assert.ok(palette(GITLAB_ICONS_SMALL['merge-request-open']).includes('2da160'), 'open is green');
-  assert.ok(palette(GITLAB_ICONS_SMALL.merge).includes('7b58cf'), 'merged is purple');
+  assert.ok(palette(GITLAB_ICONS_SMALL['merge-request-open']).includes('17a085'), 'open is teal');
+  assert.ok(palette(GITLAB_ICONS_SMALL.merge).includes('428fdc'), 'merged is light blue');
   assert.ok(palette(GITLAB_ICONS_SMALL['merge-request-close']).includes('dd2b0e'), 'closed is red');
-  assert.ok(palette(GITLAB_ICONS_SMALL['merge-request']).includes('737278'), 'draft is neutral');
+  assert.ok(palette(GITLAB_ICONS_SMALL['merge-request']).includes('8a8a92'), 'draft is neutral');
   const open = buildMergeRequestCard({ ...baseMr, state: 'open' });
   const draft = buildMergeRequestCard({ ...baseMr, state: 'open', draft: true });
   const merged = buildMergeRequestCard({ ...baseMr, state: 'merged', draft: true });
