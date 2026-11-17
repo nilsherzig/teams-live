@@ -72,9 +72,9 @@ export function lifecycleMarkdown({ kind, facts = [], notice = null }) {
 }
 
 /**
- * Teams deep link to a chat, or null when no valid link exists: only thread
- * and 1:1 chats (`19:...`) have the `/l/chat/<id>/0` form, so the Notes
- * self-chat (`48:notes`) and channels get none rather than a broken one. The
+ * Teams deep link to a chat, or null when no valid link exists: thread and
+ * 1:1 chats (`19:...`) and the self-chat (`48:notes`) have the
+ * `/l/chat/<id>/0` form; channels get none rather than a broken one. The
  * id is URL-decoded once first (a configured id may already be encoded), then
  * encoded for the path, including the characters encodeURIComponent keeps.
  */
@@ -83,6 +83,8 @@ export function chatUrl(conversationId) {
   try {
     id = decodeURIComponent(id);
   } catch {}
+  // The self-chat has one fixed, user-independent id; its deep link was verified in Teams web.
+  if (id === '48:notes') return 'https://teams.microsoft.com/l/chat/48%3Anotes/0';
   if (!/^19:[^\s/?#]+$/.test(id) || id.includes('@thread.tacv2')) return null;
   const encoded = encodeURIComponent(id).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
   return `https://teams.microsoft.com/l/chat/${encoded}/0`;
@@ -102,6 +104,62 @@ export function chatList(chats) {
     .filter((c) => c.name)
     .map(({ name, url }) => (url ? `[${name}](${url})` : name));
   return parts.length > 0 ? parts.join(', ') : 'none';
+}
+
+const mdEscape = (text) => str(text).replace(/([\\*_[\]`])/g, '\\$1');
+const urlEncode = (text) => encodeURIComponent(text).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+
+/**
+ * A configured service base (`https://host[/context]`, or a bare host when
+ * `bareHost`), reduced to origin plus path, or null: only http(s) without
+ * credentials qualifies, and any query or fragment (a token, say) is dropped.
+ */
+function httpBase(value, { bareHost = false } = {}) {
+  let raw = str(value).trim();
+  if (bareHost && raw && !/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) raw = `https://${raw}`;
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (!/^https?:$/.test(url.protocol) || !url.hostname || url.username || url.password) return null;
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+}
+
+/** The group's webhook management page in the GitLab web UI, or null when the host or the group is unusable. */
+export function gitlabHooksUrl(host, group) {
+  const base = httpBase(host, { bareHost: true });
+  const segments = str(group)
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (!base || segments.length === 0 || segments.some((segment) => segment === '.' || segment === '..')) return null;
+  return `${base}/groups/${segments.map(urlEncode).join('/')}/-/hooks`;
+}
+
+/** The Jira project landing page, or null when the base or the key is unusable. */
+export function jiraProjectUrl(baseUrl, key) {
+  const base = httpBase(baseUrl);
+  const clean = str(key).trim();
+  if (!base || !/^[A-Za-z][A-Za-z0-9_]*$/.test(clean)) return null;
+  return `${base}/projects/${clean.toUpperCase()}`;
+}
+
+/** Escaped markdown text, a link when the URL is usable. */
+export function linkedText(text, url) {
+  const label = mdEscape(text);
+  return url ? `[${label}](${url})` : label;
+}
+
+/**
+ * The comma-separated Jira projects of the "Jira" fact, each a link to its
+ * project page. `projects` are keys; blanks and duplicates are dropped and an
+ * empty list reads "none". Already escaped markdown, like `chatList`.
+ */
+export function jiraProjectList(baseUrl, projects) {
+  const keys = [...new Set((Array.isArray(projects) ? projects : [projects]).map((k) => str(k).trim()).filter(Boolean))];
+  return keys.length > 0 ? keys.map((key) => linkedText(key, jiraProjectUrl(baseUrl, key))).join(', ') : 'none';
 }
 
 /** Card text: code spans shown as plain text, and what a TextBlock would read as markdown escaped. */

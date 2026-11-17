@@ -2,7 +2,16 @@ import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { setRichMessages, transport } from '../src/teams.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
-import { LIFECYCLE_KINDS, buildLifecycleCard, chatList, chatUrl, lifecycleMarkdown } from '../src/lifecycle-card.mjs';
+import {
+  LIFECYCLE_KINDS,
+  buildLifecycleCard,
+  chatList,
+  chatUrl,
+  gitlabHooksUrl,
+  jiraProjectList,
+  jiraProjectUrl,
+  lifecycleMarkdown,
+} from '../src/lifecycle-card.mjs';
 import { ADAPTIVE_CARD_VERSION, MAX_CARD_BYTES } from '../src/cards.mjs';
 import { SERVICE_ICONS } from '../src/card-icons.mjs';
 import { LIFECYCLE_ICONS, LIFECYCLE_ICONS_PX } from '../src/lifecycle-icons.mjs';
@@ -22,7 +31,8 @@ const FIXTURE_CHATS = chatList([
   { name: 'Example Group', id: FIXTURE_GROUP_ID },
   { name: 'Notes', id: '48:notes' },
 ]);
-const FIXTURE_CHATS_MD = `[Example Group](${FIXTURE_GROUP_URL}), Notes`;
+const NOTES_URL = 'https://teams.microsoft.com/l/chat/48%3Anotes/0';
+const FIXTURE_CHATS_MD = `[Example Group](${FIXTURE_GROUP_URL}), [Notes](${NOTES_URL})`;
 
 const STARTUP_FACTS = [
   ['Host', '`bot-host`'],
@@ -178,15 +188,18 @@ test('chatUrl: a Teams deep link for thread chats only, the id encoded for the p
   assert.equal(chatUrl('19:a_b@unq.gbl.spaces'), 'https://teams.microsoft.com/l/chat/19%3Aa_b%40unq.gbl.spaces/0');
   // Characters encodeURIComponent keeps are encoded too, so the markdown link cannot end early.
   assert.equal(chatUrl('19:x(1)@thread.v2'), 'https://teams.microsoft.com/l/chat/19%3Ax%281%29%40thread.v2/0');
-  // No link rather than a broken one: self chat, channels, malformed ids.
-  for (const id of ['48:notes', '19:chan@thread.tacv2', '', undefined, 'not an id', '19:a/b@thread.v2', '19:a b@thread.v2']) {
+  // The self chat has one fixed, user-independent link (verified in Teams web), also from its encoded id.
+  assert.equal(chatUrl('48:notes'), NOTES_URL);
+  assert.equal(chatUrl('48%3Anotes'), NOTES_URL);
+  // No link rather than a broken one: channels, malformed ids, other 48: ids.
+  for (const id of ['48:other', '48:notes/x', '19:chan@thread.tacv2', '', undefined, 'not an id', '19:a/b@thread.v2', '19:a b@thread.v2']) {
     assert.equal(chatUrl(id), null, String(id));
   }
 });
 
 test('chatList: comma-separated linked names, escaped, no count and no parentheses', () => {
   assert.equal(chatList([{ name: 'Example Group', id: FIXTURE_GROUP_ID }, { name: 'Notes', id: '48:notes' }]), FIXTURE_CHATS_MD);
-  assert.equal(chatList([{ name: 'A_b [x] *y*', id: '48:notes' }]), 'A\\_b \\[x\\] \\*y\\*');
+  assert.equal(chatList([{ name: 'A_b [x] *y*', id: '48:notes' }]), `[A\\_b \\[x\\] \\*y\\*](${NOTES_URL})`);
   assert.equal(chatList([{ name: '', id: FIXTURE_GROUP_ID }]), 'none');
   assert.equal(chatList([]), 'none');
   assert.doesNotMatch(FIXTURE_CHATS, /^\d|\(\d|\(Notes/);
@@ -467,14 +480,14 @@ test('rich mode: Chats lists the titles Teams shows as links, not the configured
   await withTitles({ [FIXTURE_GROUP_ID]: 'Example Group' }, async (looked) => {
     const [call] = await announce(watcher, 'sendStartupAnnouncement');
     assert.equal(gridFacts(cardOf(call[2])).Chats, FIXTURE_CHATS_MD);
-    // The Notes self-chat is not looked up: its configured label is the name and it has no link.
+    // The Notes self-chat is not looked up: its configured label is the name, linked with the fixed self-chat URL.
     assert.deepEqual(looked, [FIXTURE_GROUP_ID]);
     assert.ok(!call[1].includes('config_handle'));
     // The regular message (plain mode) lists the same linked names.
     const plain = chatsWatcher(watcher.config.conversations, {});
     const [plainCall] = await announce(plain, 'sendStartupAnnouncement');
     // (the regular message goes out as HTML)
-    assert.ok(plainCall[1].includes(`<b>Watched Conversations</b>: <a href="${FIXTURE_GROUP_URL}">Example Group</a>, Notes</li>`));
+    assert.ok(plainCall[1].includes(`<b>Watched Conversations</b>: <a href="${FIXTURE_GROUP_URL}">Example Group</a>, <a href="${NOTES_URL}">Notes</a></li>`));
   });
 });
 
@@ -547,4 +560,77 @@ test('rich mode: the GitLab fact is short in the card and keeps the real interva
     assert.match(plainCall[1], /<b>GitLab<\/b>: Webhooks active \(/);
     if (setup) assert.match(plainCall[1], /configured on <code>fixture-group<\/code> id: 32, fallback poll every 60s\)/);
   }
+});
+
+test('gitlabHooksUrl: the group webhook management page of the configured host, nothing else', () => {
+  assert.equal(gitlabHooksUrl('git.example.invalid', 'grp'), 'https://git.example.invalid/groups/grp/-/hooks');
+  assert.equal(gitlabHooksUrl('https://git.example.invalid:8443/', 'grp/sub group'), 'https://git.example.invalid:8443/groups/grp/sub%20group/-/hooks');
+  // A query or fragment (a token) of the configured value never reaches the link.
+  assert.equal(gitlabHooksUrl('https://git.example.invalid/gl?private_token=SECRET#x', 'g'), 'https://git.example.invalid/gl/groups/g/-/hooks');
+  for (const [host, group] of [
+    ['javascript:alert(1)', 'g'],
+    ['ftp://git.example.invalid', 'g'],
+    ['https://user:pass@git.example.invalid', 'g'],
+    ['', 'g'],
+    ['git.example.invalid', ''],
+    ['git.example.invalid', '../x'],
+    [undefined, 'g'],
+  ]) {
+    assert.equal(gitlabHooksUrl(host, group), null, `${host} ${group}`);
+  }
+});
+
+test('jiraProjectUrl and jiraProjectList: linked project keys, escaped, deduplicated', () => {
+  assert.equal(jiraProjectUrl('https://jira.example.invalid/', 'exm'), 'https://jira.example.invalid/projects/EXM');
+  assert.equal(jiraProjectUrl('https://jira.example.invalid/ctx?t=SECRET', 'EXM'), 'https://jira.example.invalid/ctx/projects/EXM');
+  assert.equal(jiraProjectUrl('file:///etc', 'EXM'), null);
+  assert.equal(jiraProjectUrl('https://u:p@jira.example.invalid', 'EXM'), null);
+  assert.equal(jiraProjectUrl('https://jira.example.invalid', 'A B'), null);
+  assert.equal(jiraProjectUrl('https://jira.example.invalid', 'EXM)/../x'), null);
+  assert.equal(
+    jiraProjectList('https://jira.example.invalid', ['EXM', 'OTH', 'EXM', ' ', '']),
+    '[EXM](https://jira.example.invalid/projects/EXM), [OTH](https://jira.example.invalid/projects/OTH)'
+  );
+  // An unusable base or key stays plain escaped text, never a broken link; no projects reads "none".
+  assert.equal(jiraProjectList('', ['EXM']), 'EXM');
+  assert.equal(jiraProjectList('https://jira.example.invalid', ['A_B*']), 'A\\_B\\*');
+  assert.equal(jiraProjectList('https://jira.example.invalid', []), 'none');
+  assert.doesNotMatch(jiraProjectList('https://jira.example.invalid', ['EXM']), /Active|\(EXM\)$/);
+});
+
+test('rich mode: Webhooks and Jira link to the configured management pages; plain mode links them too', async () => {
+  const jira = { isConfigured: () => true, baseUrl: 'https://jira.example.invalid', project: 'EXM' };
+  const build = (teams) => {
+    const watcher = chatsWatcher([], teams, { host: 'git.example.invalid' });
+    watcher.webhookServer = { listening: true, port: 8123 };
+    watcher.webhookSetupStatus = { ok: true, group: 'fixture-group', hookId: 32 };
+    watcher.jira = jira;
+    return watcher;
+  };
+  const [call] = await announce(build({ rich_messages: true }), 'sendStartupAnnouncement');
+  const facts = gridFacts(cardOf(call[2]));
+  assert.equal(facts.GitLab, '[Webhooks](https://git.example.invalid/groups/fixture-group/-/hooks) · fallback 60s');
+  assert.equal(facts.Jira, '[EXM](https://jira.example.invalid/projects/EXM)');
+  assert.doesNotMatch(JSON.stringify([facts.GitLab, facts.Jira]), /callback|secret|token|Active/i);
+
+  const [plain] = await announce(build({}), 'sendStartupAnnouncement');
+  assert.match(plain[1], /<a href="https:\/\/git\.example\.invalid\/groups\/fixture-group\/-\/hooks">Webhooks active<\/a> \(configured on <code>fixture-group<\/code> id: 32/);
+  assert.match(plain[1], /<b>Jira<\/b>: <a href="https:\/\/jira\.example\.invalid\/projects\/EXM">EXM<\/a>/);
+});
+
+test('Jira fact: Not configured, an unusable base, and a concise health suffix', async () => {
+  const jiraFact = async (jira, health) => {
+    const watcher = chatsWatcher([]);
+    watcher.jira = jira;
+    if (health) watcher.health = { getHealth: () => ({ services: { jira: { status: health } } }) };
+    const [call] = await announce(watcher, 'sendStartupAnnouncement');
+    return gridFacts(cardOf(call[2])).Jira;
+  };
+  assert.equal(await jiraFact(null), 'Not configured');
+  assert.equal(await jiraFact({ isConfigured: () => false, baseUrl: '', project: 'EXM' }), 'Not configured');
+  assert.equal(await jiraFact({ isConfigured: () => true, baseUrl: 'ftp://x', project: 'EXM' }), 'EXM');
+  const base = { isConfigured: () => true, baseUrl: 'https://jira.example.invalid', project: 'EXM' };
+  assert.equal(await jiraFact(base, 'auth_expired'), '[EXM](https://jira.example.invalid/projects/EXM) (auth expired)');
+  assert.equal(await jiraFact(base, 'error'), '[EXM](https://jira.example.invalid/projects/EXM) (error)');
+  assert.equal(await jiraFact(base, 'ok'), '[EXM](https://jira.example.invalid/projects/EXM)');
 });

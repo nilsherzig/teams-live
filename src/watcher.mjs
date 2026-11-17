@@ -46,7 +46,7 @@ import {
 } from './cards.mjs';
 import { buildHelpCard, helpEntries, splitHelpCategories } from './card-help.mjs';
 import { LEADERBOARD_MAX_ENTRIES, PODIUM_SIZE, buildLeaderboardCard, rankLeaderboard } from './card-leaderboard.mjs';
-import { buildLifecycleCard, chatList, lifecycleMarkdown } from './lifecycle-card.mjs';
+import { buildLifecycleCard, chatList, gitlabHooksUrl, jiraProjectList, lifecycleMarkdown, linkedText } from './lifecycle-card.mjs';
 import {
   UserDirectory,
   normalizeName,
@@ -1483,6 +1483,8 @@ export class MergeRequestWatcher {
     let gitlabFact;
     if (isWhListening) {
       const targetGroup = this.webhookSetupStatus?.group || this.config.gitlab?.group || this.gitlab?.group;
+      // The group's webhook management page of the configured GitLab host (never the callback URL or its secret).
+      const hooksUrl = gitlabHooksUrl(this.gitlab?.host || this.config.gitlab?.host, targetGroup);
       let setupDetail = '';
       if (this.webhookSetupStatus?.ok) {
         setupDetail = `configured on \`${targetGroup}\`${this.webhookSetupStatus.hookId ? ` id: ${this.webhookSetupStatus.hookId}` : ''}, `;
@@ -1490,11 +1492,22 @@ export class MergeRequestWatcher {
         setupDetail = `listening on :${this.webhookServer.port}, `;
       }
       // The card drops the group and the hook id: the state and the fallback interval are what matter.
-      const cardValue = this.webhookSetupStatus?.ok ? `Webhooks · fallback ${pollSec}` : `Webhook listener · fallback ${pollSec}`;
-      gitlabFact = ['GitLab', `Webhooks active (${setupDetail}fallback poll every ${pollSec})`, cardValue];
+      const cardState = this.webhookSetupStatus?.ok ? 'Webhooks' : 'Webhook listener';
+      gitlabFact = [
+        'GitLab',
+        `${linkedText('Webhooks active', hooksUrl)} (${setupDetail}fallback poll every ${pollSec})`,
+        `${linkedText(cardState, hooksUrl)} · fallback ${pollSec}`,
+      ];
     } else {
       gitlabFact = ['GitLab', `Polling every ${pollSec}`, `Polling · ${pollSec}`];
     }
+
+    // Jira: the configured project(s) as links, with a concise suffix when the service is unhealthy.
+    const jiraHealth = this.health?.getHealth?.()?.services?.jira?.status;
+    const jiraSuffix = jiraHealth === 'auth_expired' ? ' (auth expired)' : jiraHealth === 'error' ? ' (error)' : '';
+    const jiraValue = this.jira?.isConfigured()
+      ? `${jiraProjectList(this.jira.baseUrl, [this.jira.project])}${jiraSuffix}`
+      : 'Not configured';
 
     const facts = [
       ['Host', `\`${hostname}\``],
@@ -1504,7 +1517,7 @@ export class MergeRequestWatcher {
       ['Started', startTime],
       ['Watched Conversations', chats, chats],
       gitlabFact,
-      ['Jira', this.jira?.isConfigured() ? 'Active (CKS)' : 'Not configured'],
+      ['Jira', jiraValue, jiraValue],
       ['Home Assistant (HR works)', this.hrworks?.isConfigured() ? 'Active' : 'Not configured'],
       ['Precompute Cache', `Active (every ${this.precomputeIntervalMs / 60000}m)`],
     ];
