@@ -1188,7 +1188,10 @@ export class MergeRequestWatcher {
             const conversationId = saved.conversationId || key.slice(0, slashIndex);
             const messageId = saved.messageId || key.slice(slashIndex + 1);
             if (this.completedMessages.has(String(messageId))) continue;
-            if (saved.status && STATUS_REACTIONS[saved.status]) {
+            // Rich mode never places state reactions, so a saved status says nothing
+            // about a thumbs up: it may be the user's own. The other state reactions
+            // stay tracked so a leftover of an earlier plain run is still retired.
+            if (saved.status && STATUS_REACTIONS[saved.status] && !(this.richMessages && STATUS_REACTIONS[saved.status] === 'like')) {
               this.recordBotReaction(messageId, STATUS_REACTIONS[saved.status]);
             }
             this.watched.set(key, {
@@ -1829,6 +1832,9 @@ export class MergeRequestWatcher {
     const msgId = String(messageId);
     const k = String(key).toLowerCase();
     if (this.botPlacedReactions.get(msgId)?.has(k)) return true;
+    // With rich cards the bot places no state reactions: whatever sits on the
+    // message (a thumbs up included) is the user's, whatever the entry status.
+    if (this.richMessages) return false;
     for (const entry of this.watched.values()) {
       if (String(entry.messageId) === msgId && entry.status) {
         const expectedBotReaction = STATUS_REACTIONS[entry.status];
@@ -2330,8 +2336,42 @@ export class MergeRequestWatcher {
     this.checkWatchedKey(key).catch((err) => log(`initial check failed for ${key}: ${err.message}`));
   }
 
+  /**
+   * Retires a state reaction the bot placed before rich cards were enabled
+   * (restored from the saved state, so it is tracked as the bot's). A thumbs up
+   * is only forgotten, never removed: it is the approve gesture, so it may be
+   * the user's own.
+   */
+  async retireStateReaction(entry) {
+    const key = STATUS_REACTIONS[entry.status];
+    if (!key || !this.isBotReaction(entry.messageId, key)) return;
+    this.unrecordBotReaction(entry.messageId, key);
+    if (key === 'like') return;
+    const result = await removeReaction(entry.conversationId, entry.messageId, key);
+    if (!result.ok) log(`removing ${entry.status} reaction failed: ${result.error?.message}`);
+  }
+
+  /**
+   * Removes the pending (eyes) reaction once the original message carries the
+   * status itself. With rich cards the bot never places it, so only a tracked
+   * leftover is removed.
+   */
+  async dropPendingReaction(entry) {
+    const key = STATUS_REACTIONS.pending;
+    if (this.richMessages && !this.isBotReaction(entry.messageId, key)) return;
+    await removeReaction(entry.conversationId, entry.messageId, key).catch(() => {});
+    this.unrecordBotReaction(entry.messageId, key);
+  }
+
   async setReactionStatus(entry, newStatus) {
     const { conversationId, messageId } = entry;
+    // The status stays tracked, but a rich card already shows it: no reaction
+    // is added (only an earlier one is retired).
+    if (this.richMessages) {
+      if (entry.status !== newStatus) await this.retireStateReaction(entry);
+      entry.status = newStatus;
+      return;
+    }
     // When the original message is directly edited, don't place the pending (eyes) reaction
     const skipPending = entry.editedOriginal && newStatus === 'pending';
 
@@ -2673,8 +2713,7 @@ export class MergeRequestWatcher {
       if (editResult.ok) {
         entry.editedOriginal = true;
         mr.lastReportedClosed = false;
-        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
-        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
+        await this.dropPendingReaction(entry);
         this.saveState();
         return;
       }
@@ -2851,8 +2890,7 @@ export class MergeRequestWatcher {
       if (editResult.ok) {
         entry.editedOriginal = true;
         mr.lastReportedClosed = false;
-        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
-        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
+        await this.dropPendingReaction(entry);
         this.saveState();
         return;
       }
@@ -2961,8 +2999,7 @@ export class MergeRequestWatcher {
       if (editResult.ok) {
         entry.editedOriginal = true;
         mr.lastReportedClosed = true;
-        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
-        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
+        await this.dropPendingReaction(entry);
         this.saveState();
         return;
       }
@@ -3184,8 +3221,7 @@ export class MergeRequestWatcher {
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, jobUrl, msg);
       if (editResult.ok) {
         entry.editedOriginal = true;
-        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
-        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
+        await this.dropPendingReaction(entry);
         this.saveState();
         return;
       }
@@ -3225,8 +3261,7 @@ export class MergeRequestWatcher {
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, pipeUrl, msg);
       if (editResult.ok) {
         entry.editedOriginal = true;
-        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
-        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
+        await this.dropPendingReaction(entry);
         this.saveState();
         return;
       }
@@ -3344,8 +3379,7 @@ export class MergeRequestWatcher {
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, issueUrl, msg);
       if (editResult.ok) {
         entry.editedOriginal = true;
-        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
-        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
+        await this.dropPendingReaction(entry);
         this.saveState();
         return;
       }
@@ -3382,8 +3416,7 @@ export class MergeRequestWatcher {
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, alertUrl, msg);
       if (editResult.ok) {
         entry.editedOriginal = true;
-        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
-        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
+        await this.dropPendingReaction(entry);
         this.saveState();
         return;
       }
@@ -3430,8 +3463,7 @@ export class MergeRequestWatcher {
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, pageUrl, msg);
       if (editResult.ok) {
         entry.editedOriginal = true;
-        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
-        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
+        await this.dropPendingReaction(entry);
         this.saveState();
         return;
       }
