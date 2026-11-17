@@ -56,8 +56,8 @@ const factsOf = (card) => {
   for (const i of card.body[0].items) {
     if (i.type === 'FactSet') for (const f of i.facts) out[f.title] = unlink(f.value);
     else if (i.type === 'ColumnSet' && i.columns[0]?.items[0]?.weight === 'Bolder') {
-      const flat = (x) => (x.type === 'ColumnSet' ? x.columns.flatMap((c) => c.items.flatMap(flat)) : [x]);
-      const parts = i.columns.slice(1).flatMap((c) => c.items.flatMap(flat).map((x) => (x.type === 'Image' ? (x.height === '22px' ? x.altText : null) : x.text)));
+      const flat = (x) => (x.type === 'ColumnSet' ? x.columns.flatMap((c) => c.items.flatMap(flat)) : x.type === 'Container' ? x.items.flatMap(flat) : [x]);
+      const parts = i.columns.slice(1).flatMap((c) => c.items.flatMap(flat).map((x) => (x.type === 'Image' ? (/^(19|20|22)px$/.test(x.height) ? x.altText : null) : x.text)));
       out[i.columns[0].items[0].text] = unlink(parts.filter(Boolean).join(' '));
     }
   }

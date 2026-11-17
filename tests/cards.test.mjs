@@ -33,7 +33,7 @@ const rawFacts = (card) => {
         r.columns
           .slice(1)
           .flatMap((c) => c.items)
-          .map((i) => (i.type === 'Image' && i.height === '22px' ? i.altText : i.type === 'TextBlock' ? i.text : null))
+          .map((i) => (i.type === 'Image' && /^(19|20|22)px$/.test(i.height) ? i.altText : i.type === 'TextBlock' ? i.text : null))
           .filter(Boolean)
           .join(' '),
       ])

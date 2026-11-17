@@ -9,7 +9,9 @@ import {
 import {
   AVATAR_PX,
   MAX_AVATAR_CHARS_PER_CARD,
+  MAX_PILL_PX,
   collectCardPeople,
+  pillSize,
   isImageDataUri,
   userRow,
 } from '../src/card-user-row.mjs';
@@ -546,8 +548,10 @@ const items = (card) => card.body[0].items;
 const factOf = (card, label) => items(card).find((i) => i.type === 'ColumnSet' && i.columns[0].items[0].text === label);
 // A person row is [label, one stretch value column of person lines]; a person line is [picture|spacer, name (with the lead in front on the first line), optional pill].
 const isPersonLine = (line) => line.type === 'ColumnSet' && line.columns.some((c) => c.items[0].type === 'Image' && c.items[0].style === 'Person');
-const rows = (card) => items(card).filter((i) => i.type === 'ColumnSet' && i.columns[1]?.items?.some(isPersonLine));
-const linesOf = (row) => row.columns[1].items.filter((l) => l.type === 'ColumnSet');
+// The value column holds the lines directly, or a Layout.Flow container of pill and people.
+const valueOf = (row) => row.columns[1].items.flatMap((i) => (i.type === 'Container' ? i.items : [i]));
+const rows = (card) => items(card).filter((i) => i.type === 'ColumnSet' && i.columns[1]?.items && valueOf(i).some(isPersonLine));
+const linesOf = (row) => valueOf(row).filter((l) => l.type === 'ColumnSet');
 const lineTexts = (line) => line.columns.map((c) => c.items[0].text ?? c.items[0].altText);
 // Profile pictures only: the service icon in the header is an Image too.
 const images = (card) => JSON.stringify(card).match(/"type":"Image"[^}]*"style":"Person"/g)?.length ?? 0;
@@ -634,7 +638,7 @@ test('merge request approvers and the auto-merge user get pictures, in fact orde
   const approvers = linesOf(approval);
   assert.equal(approval.columns[1].items.some((l) => l.type === 'TextBlock'), false, 'no line of its own for the lead');
   // The approved pill has a line of its own above the names; no "By" lead is needed: the pill says what they did.
-  assert.equal(approval.columns[1].items[0].altText, 'Approved');
+  assert.equal(valueOf(approval)[0].altText, 'Approved');
   assert.deepEqual(approvers.map(lineTexts), [['Alice Example', 'Alice Example'], ['Bob Example', 'Bob Example']]);
   assert.equal(approvers[0].columns[1].items[0].wrap, true);
   assert.equal(autoMerge.columns[0].items[0].text, 'Auto-merge');
@@ -653,8 +657,8 @@ test('a person without a picture next to one with a picture keeps their name', (
   const card = buildMergeRequestCard({ ...MR, avatars: { 'Bob Example': URI } });
   const [approval] = rows(card);
   assert.equal(approval.columns[0].items[0].text, 'Approval');
-  assert.deepEqual(linesOf(approval).map(lineTexts), [['\u00A0', 'Alice Example'], ['Bob Example', 'Bob Example']]);
-  assert.equal(approval.columns[1].items[0].altText, 'Approved');
+  assert.deepEqual(linesOf(approval).map(lineTexts), [['Alice Example'], ['Bob Example', 'Bob Example']]);
+  assert.equal(valueOf(approval)[0].altText, 'Approved');
   assert.equal(images(card), 1);
 });
 
@@ -669,7 +673,7 @@ test('only plain image data URIs are embedded', () => {
   assert.equal(isImageDataUri(URI), true);
 });
 
-test('person rows wrap only their name: one stretch value column, a fixed picture cell, no fixed text column', () => {
+test('person rows wrap only their name: one stretch value column, a picture cell, no fixed text column', () => {
   const card = buildMergeRequestCard({ ...MR, avatars: { 'Alice Example': URI, 'Bob Example': URI, 'Carol Example': URI } });
   const labelWidth = factOf(card, 'Status').columns[0].width;
   const personRows = rows(card);
@@ -677,25 +681,15 @@ test('person rows wrap only their name: one stretch value column, a fixed pictur
   for (const row of personRows) {
     // Same shape as the plain fact rows: a fixed label cell, then a single stretch value cell.
     assert.equal(row.columns.length, 2);
-    assert.equal(row.columns[0].width, labelWidth, 'the 112px label column and the same value origin');
+    assert.equal(row.columns[0].width, labelWidth, 'the label column and the same value origin');
     assert.equal(row.columns[1].width, 'stretch');
-    for (const line of linesOf(row).filter((l) => l.type === 'ColumnSet')) {
-      // The only auto column allowed is the approval pill image (an image never wraps), after the name.
-      const isPill = (c) => c.width === 'auto' && c.items[0].type === 'Image' && c.items[0].height === '22px';
-      const pills = line.columns.filter(isPill);
-      assert.ok(pills.length <= 1);
-      const lineColumns = line.columns.filter((c) => !isPill(c));
-      const widths = lineColumns.map((c) => c.width);
-      assert.equal(widths.filter((w) => w === 'stretch').length, 1, 'exactly one flexible column per line');
-      assert.equal(widths.at(-1), 'stretch', 'and it is the name');
-      assert.equal(widths.includes('auto'), false, 'no auto-sized text column that could be squeezed character by character');
-      for (const c of lineColumns.slice(0, -1)) assert.match(c.width, /^\d+px$/);
-      assert.equal(lineColumns.length, 2, 'picture (or spacer) and name only: no fixed lead eating the name width');
-      for (const c of lineColumns) {
-        const block = c.items[0];
-        if (block.type === 'TextBlock' && c.width !== 'stretch') assert.equal(block.wrap, false, 'spacers never wrap');
-      }
-      assert.equal(lineColumns.at(-1).items[0].wrap, true, 'the name wraps');
+    for (const line of linesOf(row)) {
+      // [picture] [name]: the picture never wraps, the name does; no fixed lead column eats the name width.
+      assert.ok(line.columns.length <= 2, 'picture (when there is one) and name only');
+      const name = line.columns.at(-1);
+      assert.equal(name.items[0].type, 'TextBlock');
+      assert.equal(name.items[0].wrap, true, 'the name wraps');
+      for (const c of line.columns.slice(0, -1)) assert.equal(c.items[0].type, 'Image');
     }
   }
   // The approval pill replaces the "By" lead; the auto-merge lead stays.
@@ -705,17 +699,21 @@ test('person rows wrap only their name: one stretch value column, a fixed pictur
   assert.ok(json.includes('\u{1F500} Enabled by'));
 });
 
-test('userRow stacks several people into one value column and aligns names without a picture', () => {
+test('userRow flows several people in one value column; a name without a picture is just its name', () => {
   const { row } = userRow('Approval', [{ name: 'Alice Example', avatar: URI }, { name: 'Bob Example' }, { name: 'Carol Example', avatar: URI }], { headline: '\u{1F44D} By', labelWidth: '112px' });
   assert.deepEqual(row.columns.map((c) => c.width), ['112px', 'stretch']);
-  const lines = row.columns[1].items;
+  const [flow] = row.columns[1].items;
+  assert.equal(flow.type, 'Container');
+  assert.equal(flow.layouts[0].type, 'Layout.Flow');
+  assert.equal(flow.layouts[0].horizontalItemsAlignment, 'Left', 'left aligned like every other value');
+  const lines = flow.items;
   assert.equal(lines.length, 3, 'no extra line for the lead');
-  assert.deepEqual(lines.map((l) => l.columns.length), [2, 2, 2], 'every line has picture-or-spacer and name');
-  assert.deepEqual(lines.map((l) => l.columns[1].items[0].text), ['\u{1F44D} By Alice Example', 'Bob Example', 'Carol Example']);
-  assert.equal(lines[1].columns[0].width, `${AVATAR_PX}px`, 'spacer stands in for the missing picture');
+  assert.deepEqual(lines.map((l) => l.columns.length), [2, 1, 2], 'picture and name, or only the name');
+  assert.deepEqual(lines.map((l) => l.columns.at(-1).items[0].text), ['\u{1F44D} By Alice Example', 'Bob Example', 'Carol Example']);
+  assert.equal(lines[0].columns.at(-1).width, 'auto', 'inside the flow a name sizes to its text and wraps when needed');
   assert.equal(row.columns[0].verticalContentAlignment, 'Top', 'the label stays with the first line');
   const single = userRow('Author', [{ name: 'Alice Example', avatar: URI }], { labelWidth: '112px' });
-  assert.deepEqual(single.row.columns[1].items[0].columns.map((c) => c.width), [`${AVATAR_PX}px`, 'stretch'], 'no lead, no extra column');
+  assert.deepEqual(single.row.columns[1].items[0].columns.map((c) => c.width), [`${AVATAR_PX}px`, 'stretch'], 'one person: a compact line, no flow');
   assert.equal(single.row.columns[0].verticalContentAlignment, 'Center');
 });
 
@@ -808,13 +806,17 @@ test('a single approver is one compact line: picture, then the lead and the name
   assert.equal(row.columns[0].verticalContentAlignment, 'Center');
 });
 
-test('a status pill sits on a line of its own above the names, which keep the full width', () => {
+test('a status pill and the people flow in one container, the pill first, left aligned', () => {
   const pill = { url: URI, alt: 'Approved', width: 80, height: 20 };
   const { row } = userRow('Approval', [{ name: 'Alice Example', avatar: URI }, { name: 'Bob Example', avatar: URI }], { pill, labelWidth: '112px' });
-  const [pillItem, first, second] = row.columns[1].items;
+  assert.equal(row.columns[1].items.length, 1, 'one flow container in the value column');
+  const [pillItem, first, second] = row.columns[1].items[0].items;
+  assert.equal(row.columns[1].items[0].layouts[0].type, 'Layout.Flow');
   assert.deepEqual({ type: pillItem.type, alt: pillItem.altText, w: pillItem.width, h: pillItem.height }, { type: 'Image', alt: 'Approved', w: '80px', h: '20px' });
-  assert.deepEqual(first.columns.map((c) => c.width), [`${AVATAR_PX}px`, 'stretch']);
-  assert.deepEqual(second.columns.map((c) => c.width), [`${AVATAR_PX}px`, 'stretch']);
+  assert.deepEqual(first.columns.map((c) => c.width), ['auto', 'auto']);
+  assert.deepEqual(second.columns.map((c) => c.width), ['auto', 'auto']);
+  assert.equal(makeRichMessage('x', buildMergeRequestCard({ ...MR, avatars: { 'Alice Example': URI } })).card.version, '1.5', 'a card with a flow declares 1.5');
+  assert.equal(makeRichMessage('x', buildJiraIssueCard({ ...JIRA })).card.version, '1.4', 'every other card stays on 1.4');
   assert.equal(row.columns[0].verticalContentAlignment, 'Top');
   for (const bad of [{ ...pill, url: 'https://example.com/p.png' }, { ...pill, width: 0 }, { ...pill, height: NaN }, null]) {
     const r = userRow('Approval', [{ name: 'Alice Example', avatar: URI }], { pill: bad, labelWidth: '112px' }).row;
@@ -825,7 +827,16 @@ test('a status pill sits on a line of its own above the names, which keep the fu
 
 // ── approval pills in the Approval row ──────────────────────────────────────
 
-const pillOf = (row) => row.columns.flatMap((c) => c.items).find((i) => i.type === 'Image' && i.height === '22px');
+test('pill images never exceed the value column width, proportions kept', () => {
+  assert.deepEqual(pillSize({ width: 99, height: 22 }), { width: 99, height: 22 });
+  for (const [width, height] of [[143, 22], [144, 22], [151, 22]]) {
+    const size = pillSize({ width, height });
+    assert.equal(size.width, MAX_PILL_PX);
+    assert.ok(Math.abs(size.height / size.width - height / width) < 0.03);
+  }
+});
+
+const pillOf = (row) => row.columns.flatMap((c) => c.items).find((i) => i.type === 'Image' && /^(19|20|22)px$/.test(i.height));
 
 test('approval row: a pending request shows only the gray pill with the real counts', () => {
   for (const [given, required] of [[0, 2], [1, 2], [2, 3]]) {
@@ -846,15 +857,15 @@ test('approval row: approvers with pictures get the teal Approved pill above the
   assert.equal(approval.columns.length, 2, 'label and one value column, as every row');
   assert.equal(approval.columns[1].width, 'stretch');
   const [first, second] = linesOf(approval);
-  assert.equal(approval.columns[1].items[0].altText, 'Approved');
-  assert.equal(approval.columns[1].items.filter((i) => i.type === 'Image').length, 1, 'one pill, not one per approver');
-  assert.equal(first.columns.some((c) => c.items[0].height === '22px'), false);
-  assert.equal(second.columns.some((c) => c.items[0].height === '22px'), false);
-  const texts = approval.columns[1].items.flatMap((l) => l.columns?.flatMap((c) => c.items.map((i) => i.text ?? '')) ?? []);
+  assert.equal(valueOf(approval)[0].altText, 'Approved');
+  assert.equal(valueOf(approval).filter((i) => i.type === 'Image').length, 1, 'one pill, not one per approver');
+  assert.equal(first.columns.some((c) => /^(19|20|22)px$/.test(c.items[0].height)), false);
+  assert.equal(second.columns.some((c) => /^(19|20|22)px$/.test(c.items[0].height)), false);
+  const texts = valueOf(approval).flatMap((l) => l.columns?.flatMap((c) => c.items.map((i) => i.text ?? '')) ?? []);
   assert.equal(texts.some((t) => /\bBy\b/.test(t)), false);
-  // The pill has its own line; the name keeps the only stretch column and wraps.
-  assert.equal(first.columns.filter((c) => c.width === 'stretch').length, 1);
-  assert.equal(first.columns.some((c) => c.width === 'auto'), false);
+  // Pill and people share one flow, left aligned; each name wraps in its own column.
+  assert.equal(approval.columns[1].items[0].layouts[0].horizontalItemsAlignment, 'Left');
+  assert.equal(first.columns.at(-1).items[0].wrap, true);
 });
 
 test('approval row: approvers without any picture still show the pill, then the names as text', () => {
@@ -884,7 +895,7 @@ test('approval row: long names and the pill stay within the cap and never use a 
   for (const line of linesOf(rows(card)[0])) {
     const textColumns = line.columns.filter((c) => c.items[0].type === 'TextBlock' && c.items[0].text !== ' ');
     assert.equal(textColumns.length, 1);
-    assert.equal(textColumns[0].width, 'stretch');
+    assert.equal(textColumns[0].width, 'auto');
     assert.equal(textColumns[0].items[0].wrap, true);
   }
   const message = makeRichMessage('x', card);

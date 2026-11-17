@@ -341,6 +341,14 @@ export const ADAPTIVE_CARD_CONTENT_TYPE = 'application/vnd.microsoft.card.adapti
 const RICH_MESSAGE = Symbol.for('teams-live.richMessage');
 
 /**
+ * Layout.Flow (people and pills that wrap) is an Adaptive Cards 1.5 feature:
+ * a card that uses it declares 1.5, every other card stays on 1.4.
+ */
+function withRequiredVersion(card) {
+  return JSON.stringify(card).includes('"Layout.Flow"') && card.version !== '1.5' ? { ...card, version: '1.5' } : card;
+}
+
+/**
  * A message that can be shown as an Adaptive Card (`teams.rich_messages`) and
  * always carries its regular markdown text as the fallback.
  * Without a card this returns the plain markdown string, so callers can pass
@@ -349,7 +357,7 @@ const RICH_MESSAGE = Symbol.for('teams-live.richMessage');
 export function makeRichMessage(markdown, card) {
   const text = String(markdown ?? '').trim();
   if (!card || typeof card !== 'object') return text;
-  return { [RICH_MESSAGE]: true, markdown: text, card };
+  return { [RICH_MESSAGE]: true, markdown: text, card: withRequiredVersion(card) };
 }
 
 export function isRichMessage(message) {

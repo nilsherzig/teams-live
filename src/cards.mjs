@@ -24,7 +24,7 @@ import { MR_BADGES } from './mr-badges.mjs';
 import { approvalBadge, approvalBadgeText } from './approval-badges.mjs';
 import { CI_STATUS_ICONS } from './ci-icons.mjs';
 import { GITLAB_ICONS_SMALL } from './gitlab-icons-small.mjs';
-import { MAX_AVATAR_CHARS_PER_CARD, avatarColumn, isImageDataUri, userRow } from './card-user-row.mjs';
+import { MAX_AVATAR_CHARS_PER_CARD, avatarColumn, isImageDataUri, pillImage, userRow } from './card-user-row.mjs';
 
 export const ADAPTIVE_CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json';
 export const ADAPTIVE_CARD_VERSION = '1.4';
@@ -105,7 +105,7 @@ function factRow(title, value, width, logo = null, badge = null) {
       type: 'Column',
       width: 'auto',
       verticalContentAlignment: 'Center',
-      items: [{ type: 'Image', url: badge.url, altText: badge.alt, width: `${badge.width}px`, height: `${badge.height}px` }],
+      items: [pillImage(badge)],
     });
     if (value) {
       columns.push({ type: 'Column', width: 'stretch', verticalContentAlignment: 'Center', items: [textBlock(value)] });

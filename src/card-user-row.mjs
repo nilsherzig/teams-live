@@ -65,9 +65,20 @@ function pictureSpacer() {
   };
 }
 
-/** A status pill image on a line of its own (an embedded data URI, never a remote URL). */
-function pillImage(pill) {
-  return { type: 'Image', url: pill.url, altText: text(pill.alt), width: `${pill.width}px`, height: `${pill.height}px`, horizontalAlignment: 'Left' };
+// The widest a pill may be: the value column of a 308px card is about 190px and
+// the label column eats the rest, so a wider image would run into the card padding.
+export const MAX_PILL_PX = 132;
+
+/** The pixel size of a pill image, scaled down (keeping its proportions) to MAX_PILL_PX. */
+export function pillSize({ width, height }) {
+  if (!(width > MAX_PILL_PX)) return { width, height };
+  return { width: MAX_PILL_PX, height: Math.round((height * MAX_PILL_PX) / width) };
+}
+
+/** A status pill image (an embedded data URI, never a remote URL). */
+export function pillImage(pill) {
+  const { width, height } = pillSize(pill);
+  return { type: 'Image', url: pill.url, altText: text(pill.alt), width: `${width}px`, height: `${height}px`, horizontalAlignment: 'Left' };
 }
 
 const usablePill = (pill) =>
@@ -78,20 +89,20 @@ const usablePill = (pill) =>
  * @param {Array<{name: string, avatar?: string}>} people
  * @param {object} [opts]
  * @param {string} [opts.headline]  a short lead such as "👍 By" or "🔀 Enabled by", written in front of the first name (same wrapping text, no line of its own)
- * @param {{url: string, alt?: string, width: number, height: number}} [opts.pill]  a status pill image on the first line of the value, above the people
+ * @param {{url: string, alt?: string, width: number, height: number}} [opts.pill]  a status pill image, the first item of the flowing value
  * @param {number} [opts.charBudget]  remaining picture budget for this card
  * @param {string} [opts.labelWidth]  fixed label column width, so the label lines up with the other fact rows
  * @returns {{row: object, usedChars: number}|null}
  *
  * Layout: the label column, then ONE stretch value column (so the value starts
- * where every other fact row's value starts) holding one line per person:
- * [picture] [name], below an optional pill on a line of its own (like the
- * Status row: pill first, then the details), so the pill never squeezes the
- * names on a narrow screen. The normal case, one person, is one compact line:
- * the lead is part of the name's own text ("👍 By Alice Example"), so it never
- * takes a row or a column of its own. Only the name column stretches, so on a
- * narrow screen only the name wraps, at word boundaries; the label, the picture
- * and the pill never shrink or break.
+ * where every other fact row's value starts). With a pill or several people the
+ * value column holds one Layout.Flow container (Adaptive Cards 1.5, which
+ * makeRichMessage then declares): [pill] [picture name] [picture name] ... flowing
+ * left to right and wrapping to the next line only when the card is too narrow.
+ * Each person is a small auto-width [picture][name] pair that wraps its own name
+ * at word boundaries, so no name is ever cut off and the label, the pictures and
+ * the pill never shrink. The normal case, one person without a pill, stays one
+ * compact line, the lead being part of the name's own text ("👍 By Alice Example").
  * There is no fixed text column beside the names: it would eat the width they need.
  */
 export function userRow(label, people, { headline = '', pill = null, charBudget = MAX_AVATAR_CHARS_PER_CARD, maxAvatars = MAX_AVATARS_PER_ROW, labelWidth = 'auto' } = {}) {
@@ -120,16 +131,34 @@ export function userRow(label, people, { headline = '', pill = null, charBudget 
   if (shown === 0) return null;
   const lead = text(headline);
   const hasPill = usablePill(pill);
-  const lines = entries.map(({ name, avatar }, index) => {
-    const columns = [];
-    columns.push(avatar ? avatarColumn(name, avatar, `${AVATAR_PX}px`) : pictureSpacer());
-    columns.push(textColumn(index === 0 && lead ? `${lead} ${name}` : name, {}, 'stretch'));
-    return index === 0 && !hasPill ? { type: 'ColumnSet', columns } : { type: 'ColumnSet', spacing: 'Small', columns };
-  });
-  const valueItems = hasPill ? [pillImage(pill), ...lines] : lines;
   const labelColumn = textColumn(text(label), { weight: 'Bolder' }, labelWidth);
-  // With several lines stacked, the label stays with the first line.
-  if (valueItems.length > 1) labelColumn.verticalContentAlignment = 'Top';
+  let valueItems;
+  if (hasPill || entries.length > 1) {
+    // Pill and people flow left to right and wrap only when the card is too
+    // narrow (Layout.Flow, Adaptive Cards 1.5: Teams honours it; an older
+    // renderer ignores it and stacks the same items, which is still readable).
+    // Each person stays together: [picture] [name], the name wraps in its own column.
+    const people = entries.map(({ name, avatar }, index) => {
+      const columns = [];
+      if (avatar) columns.push(avatarColumn(name, avatar, 'auto'));
+      columns.push(textColumn(index === 0 && lead ? `${lead} ${name}` : name, {}, 'auto'));
+      return { type: 'ColumnSet', columns };
+    });
+    valueItems = [
+      {
+        type: 'Container',
+        layouts: [{ type: 'Layout.Flow', horizontalItemsAlignment: 'Left', verticalItemsAlignment: 'Center', columnSpacing: 'Small', rowSpacing: 'Small' }],
+        items: hasPill ? [pillImage(pill), ...people] : people,
+      },
+    ];
+  } else {
+    // One person, no pill: one compact line, only the name stretches.
+    const { name, avatar } = entries[0];
+    const columns = [avatar ? avatarColumn(name, avatar, `${AVATAR_PX}px`) : pictureSpacer(), textColumn(lead ? `${lead} ${name}` : name, {}, 'stretch')];
+    valueItems = [{ type: 'ColumnSet', columns }];
+  }
+  // With the pill and people stacked or wrapped, the label stays with the first line.
+  if (hasPill || entries.length > 1) labelColumn.verticalContentAlignment = 'Top';
   const valueColumn = { type: 'Column', width: 'stretch', items: valueItems };
   return { row: { type: 'ColumnSet', spacing: 'Small', columns: [labelColumn, valueColumn] }, usedChars: used };
 }
