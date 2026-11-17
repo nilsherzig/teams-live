@@ -1,3 +1,18 @@
+/** A failed Jira HTTP request; `status` is the HTTP status code. */
+export class JiraHttpError extends Error {
+  constructor(message, status, { resource = false } = {}) {
+    super(message);
+    this.name = 'JiraHttpError';
+    this.status = status;
+    this.resource = resource;
+  }
+
+  /** The one issue is not accessible (no permission or not found); the credentials may be fine. */
+  get isIssueAccessError() {
+    return this.resource && (this.status === 403 || this.status === 404);
+  }
+}
+
 export class JiraClient {
   constructor({ url = '', token = '', boardId = '', project = 'CKS', onAuthError = null, onSuccess = null } = {}) {
     this.baseUrl = (url || '').replace(/\/+$/, '');
@@ -173,7 +188,13 @@ export class JiraClient {
     }
   }
 
-  async request(path, { method = 'GET', body = null } = {}) {
+  /**
+   * `resource: true` marks a request for one named resource (an issue): there a
+   * 403 (no permission to this issue) or 404 (no such issue) is a fact about that
+   * resource, not about the credentials, so it is thrown as a JiraHttpError and
+   * does not raise the service-wide auth alert. A 401 is always an auth failure.
+   */
+  async request(path, { method = 'GET', body = null, resource = false } = {}) {
     if (!this.baseUrl || !this.token) {
       throw new Error('Jira is not configured (missing URL or token)');
     }
@@ -201,10 +222,10 @@ export class JiraClient {
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       const errStr = `Jira HTTP ${res.status}: ${errText.slice(0, 150)}`;
-      if (res.status === 401 || res.status === 403) {
+      if (res.status === 401 || (res.status === 403 && !resource)) {
         this.onAuthError?.(errStr);
       }
-      throw new Error(errStr);
+      throw new JiraHttpError(errStr, res.status, { resource });
     }
     this.onSuccess?.('Jira');
     return await res.json();
@@ -217,7 +238,7 @@ export class JiraClient {
     const key = String(issueKey || '').trim().toUpperCase();
     if (!key) throw new Error('Issue key is required');
     const endpoint = `rest/api/2/issue/${encodeURIComponent(key)}?fields=summary,status,assignee,priority,issuetype`;
-    const res = await this.request(endpoint);
+    const res = await this.request(endpoint, { resource: true });
     const fields = res.fields || {};
     return {
       key: res.key,

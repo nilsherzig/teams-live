@@ -54,6 +54,8 @@ import { formatTokenExpiry } from './gitlab.mjs';
 
 const log = (...args) => console.error(new Date().toISOString(), '[watcher]', ...args);
 
+// Longest wait before a watched Jira issue we cannot read (403/404) is checked again.
+const JIRA_ISSUE_DENIED_MAX_DELAY_MS = 6 * 60 * 60 * 1000;
 const HEADSUP_PREFIX = 'headsup: ';
 const CI_PREFIX = 'CI pipeline';
 const CI_JOB_PREFIX = 'CI job ';
@@ -1013,6 +1015,8 @@ export class MergeRequestWatcher {
     this.syncingAwardEmojis = new Set();
     this.serviceAlertState = new Map();
     this.pollIntervalMs = (config.gitlab.poll_interval_seconds || 60) * 1000;
+    // Watched Jira issues we cannot read (HTTP 403/404): `${mr key}|${issue key}` -> retry state.
+    this.jiraIssueDenials = new Map();
     this.historyLimit = config.gitlab.history_limit || 50;
     this.historyMaxAgeMinutes = config.gitlab?.history_max_age_minutes ?? 10;
     this.maxWatchDurationMs = (config.gitlab?.max_watch_duration_seconds ?? 7200) * 1000;
@@ -1411,6 +1415,19 @@ export class MergeRequestWatcher {
 
     log(`Sending shutdown announcement (${signal}) to ${adminConv}...`);
     await sendDirectMessage(adminConv, msg);
+  }
+
+  /** True while a watched Jira issue we could not read is still in its retry back-off. */
+  isJiraIssueDenied(denialKey, now = Date.now()) {
+    return now < (this.jiraIssueDenials.get(denialKey)?.nextCheck ?? 0);
+  }
+
+  /** Records another denied read of a watched Jira issue; returns the delay until the next check. */
+  recordJiraIssueDenial(denialKey, now = Date.now()) {
+    const strikes = (this.jiraIssueDenials.get(denialKey)?.strikes ?? 0) + 1;
+    const delayMs = Math.min(JIRA_ISSUE_DENIED_MAX_DELAY_MS, this.pollIntervalMs * 2 ** strikes);
+    this.jiraIssueDenials.set(denialKey, { strikes, nextCheck: now + delayMs });
+    return delayMs;
   }
 
   async notifyAdminAuthExpired(serviceName, errorDetails) {
@@ -3512,9 +3529,15 @@ export class MergeRequestWatcher {
 
       // Check watched Jira issues
       for (const issue of (entry.jiraIssues || [])) {
+        const denialKey = `${key}|${issue.key}`;
         try {
           if (!this.jira?.isConfigured()) continue;
+          // An issue we may not read (or that is gone) is retried with a growing delay, not every poll.
+          if (this.isJiraIssueDenied(denialKey)) continue;
           const issueData = await this.jira.getIssue(issue.key);
+          if (this.jiraIssueDenials.delete(denialKey)) {
+            log(`Jira issue ${issue.key} is accessible again (watched on ${key})`);
+          }
           if (!issueData) continue;
 
           const statusChanged = issue.status !== issueData.status;
@@ -3528,7 +3551,13 @@ export class MergeRequestWatcher {
             issue.summary = issueData.summary;
           }
         } catch (jiraErr) {
-          log(`Error checking Jira issue ${issue.key} for ${key}: ${jiraErr.message}`);
+          if (jiraErr?.isIssueAccessError) {
+            // Permission or not-found for this one issue: not an authentication problem.
+            const delayMs = this.recordJiraIssueDenial(denialKey);
+            log(`Jira issue ${issue.key} (watched on ${key}) is not accessible (HTTP ${jiraErr.status}); next check in ${Math.round(delayMs / 60_000)} min`);
+          } else {
+            log(`Error checking Jira issue ${issue.key} for ${key}: ${jiraErr.message}`);
+          }
         }
       }
 
