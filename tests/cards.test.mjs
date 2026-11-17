@@ -14,7 +14,6 @@ import {
   mdLink,
 } from '../src/cards.mjs';
 import { SERVICE_ICONS } from '../src/card-icons.mjs';
-import { GITLAB_ICONS } from '../src/gitlab-icons.mjs';
 import { GITLAB_ICONS_SMALL } from '../src/gitlab-icons-small.mjs';
 
 const items = (card) => card.body[0].items;
@@ -746,7 +745,7 @@ test('merge request header glyphs share the badge colours: open teal, merged lig
   assert.equal(headerGlyph(closed).altText, 'Closed', 'a draft flag never masks closed');
   const urls = new Set([open, draft, merged, closed].map((c) => headerGlyph(c).url));
   assert.equal(urls.size, 4, 'four distinct glyphs');
-  assert.equal(headerGlyph(draft).url, GITLAB_ICONS['merge-request']);
+  assert.equal(headerGlyph(draft).url, GITLAB_ICONS_SMALL['merge-request']);
   assert.equal(facts(open).Status, 'Open');
   assert.equal(facts(draft).Status, 'Draft');
   assert.equal(facts(merged).Status, 'Merged');

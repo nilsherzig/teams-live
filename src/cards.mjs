@@ -20,7 +20,6 @@
 // open a capability-link confirmation page: they never act by themselves.
 
 import { SERVICE_ICONS } from './card-icons.mjs';
-import { GITLAB_ICONS } from './gitlab-icons.mjs';
 import { MR_BADGES } from './mr-badges.mjs';
 import { approvalBadge, approvalBadgeText } from './approval-badges.mjs';
 import { CI_STATUS_ICONS } from './ci-icons.mjs';
@@ -242,13 +241,13 @@ function header(service, kind, glyph = null, ref = null, stats = null) {
     ? textBlock(emojiBrand.emoji, { size: 'Small' })
     : { type: 'Image', url: SERVICE_ICONS[service], altText: name, width: '16px', height: '16px' };
   const glyphColumn =
-    glyph && GITLAB_ICONS[glyph.icon]
+    glyph && GITLAB_ICONS_SMALL[glyph.icon]
       ? [
           {
             type: 'Column',
             width: 'auto',
             verticalContentAlignment: 'Center',
-            items: [{ type: 'Image', url: GITLAB_ICONS[glyph.icon], altText: glyph.label, width: '16px', height: '16px' }],
+            items: [{ type: 'Image', url: GITLAB_ICONS_SMALL[glyph.icon], altText: glyph.label, width: '16px', height: '16px' }],
           },
         ]
       : [];

@@ -71,6 +71,7 @@ small_icons=(
   merge:#428fdc
   merge-request-close:#dd2b0e
   merge-request:#8a8a92
+  pipeline:#2f7ed8
   status_success:#17a085
   status_failed:#dd2b0e
   status_running:#2f7ed8
