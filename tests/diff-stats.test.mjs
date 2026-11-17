@@ -7,8 +7,14 @@ import { MergeRequestWatcher } from '../src/watcher.mjs';
 
 const SHA = 'a'.repeat(40);
 const base = { state: 'open', iid: 7, project: 'group/app', title: 'Example', url: 'https://gitlab.example.com/x', approved: false };
-const statsBlock = (card) => card.body[0].items.find((i) => i.type === 'RichTextBlock');
+// The counts sit in the header label, right after "Merge request"; there is no row of their own.
+const headerBlock = (card) => card.body[0].items[0].columns.find((c) => c.width === 'stretch').items[0];
+const statsBlock = (card) => {
+  const block = headerBlock(card);
+  return block.type === 'RichTextBlock' ? block : undefined;
+};
 const texts = (block) => block.inlines.map((r) => r.text).join('');
+const standalone = (card) => card.body[0].items.filter((i) => i.type === 'RichTextBlock');
 
 function withFetch(handler, fn) {
   const original = globalThis.fetch;
@@ -27,17 +33,22 @@ const summary = (s) => json({ data: { project: { mergeRequest: { diffStatsSummar
 
 test('the card shows coloured +/- line totals with textual signs', () => {
   const block = statsBlock(buildMergeRequestCard({ ...base, diffStats: { additions: 1822, deletions: 144 } }));
-  assert.equal(texts(block), '+1822 −144 lines');
-  assert.equal(block.inlines[0].color, 'Good');
-  assert.equal(block.inlines[2].color, 'Attention');
+  assert.equal(texts(block), 'GitLab · Merge request  +1822 −144');
+  assert.equal(block.inlines[2].color, 'Good');
+  assert.equal(block.inlines[4].color, 'Attention');
+  assert.equal(block.inlines[0].isSubtle, true);
+  assert.deepEqual(standalone(buildMergeRequestCard({ ...base, diffStats: { additions: 1, deletions: 1 } })), [], 'no separate line below the project');
+  assert.ok(!JSON.stringify(buildMergeRequestCard({ ...base, diffStats: { additions: 1, deletions: 1 } })).includes(' lines'));
   assert.ok(!block.inlines.some((r) => r.type !== 'TextRun'));
   assert.ok(!JSON.stringify(buildMergeRequestCard({ ...base, diffStats: { additions: 1, deletions: 1 } })).includes('Action.'));
 });
 
 test('zero totals are shown, unknown or malformed totals are omitted', () => {
-  assert.equal(texts(statsBlock(buildMergeRequestCard({ ...base, diffStats: { additions: 0, deletions: 0 } }))), '+0 −0 lines');
+  assert.equal(texts(statsBlock(buildMergeRequestCard({ ...base, diffStats: { additions: 0, deletions: 0 } }))), 'GitLab · Merge request  +0 −0');
   for (const diffStats of [undefined, null, {}, { additions: 5 }, { additions: '5', deletions: 1 }, { additions: -1, deletions: 0 }, { additions: 1.5, deletions: 0 }, { additions: NaN, deletions: 0 }]) {
-    assert.equal(statsBlock(buildMergeRequestCard({ ...base, diffStats })), undefined, JSON.stringify(diffStats));
+    const card = buildMergeRequestCard({ ...base, diffStats });
+    assert.equal(statsBlock(card), undefined, JSON.stringify(diffStats));
+    assert.equal(headerBlock(card).text, 'GitLab · Merge request', 'the plain header label is unchanged');
   }
 });
 
@@ -122,8 +133,8 @@ test('an in-place refresh keeps the last known totals of the same head commit wh
   watcher.saveState = () => {};
   const mr = { project: 'group/app', iid: 7, title: 'Example' };
   const details = { sha: SHA, title: 'Example', diffStats: { additions: 10, deletions: 4, files: 1 } };
-  assert.equal(texts(statsBlock(watcher.buildMrCard(mr, details))), '+10 −4 lines');
-  assert.equal(texts(statsBlock(watcher.buildMrCard(mr, { ...details, diffStats: null }))), '+10 −4 lines');
+  assert.equal(texts(statsBlock(watcher.buildMrCard(mr, details))), 'GitLab · Merge request  +10 −4');
+  assert.equal(texts(statsBlock(watcher.buildMrCard(mr, { ...details, diffStats: null }))), 'GitLab · Merge request  +10 −4');
   // Another head commit: the old totals no longer apply, so the row is left out.
   assert.equal(statsBlock(watcher.buildMrCard(mr, { ...details, sha: 'd'.repeat(40), diffStats: null })), undefined);
 });

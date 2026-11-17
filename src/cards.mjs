@@ -210,7 +210,7 @@ function numericReference(sigil, id, url) {
  * Compact integration header: small service logo (or emoji), "Service - kind"
  * and, right-aligned, the optional identifier of the entity (see referenceColumn).
  */
-function header(service, kind, glyph = null, ref = null) {
+function header(service, kind, glyph = null, ref = null, stats = null) {
   const emojiBrand = EMOJI_BRANDS[service];
   const name = emojiBrand ? emojiBrand.name : SERVICES[service];
   const lead = emojiBrand
@@ -241,7 +241,7 @@ function header(service, kind, glyph = null, ref = null) {
         type: 'Column',
         width: 'stretch',
         verticalContentAlignment: 'Center',
-        items: [textBlock(kind ? `${name} · ${kind}` : name, { size: 'Small', weight: 'Bolder', isSubtle: true })],
+        items: [headerLabel(kind ? `${name} · ${kind}` : name, stats)],
       },
       ...(referenceColumn(ref) ? [referenceColumn(ref)] : []),
     ],
@@ -275,11 +275,10 @@ export function assembleCard({
   fallbackText,
 }) {
   const items = [
-    header(service, kind, glyph, ref),
+    header(service, kind, glyph, ref, stats),
     // `title: null` is a card whose header already names it (no second heading).
     title === null ? null : textBlock(mdLink(title || subtitle || 'Update', titleUrl), { weight: 'Bolder', size: 'Medium' }),
     subtitle && title ? textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }) : null,
-    diffStatsRow(stats),
     badgeRow(badges),
     ...factBlocks(facts),
     ...extraItems,
@@ -302,23 +301,26 @@ export function assembleCard({
 }
 
 /**
- * Compact "+added -removed" line counts: adjacent coloured runs (Good and
- * Attention) that also carry a textual sign, so the meaning does not depend on
- * colour. Only exact totals are shown: null, missing or malformed counts give
- * no row at all instead of a made-up zero.
+ * The header's label ("GitLab · Merge request"). With exact line counts it is
+ * followed, in the same wrapping text block, by the compact "+added -removed":
+ * adjacent coloured runs (Good and Attention) that also carry a textual sign, so
+ * the meaning does not depend on colour. Only exact totals are shown: null,
+ * missing or malformed counts leave the label alone instead of a made-up zero.
  */
-function diffStatsRow(stats) {
+function headerLabel(text, stats) {
   const isCount = (v) => Number.isInteger(v) && v >= 0;
-  if (!stats || !isCount(stats.additions) || !isCount(stats.deletions)) return null;
-  const run = (text, extra = {}) => ({ type: 'TextRun', text, size: 'Small', ...extra });
+  if (!stats || !isCount(stats.additions) || !isCount(stats.deletions)) {
+    return textBlock(text, { size: 'Small', weight: 'Bolder', isSubtle: true });
+  }
+  const run = (value, extra = {}) => ({ type: 'TextRun', text: value, size: 'Small', weight: 'Bolder', ...extra });
   return {
     type: 'RichTextBlock',
-    spacing: 'None',
     inlines: [
-      run(`+${stats.additions}`, { color: 'Good', weight: 'Bolder' }),
+      run(text, { isSubtle: true }),
+      run('  '),
+      run(`+${stats.additions}`, { color: 'Good' }),
       run(' '),
-      run(`\u2212${stats.deletions}`, { color: 'Attention', weight: 'Bolder' }),
-      run(' lines', { isSubtle: true }),
+      run(`\u2212${stats.deletions}`, { color: 'Attention' }),
     ],
   };
 }
