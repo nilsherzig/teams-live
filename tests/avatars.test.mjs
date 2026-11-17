@@ -729,7 +729,8 @@ test('pictures per row and per card are capped and the rest falls back to names'
   const capped = buildMergeRequestCard({ ...MR, avatars: { 'Alice Example': huge, 'Bob Example': huge, 'Carol Example': huge } });
   const used = (JSON.stringify(capped).match(/data:image\/jpeg;base64,A+/g) || []).reduce((n, s) => n + s.length, 0);
   assert.ok(used <= MAX_AVATAR_CHARS_PER_CARD, `pictures use ${used} chars`);
-  assert.equal(images(capped), 1, 'the second 5000-char picture would exceed the card budget');
+  assert.equal((JSON.stringify(capped).match(/data:image\/jpeg;base64,A+/g) || []).length, 1, 'the second 5000-char picture would exceed the card budget');
+  assert.ok(images(capped) > 1, 'the people whose picture did not fit get the neutral placeholder, not a bare name');
 });
 
 test('a card with the largest pictures stays within the wire budget', () => {

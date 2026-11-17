@@ -128,6 +128,20 @@ export function userRow(label, people, { headline = '', pill = null, charBudget 
       }
     }
   }
+  // A person whose real picture did not fit the budget gets the neutral
+  // placeholder instead (a few hundred characters), so the people of a row that
+  // shows pictures are never a mix of pictures and bare names.
+  if (shown > 0) {
+    for (const entry of entries) {
+      if (!entry.candidate || entry.avatar) continue;
+      if (shown < maxAvatars && PLACEHOLDER_AVATAR.length <= remaining) {
+        remaining -= PLACEHOLDER_AVATAR.length;
+        used += PLACEHOLDER_AVATAR.length;
+        shown += 1;
+        entry.avatar = PLACEHOLDER_AVATAR;
+      }
+    }
+  }
   if (shown === 0) return null;
   const lead = text(headline);
   const hasPill = usablePill(pill);
@@ -147,7 +161,7 @@ export function userRow(label, people, { headline = '', pill = null, charBudget 
     valueItems = [
       {
         type: 'Container',
-        layouts: [{ type: 'Layout.Flow', horizontalItemsAlignment: 'Left', verticalItemsAlignment: 'Center', columnSpacing: 'Small', rowSpacing: 'Small' }],
+        layouts: [{ type: 'Layout.Flow', horizontalItemsAlignment: 'Left', verticalItemsAlignment: 'Center', columnSpacing: 'Medium', rowSpacing: 'Small' }],
         items: hasPill ? [pillImage(pill), ...people] : people,
       },
     ];
