@@ -90,10 +90,11 @@ const baseMr = {
   url: 'https://gitlab.example.com/group/project/-/merge_requests/42',
 };
 
-test('ciStatusInfo maps statuses to labels and container styles', () => {
-  assert.deepEqual(ciStatusInfo('success'), { label: 'Passed', style: 'good' });
-  assert.deepEqual(ciStatusInfo('failed'), { label: 'Failed', style: 'attention' });
-  assert.equal(ciStatusInfo('running').style, 'accent');
+test('ciStatusInfo maps statuses to labels', () => {
+  assert.deepEqual(ciStatusInfo('success'), { label: 'Passed' });
+  assert.deepEqual(ciStatusInfo('failed'), { label: 'Failed' });
+  assert.equal(ciStatusInfo('running').label, 'Running');
+  assert.equal(ciStatusInfo('success_with_warnings').label, 'Passed with warnings');
   assert.equal(ciStatusInfo('waiting_for_resource').label, 'waiting for resource');
   assert.equal(ciStatusInfo(undefined).label, 'Unknown');
 });
@@ -116,13 +117,13 @@ test('merge request card: open, approved, green pipeline, auto-merge', () => {
   const f = facts(card);
   assert.equal(f.Status, 'Open');
   assert.equal(f.Approval, '\u{1F44D} By Alice Example, Bob Example');
-  assert.equal(f.Pipeline, '\u2705 Passed (#7)');
+  assert.equal(f.Pipeline, 'Passed (#7)');
   assert.equal(f['Auto-merge'], '\u{1F500} Enabled by Alice Example');
   assert.equal(f.Target, 'main');
   assert.equal(f.Ticket, 'EX-123');
   assert.equal(f.Rebase, undefined);
   assert.equal(rawTitle(card), `[Add example feature](${baseMr.url})`);
-  assert.equal(rawFacts(card).Pipeline, '\u2705 [Passed (#7)](https://gitlab.example.com/group/project/-/pipelines/7)');
+  assert.equal(rawFacts(card).Pipeline, '[Passed (#7)](https://gitlab.example.com/group/project/-/pipelines/7)');
   assert.equal(rawFacts(card).Ticket, '[EX-123](https://jira.example.com/browse/EX-123)');
 });
 
@@ -133,7 +134,7 @@ test('merge request card: failed pipeline shows in the pipeline row, the card st
     pipeline: { id: 8, status: 'failed' },
   });
   assert.equal(style(card), 'emphasis');
-  assert.equal(facts(card).Pipeline, '\u274c Failed (#8)');
+  assert.equal(facts(card).Pipeline, 'Failed (#8)');
 });
 
 test('merge request card: needs rebase and not approved (neutral card)', () => {
@@ -180,16 +181,16 @@ test('job card shows stage, ref, duration, failure reason, pipeline and MR', () 
   });
   assertValidCard(card);
   assert.equal(mainTitle(card), 'unit-tests');
-  assert.equal(style(card), 'attention');
+  assert.equal(style(card), 'emphasis');
   const f = facts(card);
-  assert.equal(f.Status, '\u274c Failed');
+  assert.equal(f.Status, 'Failed');
   assert.equal(f.Stage, 'test');
   assert.equal(f['Failure reason'], 'script_failure');
-  assert.equal(f.Pipeline, '\u274c Failed (#7)');
+  assert.equal(f.Pipeline, 'Failed (#7)');
   assert.equal(f['Merge request'], '!42 Add example feature');
 
   const ok = buildJobCard({ id: 100, name: 'lint', status: 'success', failureReason: 'ignored' });
-  assert.equal(style(ok), 'good');
+  assert.equal(style(ok), 'emphasis');
   assert.equal(facts(ok)['Failure reason'], undefined);
 });
 
@@ -209,8 +210,8 @@ test('pipeline card', () => {
   assert.equal(mainTitle(card), 'project');
   assert.equal(headerRef(card), '[#7](https://gitlab.example.com/group/project/-/pipelines/7)');
   assert.equal(subtitle(card), undefined);
-  assert.equal(style(card), 'accent');
-  assert.equal(facts(card).Status, '\u23f3 Running');
+  assert.equal(style(card), 'emphasis');
+  assert.equal(facts(card).Status, 'Running');
   assert.equal(facts(card)['YAML errors'], 'jobs:build config should be a hash');
   assert.equal(rawTitle(card), '[project](https://gitlab.example.com/group/project/-/pipelines/7)');
   assert.equal(rawFacts(card)['Merge request'], `[!42 Add example feature](${baseMr.url})`);
@@ -467,7 +468,7 @@ test('cross references inside the card are linked when their URL is known', () =
     pipeline: { id: 7, status: 'success', url: pipelineUrl },
     jira: { key: 'EX-123', url: jiraUrl },
   });
-  assert.equal(rawFacts(mr).Pipeline, `\u2705 [Passed (#7)](${pipelineUrl})`);
+  assert.equal(rawFacts(mr).Pipeline, `[Passed (#7)](${pipelineUrl})`);
   assert.equal(rawFacts(mr).Ticket, `[EX-123](${jiraUrl})`);
   // Status-like facts without a link stay plain.
   assert.equal(rawFacts(mr).Status, 'Open');
@@ -480,7 +481,7 @@ test('cross references inside the card are linked when their URL is known', () =
     pipeline: { id: 9, status: 'failed', url: 'https://gitlab.example.com/-/pipelines/9' },
     mr: { iid: 42, title: 'Fix [x]', url: baseMr.url },
   });
-  assert.equal(rawFacts(job).Pipeline, '\u274c [Failed (#9)](https://gitlab.example.com/-/pipelines/9)');
+  assert.equal(rawFacts(job).Pipeline, '[Failed (#9)](https://gitlab.example.com/-/pipelines/9)');
   assert.equal(rawFacts(job)['Merge request'], `[!42 Fix \\[x\\]](${baseMr.url})`);
 
   const pipeline = buildPipelineCard({ id: 9, status: 'success', mr: { iid: 42, title: 'Title', url: baseMr.url } });
@@ -495,11 +496,11 @@ test('cross references stay plain text when their URL is missing or invalid', ()
     pipeline: { id: 7, status: 'success' },
     jira: { key: 'EX-123', url: 'not a url' },
   });
-  assert.equal(rawFacts(mr).Pipeline, '\u2705 Passed (#7)');
+  assert.equal(rawFacts(mr).Pipeline, 'Passed (#7)');
   assert.equal(rawFacts(mr).Ticket, 'EX-123');
 
   const job = buildJobCard({ id: 5, status: 'failed', pipeline: { id: 9, status: 'failed' }, mr: { iid: 42, title: 'T' } });
-  assert.equal(rawFacts(job).Pipeline, '\u274c Failed (#9)');
+  assert.equal(rawFacts(job).Pipeline, 'Failed (#9)');
   assert.equal(rawFacts(job)['Merge request'], '!42 T');
   for (const card of [mr, job]) assert.ok(!JSON.stringify(card).includes(']('));
 });
@@ -533,20 +534,20 @@ test('status emojis match the ones of the regular messages', () => {
   assert.deepEqual(facts(open), {
     Status: 'Open',
     Approval: '\u23f3 Not approved yet',
-    Pipeline: '\u23f3 Running (#3)',
+    Pipeline: 'Running (#3)',
     Rebase: '\u26a0\ufe0f Required: behind target branch',
     'Auto-merge': '\u{1F500} Enabled',
   });
-  assert.equal(facts(buildMergeRequestCard({ ...baseMr, pipeline: { id: 4, status: 'canceled' } })).Pipeline, '\u26a0\ufe0f Canceled (#4)');
-  assert.equal(facts(buildMergeRequestCard({ ...baseMr, pipeline: { id: 4, status: 'pending' } })).Pipeline, '\u23f1\ufe0f pending (#4)');
+  assert.equal(facts(buildMergeRequestCard({ ...baseMr, pipeline: { id: 4, status: 'canceled' } })).Pipeline, 'Canceled (#4)');
+  assert.equal(facts(buildMergeRequestCard({ ...baseMr, pipeline: { id: 4, status: 'pending' } })).Pipeline, 'pending (#4)');
 
   // Job and pipeline cards: status and pipeline reference.
   for (const [status, label] of [['success', 'Passed'], ['failed', 'Failed'], ['running', 'Running'], ['manual', 'manual']]) {
-    assert.equal(facts(buildJobCard({ id: 1, status }))['Status'], `${ciStatusEmoji(status)} ${label}`);
-    assert.equal(facts(buildPipelineCard({ id: 1, status })).Status, `${ciStatusEmoji(status)} ${label}`);
+    assert.equal(facts(buildJobCard({ id: 1, status }))['Status'], label);
+    assert.equal(facts(buildPipelineCard({ id: 1, status })).Status, label);
   }
   // A pipeline without a known status keeps the neutral emoji of the regular messages.
-  assert.equal(facts(buildJobCard({ id: 1, status: 'failed', pipeline: { id: 9 } })).Pipeline, '\u{1F539} Unknown (#9)');
+  assert.equal(facts(buildJobCard({ id: 1, status: 'failed', pipeline: { id: 9 } })).Pipeline, 'Unknown (#9)');
 });
 
 test('merge request card: open cards always show approval and auto-merge, unknown differs from false', () => {
@@ -617,7 +618,7 @@ test('ciStatusEmoji normalizes case and knows cancelled', () => {
 
 test('pipeline with an id but no status reads Unknown', () => {
   const card = buildMergeRequestCard({ ...baseMr, state: 'open', pipeline: { id: 9, url: 'https://gitlab.example.com/-/pipelines/9' } });
-  assert.equal(rawFacts(card).Pipeline, '\u{1F539} [Unknown (#9)](https://gitlab.example.com/-/pipelines/9)');
+  assert.equal(rawFacts(card).Pipeline, '[Unknown (#9)](https://gitlab.example.com/-/pipelines/9)');
 });
 
 // ---------------------------------------------------------------------------
@@ -805,9 +806,9 @@ test('GitLab cards carry a state icon from the GitLab icon set next to the logo;
     }
   }
   assert.ok(seen.size >= 7);
-  // The emoji status line is untouched.
+  // The status row carries the icon image and the readable label.
   const failed = buildPipelineCard({ id: 9, status: 'failed', project: 'group/project' });
-  assert.match(JSON.stringify(failed), /\u274c Failed/);
+  assert.match(JSON.stringify(failed), /"Failed"/);
 
   // An unknown job status has no status icon (the pipeline card falls back to the pipeline icon); other services have none.
   assert.equal(headerGlyph(buildJobCard({ id: 5, name: 'b', status: 'weird' })), null);
@@ -848,7 +849,7 @@ test('header identifier slot: semantic context stays when the repeated identifie
   const mr = buildMergeRequestCard({ ...baseMr, state: 'open', targetBranch: 'main', pipeline: { id: 7, status: 'success' } });
   assert.equal(subtitle(mr), 'group/project');
   assert.equal(facts(mr).Target, 'main');
-  assert.equal(facts(mr).Pipeline, '✅ Passed (#7)');
+  assert.equal(facts(mr).Pipeline, 'Passed (#7)');
   const job = buildJobCard({ id: 5, name: 'build', status: 'failed', project: 'group/project', stage: 'test', ref: 'main' });
   assert.equal(subtitle(job), 'group/project');
   assert.equal(facts(job).Stage, 'test');

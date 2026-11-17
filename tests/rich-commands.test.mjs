@@ -49,14 +49,14 @@ const entry = () => ({ conversationId: CONV, messageId: '1700000000000', from: '
 const mrRef = (extra = {}) => ({ project: 'group/app', iid: 42, title: 'Add example feature', ...extra });
 const cardOf = (options) => JSON.parse(options.properties.cards)[0]?.content;
 // Facts of a card as {title: value}, whether they sit in a FactSet or in aligned rows (markdown links
-// reduced to their labels). The state badge row reads as its state in words (the image altText).
+// reduced to their labels). The state badge row reads as its state in words (the image altText); status icons repeat their text.
 const unlink = (t) => t.replace(/\[((?:\\.|[^\]\\])*)\]\([^)]*\)/g, '$1');
 const factsOf = (card) => {
   const out = {};
   for (const i of card.body[0].items) {
     if (i.type === 'FactSet') for (const f of i.facts) out[f.title] = unlink(f.value);
     else if (i.type === 'ColumnSet' && i.columns[0]?.items[0]?.weight === 'Bolder') {
-      const parts = i.columns.slice(1).flatMap((c) => c.items.map((x) => (x.type === 'Image' ? x.altText : x.text)));
+      const parts = i.columns.slice(1).flatMap((c) => c.items.map((x) => (x.type === 'Image' ? (x.height === '22px' ? x.altText : null) : x.text)));
       out[i.columns[0].items[0].text] = unlink(parts.filter(Boolean).join(' '));
     }
   }
@@ -102,7 +102,7 @@ test('MR status card: API approval and auto-merge data reach the initial card, d
   const facts = factsOf(cardOf(call.args[2]));
   assert.equal(facts.Approval, '⏳ Not approved yet');
   assert.equal(facts['Auto-merge'], '⏸️ Disabled');
-  assert.equal(facts.Pipeline, '✅ Passed (#7)');
+  assert.equal(facts.Pipeline, 'Passed (#7)');
   assert.equal(facts.Rebase, undefined);
 });
 

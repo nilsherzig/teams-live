@@ -42,7 +42,6 @@ import {
   MAX_CARD_BYTES,
   opsGeniePriorityBadge,
   ciStatusEmoji as getCiStatusEmoji,
-  ciStatusInfo,
 } from './cards.mjs';
 import { LEADERBOARD_MAX_ENTRIES, PODIUM_SIZE, buildLeaderboardCard, rankLeaderboard } from './card-leaderboard.mjs';
 import {
@@ -6653,7 +6652,6 @@ export class MergeRequestWatcher {
             this.richCommandMessage(lines.join('\n'), {
               service: 'gitlab',
               kind: 'Pipeline',
-              style: ciStatusInfo(pipeline.status).style,
             })
           );
           this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
@@ -6742,7 +6740,6 @@ export class MergeRequestWatcher {
         this.richCommandMessage(lines.join('\n'), {
           service: 'gitlab',
           kind: 'Pipeline',
-          style: ciStatusInfo(pipeline.status).style,
         })
       );
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});

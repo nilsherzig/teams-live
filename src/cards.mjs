@@ -22,6 +22,7 @@
 import { SERVICE_ICONS } from './card-icons.mjs';
 import { GITLAB_ICONS } from './gitlab-icons.mjs';
 import { MR_BADGES } from './mr-badges.mjs';
+import { CI_STATUS_ICONS } from './ci-icons.mjs';
 import { GITLAB_ICONS_SMALL } from './gitlab-icons-small.mjs';
 import { MAX_AVATAR_CHARS_PER_CARD, avatarColumn, isImageDataUri, userRow } from './card-user-row.mjs';
 
@@ -437,34 +438,72 @@ export function mrStateBadge(state, draft = false) {
   return draft ? MR_BADGES.draft : MR_BADGES.open;
 }
 
-/** Maps a GitLab pipeline/job status to a label and a container style. */
+/**
+ * Maps a GitLab pipeline/job status to its label. The status is shown by its
+ * icon (see ciStatusIcon) and the label; the card itself stays neutral.
+ */
 export function ciStatusInfo(status) {
   switch (str(status).toLowerCase()) {
     case 'success':
     case 'passed':
-      return { label: 'Passed', style: 'good' };
+      return { label: 'Passed' };
+    case 'success_with_warnings':
+    case 'warning':
+      return { label: 'Passed with warnings' };
     case 'failed':
-      return { label: 'Failed', style: 'attention' };
+      return { label: 'Failed' };
     case 'canceled':
     case 'cancelled':
-      return { label: 'Canceled', style: 'attention' };
+      return { label: 'Canceled' };
     case 'running':
-      return { label: 'Running', style: 'accent' };
+      return { label: 'Running' };
     case 'pending':
     case 'created':
     case 'waiting_for_resource':
     case 'preparing':
     case 'scheduled':
-      return { label: str(status).replace(/_/g, ' '), style: 'warning' };
     case 'manual':
     case 'skipped':
-      return { label: str(status), style: 'emphasis' };
+      return { label: str(status).replace(/_/g, ' ') };
     default:
-      return { label: str(status) || 'Unknown', style: 'emphasis' };
+      return { label: str(status) || 'Unknown' };
   }
 }
 
-/** "Status (#id)" fact for a pipeline, with the same emoji as the regular messages. */
+/**
+ * The GitLab status icon (an outlined circle: teal check, red cross, blue
+ * running, orange exclamation mark, gray for the rest) of a pipeline/job
+ * status; unknown statuses get the neutral question-mark icon.
+ */
+export function ciStatusIcon(status) {
+  const key =
+    {
+      success: 'success',
+      passed: 'success',
+      success_with_warnings: 'warning',
+      warning: 'warning',
+      failed: 'failed',
+      running: 'running',
+      pending: 'pending',
+      waiting_for_resource: 'pending',
+      preparing: 'preparing',
+      created: 'created',
+      scheduled: 'scheduled',
+      canceled: 'canceled',
+      cancelled: 'canceled',
+      skipped: 'skipped',
+      manual: 'manual',
+    }[str(status).toLowerCase()] || 'unknown';
+  return CI_STATUS_ICONS[key];
+}
+
+/** A fact whose value follows the GitLab status icon of `status` (see factRow). */
+function ciStatusFact(title, status, text) {
+  const icon = ciStatusIcon(status);
+  return [title, text, { logo: icon.url, alt: icon.alt }];
+}
+
+/** "Status (#id)" fact for a pipeline: the GitLab status icon, then the linked status. */
 function pipelineFact(pipeline, known) {
   if (!pipeline) {
     // No pipeline: say "none" when GitLab was asked, "unknown" when the lookup failed, nothing when not asked.
@@ -476,11 +515,11 @@ function pipelineFact(pipeline, known) {
   const id = pipeline.id ? `#${pipeline.id}` : '';
   if (!status) {
     // A pipeline without a known status reads "unknown", as in the regular messages.
-    return ['Pipeline', `\ud83d\udd39 ${mdLink(id ? `Unknown (${id})` : 'Unknown', pipeline.url)}`];
+    return ciStatusFact('Pipeline', '', mdLink(id ? `Unknown (${id})` : 'Unknown', pipeline.url));
   }
   const label = ciStatusInfo(status).label;
   const text = mdLink(id ? `${label} (${id})` : label, pipeline.url);
-  return ['Pipeline', `${ciStatusEmoji(status)} ${text}`];
+  return ciStatusFact('Pipeline', status, text);
 }
 
 /** "!42 Title" reference to a merge request, linked when its URL is known. */
@@ -596,13 +635,14 @@ export function buildJobCard(job) {
     service: 'gitlab',
     kind: 'CI job',
     glyph: ciStatusGlyph(job.status),
-    style: info.style,
+    // The card stays neutral: the status shows as its icon and text, not as a background.
+    style: 'emphasis',
     title: job.name || 'CI job',
     titleUrl: job.url,
     ref: numericReference('#', job.id, job.url),
     subtitle: job.project,
     facts: [
-      ['Status', `${ciStatusEmoji(job.status)} ${info.label}`],
+      ciStatusFact('Status', job.status, info.label),
       ['Stage', job.stage],
       ['Ref', job.ref],
       ['Duration', job.duration],
@@ -621,13 +661,13 @@ export function buildPipelineCard(pipeline) {
     service: 'gitlab',
     kind: 'Pipeline',
     glyph: ciStatusGlyph(pipeline.status) || { icon: 'pipeline', label: 'Pipeline' },
-    style: info.style,
+    style: 'emphasis',
     // A pipeline has no name of its own: its project is the title, the ID sits in the header.
     title: pipeline.project || 'Pipeline',
     titleUrl: pipeline.url,
     ref: numericReference('#', pipeline.id, pipeline.url),
     facts: [
-      ['Status', `${ciStatusEmoji(pipeline.status)} ${info.label}`],
+      ciStatusFact('Status', pipeline.status, info.label),
       ['Ref', pipeline.ref],
       ['Duration', pipeline.duration],
       ['YAML errors', pipeline.yamlErrors],
