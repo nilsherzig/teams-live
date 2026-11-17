@@ -1,4 +1,17 @@
 import './test-guard.mjs';
+/**
+ * How many approvals a merge request has and needs, as `{approvalsGiven,
+ * approvalsRequired}` (both null when GitLab does not require any: a rule-less
+ * merge request has no "N of M"). Prefers GitLab's own `approvals_left`.
+ */
+export function approvalCountsOf(approvals, approverCount = 0) {
+  const required = typeof approvals?.approvals_required === 'number' && approvals.approvals_required > 0 ? approvals.approvals_required : null;
+  if (required === null) return { approvalsGiven: null, approvalsRequired: null };
+  const given =
+    typeof approvals.approvals_left === 'number' ? Math.max(0, required - approvals.approvals_left) : approverCount;
+  return { approvalsGiven: given, approvalsRequired: required };
+}
+
 export class GitLabClient {
   constructor({ host = 'git.wiit.one', token = null, group = '', onAuthError = null, onSuccess = null } = {}) {
     this.host = (host || 'git.wiit.one').replace(/^https?:\/\//, '').replace(/\/+$/, '');
@@ -415,9 +428,9 @@ export class GitLabClient {
         : [];
       const required = typeof approvals?.approvals_required === 'number' ? approvals.approvals_required : 0;
       const approved = required > 0 ? Boolean(approvals.approved) : approvedBy.length > 0;
-      return { known: true, approved, approvedBy };
+      return { known: true, approved, approvedBy, ...approvalCountsOf(approvals, approvedBy.length) };
     } catch {
-      return { known: false, approved: false, approvedBy: [] };
+      return { known: false, approved: false, approvedBy: [], approvalsGiven: null, approvalsRequired: null };
     }
   }
 
@@ -615,6 +628,7 @@ export class GitLabClient {
     // true only when the approvals were retrieved; merged/closed merge requests
     // and failed lookups are unknown, not "not approved".
     let approvalKnown = false;
+    let approvalCounts = { approvalsGiven: null, approvalsRequired: null };
 
     if (state !== 'merged' && state !== 'closed') {
       try {
@@ -629,6 +643,7 @@ export class GitLabClient {
         approved = approvalsRequired > 0 ? Boolean(approvals.approved) : approvedBy.length > 0;
         status = approved ? 'approved' : 'pending';
         approvalKnown = true;
+        approvalCounts = approvalCountsOf(approvals, approvedBy.length);
       } catch {
         status = 'pending';
       }
@@ -688,6 +703,7 @@ export class GitLabClient {
       state,
       approved,
       approvedBy,
+      ...approvalCounts,
       approvalKnown,
       status, // 'pending' | 'approved' | 'merged' | 'closed'
       detailedMergeStatus,

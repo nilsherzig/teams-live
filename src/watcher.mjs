@@ -2526,6 +2526,9 @@ export class MergeRequestWatcher {
       targetBranch: mrDetails?.target_branch,
       approved,
       approvedBy,
+      // GitLab's own counts for the pending approval badge (null when it requires none).
+      approvalsGiven: mrDetails?.approvalsGiven ?? null,
+      approvalsRequired: mrDetails?.approvalsRequired ?? null,
       draft: mrDetails?.draft === true,
       needsRebase: mrDetails?.needsRebase === true,
       hasConflicts: mrDetails?.hasConflicts === true,
