@@ -632,7 +632,13 @@ test('merge request approvers and the auto-merge user get pictures, in fact orde
   assert.equal(approval.columns[0].items[0].text, 'Approval');
   assert.deepEqual(linesOf(approval).map(lineTexts), [['👍 By', 'Alice Example', 'Alice Example'], ['\u00A0', 'Bob Example', 'Bob Example']]);
   assert.equal(autoMerge.columns[0].items[0].text, 'Auto-merge');
-  assert.deepEqual(linesOf(autoMerge).map(lineTexts), [['🔀 By', 'Carol Example', 'Carol Example']]);
+  // The Enabled state stays explicit: a wrapping state line above the person line.
+  const [state, ...personLines] = linesOf(autoMerge);
+  assert.equal(state.type, 'TextBlock');
+  assert.equal(state.text, '🔀 Enabled');
+  assert.equal(state.wrap, true, 'the state wraps like any value text');
+  assert.deepEqual(personLines.map(lineTexts), [['By', 'Carol Example', 'Carol Example']]);
+  assert.equal(autoMerge.columns[0].verticalContentAlignment, 'Top', 'the label stays with the state line');
   const order = items(card).filter((i) => i.type === 'ColumnSet').map((i) => i.columns[0].items[0].text ?? '');
   assert.ok(order.indexOf('Approval') < order.indexOf('Auto-merge'));
   assert.ok(order.includes('Status') && order.includes('Target'), 'plain facts stay, as rows');
@@ -667,8 +673,7 @@ test('person rows wrap only their name: one stretch value column, fixed lead and
     assert.equal(row.columns.length, 2);
     assert.equal(row.columns[0].width, labelWidth, 'the 112px label column and the same value origin');
     assert.equal(row.columns[1].width, 'stretch');
-    for (const line of linesOf(row)) {
-      assert.equal(line.type, 'ColumnSet');
+    for (const line of linesOf(row).filter((l) => l.type === 'ColumnSet')) {
       const widths = line.columns.map((c) => c.width);
       assert.equal(widths.filter((w) => w === 'stretch').length, 1, 'exactly one flexible column per line');
       assert.equal(widths.at(-1), 'stretch', 'and it is the name');

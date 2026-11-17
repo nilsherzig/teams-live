@@ -111,7 +111,7 @@ test('MR status card: approved without approver names and enabled auto-merge', a
   );
   const facts = factsOf(cardOf(call.args[2]));
   assert.equal(facts.Approval, '\u{1F44D} Approved');
-  assert.equal(facts['Auto-merge'], '\u{1F500} By Alice Example');
+  assert.equal(facts['Auto-merge'], '\u{1F500} Enabled by Alice Example');
 });
 
 test('MR status card: unknown approval and auto-merge are not shown as false', async () => {

@@ -44,10 +44,10 @@ function factSet(facts) {
  * `[title, text]` fact, byte for byte; otherwise it carries the people so
  * `factBlocks` can render a picture row. `avatars` maps a name to a data URI.
  */
-function personFact(title, text, names, avatars, lead = '') {
+function personFact(title, text, names, avatars, lead = '', headline = '') {
   const has = (name) => avatars && Object.hasOwn(avatars, name) && avatars[name];
   if (!names.some(has)) return [title, text];
-  return [title, text, { lead, people: names.map((name) => ({ name, avatar: has(name) ? avatars[name] : undefined })) }];
+  return [title, text, { lead, headline, people: names.map((name) => ({ name, avatar: has(name) ? avatars[name] : undefined })) }];
 }
 
 /**
@@ -116,7 +116,7 @@ function factBlocks(facts) {
   return shown.map((fact) => {
     const extra = fact[2];
     const built = extra?.people
-      ? userRow(str(fact[0]), extra.people, { lead: extra.lead, charBudget: budget, labelWidth: width })
+      ? userRow(str(fact[0]), extra.people, { lead: extra.lead, headline: extra.headline, charBudget: budget, labelWidth: width })
       : null;
     if (built) {
       budget -= built.usedChars;
@@ -516,7 +516,7 @@ export function buildMergeRequestCard(mr) {
 
   let autoMergeText = '';
   if (autoMerge === true) {
-    autoMergeText = mr.autoMergeUser ? `🔀 By ${mr.autoMergeUser}` : '🔀 Enabled';
+    autoMergeText = `🔀 Enabled${mr.autoMergeUser ? ` by ${mr.autoMergeUser}` : ''}`;
   } else if (live) {
     autoMergeText = autoMerge === false ? '⏸️ Disabled' : '❔ Unknown (not retrieved)';
   }
@@ -548,7 +548,7 @@ export function buildMergeRequestCard(mr) {
       pipelineFact(mr.pipeline, mr.pipelineKnown),
       ['Rebase', rebase],
       autoMerge === true && mr.autoMergeUser
-        ? personFact('Auto-merge', autoMergeText, [str(mr.autoMergeUser)], mr.avatars, '🔀 By')
+        ? personFact('Auto-merge', autoMergeText, [str(mr.autoMergeUser)], mr.avatars, 'By', '🔀 Enabled')
         : ['Auto-merge', autoMergeText],
       ['Target', mr.targetBranch],
       logoFact('Ticket', mdLink(jiraLabel, mr.jira?.url), 'jira'),

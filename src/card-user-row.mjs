@@ -82,6 +82,7 @@ function pictureSpacer() {
  * @param {Array<{name: string, avatar?: string}>} people
  * @param {object} [opts]
  * @param {string} [opts.lead]  short text before the first person, e.g. "By"; it keeps its own fixed width
+ * @param {string} [opts.headline]  a state line (wrapping text) above the people, e.g. "Enabled", when the state is not in the lead
  * @param {number} [opts.charBudget]  remaining picture budget for this card
  * @param {string} [opts.labelWidth]  fixed label column width, so the label lines up with the other fact rows
  * @returns {{row: object, usedChars: number}|null}
@@ -92,7 +93,7 @@ function pictureSpacer() {
  * screen only the name wraps, at word boundaries; the label, the lead and the
  * picture never shrink or break.
  */
-export function userRow(label, people, { lead = '', charBudget = MAX_AVATAR_CHARS_PER_CARD, maxAvatars = MAX_AVATARS_PER_ROW, labelWidth = 'auto' } = {}) {
+export function userRow(label, people, { lead = '', headline = '', charBudget = MAX_AVATAR_CHARS_PER_CARD, maxAvatars = MAX_AVATARS_PER_ROW, labelWidth = 'auto' } = {}) {
   let remaining = charBudget;
   let shown = 0;
   let used = 0;
@@ -121,8 +122,14 @@ export function userRow(label, people, { lead = '', charBudget = MAX_AVATAR_CHAR
     return index === 0 ? { type: 'ColumnSet', columns } : { type: 'ColumnSet', spacing: 'Small', columns };
   });
   const labelColumn = textColumn(text(label), { weight: 'Bolder' }, labelWidth);
-  // With several people stacked, the label stays with the first line.
-  if (entries.length > 1) labelColumn.verticalContentAlignment = 'Top';
+  const headlineText = text(headline);
+  // With several lines stacked, the label stays with the first line.
+  if (entries.length > 1 || headlineText) labelColumn.verticalContentAlignment = 'Top';
+  if (headlineText) {
+    lines.unshift({ type: 'TextBlock', text: headlineText, wrap: true });
+    // The people follow the state line closely, like the lines of one value.
+    for (let i = 1; i < lines.length; i += 1) lines[i].spacing = 'Small';
+  }
   const valueColumn = { type: 'Column', width: 'stretch', items: lines };
   return { row: { type: 'ColumnSet', spacing: 'Small', columns: [labelColumn, valueColumn] }, usedChars: used };
 }

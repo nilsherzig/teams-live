@@ -117,7 +117,7 @@ test('merge request card: open, approved, green pipeline, auto-merge', () => {
   assert.equal(f.Status, '\u{1F7E2} Open');
   assert.equal(f.Approval, '\u{1F44D} By Alice Example, Bob Example');
   assert.equal(f.Pipeline, '\u2705 Passed (#7)');
-  assert.equal(f['Auto-merge'], '\u{1F500} By Alice Example');
+  assert.equal(f['Auto-merge'], '\u{1F500} Enabled by Alice Example');
   assert.equal(f.Target, 'main');
   assert.equal(f.Ticket, 'EX-123');
   assert.equal(f.Rebase, undefined);
