@@ -337,7 +337,9 @@ How the link is built:
 - The link store is bounded (500). When it is full, used-up and superseded
   records are dropped first; a still-valid open link is never evicted, and no
   new link is minted until there is room. Once the configured account approved
-  a head commit, no new link is minted for it (remembered for 7 days).
+  a head commit, no new link is minted for it (remembered for 7 days). This is
+  only a hint: it is re-checked against GitLab at most every 30 s while a card
+  is rendered, and a revoked approval makes the button return.
 - The approval is sent with the head SHA, and the page checks that the merge
   request is open, not a draft, not yet approved by the service's account and
   that GitLab lets it approve. A merge request that gained commits, was closed

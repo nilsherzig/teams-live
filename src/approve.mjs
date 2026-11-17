@@ -44,6 +44,7 @@ const MAX_BOOTSTRAP_FAILURES_PER_MINUTE = 60;
 const MAX_SESSIONS_PER_LINK = 3;
 const MAX_BOOTSTRAPS_PER_LINK_PER_MINUTE = 10;
 const READ_CACHE_MS = 5000;
+const REVALIDATE_MS = 30_000;
 const APPROVED_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const REFRESH_TIMEOUT_MS = 15_000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
@@ -237,6 +238,17 @@ export class ApprovalStore {
     this.persist();
   }
 
+  hasApprovedHead(project, iid, sha) {
+    return this.approvedHeads.has(`${keyOf(project, iid)}@${sha}`);
+  }
+
+  /** The account's approval of this head is gone (revoked): links may be minted again. */
+  forgetApproved(project, iid, sha) {
+    if (!this.approvedHeads.delete(`${keyOf(project, iid)}@${sha}`)) return false;
+    this.persist();
+    return true;
+  }
+
   /** A confirmed approval uses up every link of the merge request. */
   markApproved(project, iid, sha) {
     const key = keyOf(project, iid);
@@ -370,6 +382,7 @@ export class ApproveServer {
     this.locks = new Map();
     this.bootstraps = new Map();
     this.readCache = new Map();
+    this.revalidations = new Map();
     this.server = null;
     this.script = this.bootstrapScript();
     this.scriptHash = `sha256-${crypto.createHash('sha256').update(this.script).digest('base64')}`;
@@ -378,12 +391,40 @@ export class ApproveServer {
   /** URL of the confirmation entry page for a merge request head commit, or null. */
   linkFor({ project, iid, sha }) {
     try {
+      if (this.store.hasApprovedHead(project, iid, sha)) this.revalidateApproved(project, iid, sha);
       const link = this.store.linkFor({ project, iid, sha });
       return link ? `${this.origin}${this.basePath}/#${link.token}` : null;
     } catch (err) {
       log(`Could not create an approval link: ${err.message}`);
       return null;
     }
+  }
+
+  /**
+   * The remembered "the account approved this head" is only a hint: the approval
+   * can be revoked in GitLab. Re-check it (at most once per interval and head);
+   * when it is gone, forget the hint and refresh the cards so the button returns.
+   * An unknown answer keeps the hint.
+   */
+  revalidateApproved(project, iid, sha) {
+    const key = `${project}!${iid}@${sha}`;
+    const now = this.now();
+    const last = this.revalidations.get(key);
+    if (last !== undefined && now - last < REVALIDATE_MS) return;
+    for (const [k, at] of this.revalidations) {
+      if (now - at >= REVALIDATE_MS) this.revalidations.delete(k);
+    }
+    this.revalidations.set(key, now);
+    Promise.resolve()
+      .then(() => this.gitlab.getUserApprovalState(project, iid))
+      .then(async (state) => {
+        if (!state?.known || state.hasApproved) return;
+        if (!this.store.forgetApproved(project, iid, sha)) return;
+        this.revalidations.delete(key);
+        log(`Approval of ${project}!${iid} was revoked; links are offered again`);
+        if (this.refreshCards) await this.refreshCards(project, iid);
+      })
+      .catch((err) => log(`Approval re-check failed for ${project}!${iid}: ${err.message}`));
   }
 
   start() {

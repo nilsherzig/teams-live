@@ -827,3 +827,39 @@ test('confirmation reads are coalesced for a few seconds; the approving POST alw
     await ctx.server.stop();
   }
 });
+
+test('a revoked approval of the same head is noticed: the memory is re-checked, forgotten and the cards refreshed', async () => {
+  let now = 9_000_000;
+  const refreshed = [];
+  const gitlab = makeGitlab();
+  const ctx = await setup({ gitlab, now: () => now, refreshCards: async (p, i) => refreshed.push([p, i]) });
+  try {
+    ctx.server.store.markApproved(PROJECT, IID, SHA);
+    const args = { project: PROJECT, iid: IID, sha: SHA };
+    // Still approved in GitLab: the hint stays and no link is minted.
+    gitlab.userState = { known: true, user: { id: 1 }, hasApproved: true, canApprove: true };
+    assert.equal(ctx.server.linkFor(args), null);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(ctx.server.store.hasApprovedHead(PROJECT, IID, SHA), true);
+    assert.equal(refreshed.length, 0);
+
+    // Unknown answer: the hint stays.
+    now += 31_000;
+    gitlab.userState = { known: false };
+    assert.equal(ctx.server.linkFor(args), null);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(ctx.server.store.hasApprovedHead(PROJECT, IID, SHA), true);
+
+    // Revoked: forgotten, cards refreshed, a link is minted again.
+    now += 31_000;
+    gitlab.userState = { known: true, user: { id: 1 }, hasApproved: false, canApprove: true };
+    assert.equal(ctx.server.linkFor(args), null, 'this render still has no link');
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(ctx.server.store.hasApprovedHead(PROJECT, IID, SHA), false);
+    assert.deepEqual(refreshed, [[PROJECT, IID]]);
+    assert.match(ctx.server.linkFor(args) || '', /#[A-Za-z0-9_-]{43}$/);
+  } finally {
+    await ctx.server.stop();
+  }
+});
