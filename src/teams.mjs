@@ -370,9 +370,36 @@ export function isRichMessage(message) {
   return Boolean(message && typeof message === 'object' && message[RICH_MESSAGE] === true && message.card);
 }
 
-/** The regular markdown text of a plain or rich message. */
+/**
+ * Several rich messages that belong together (one list that needs more than
+ * one card), as one value for the places that pass a single reply around: the
+ * first message carries the others as `followUps`. prepareRichMessages turns it
+ * back into one message per card, in order. Each message keeps its own
+ * markdown, the fallback of its own card.
+ */
+export function makeRichMessageSequence(messages) {
+  const parts = (messages || []).filter(isRichMessage);
+  if (parts.length <= 1) return parts[0] ?? null;
+  const [head, ...rest] = parts;
+  return { ...head, followUps: rest };
+}
+
+function sequenceParts(message) {
+  if (!isRichMessage(message) || !Array.isArray(message.followUps) || message.followUps.length === 0) return null;
+  if (!message.followUps.every(isRichMessage)) return null;
+  const { followUps, ...head } = message;
+  return [head, ...followUps];
+}
+
+/**
+ * The regular markdown text of a plain or rich message. A sequence of rich
+ * messages (makeRichMessageSequence) is the markdown of all its cards, so a
+ * fallback to the regular text never loses the cards after the first.
+ */
 export function messageMarkdown(message) {
-  return isRichMessage(message) ? message.markdown : String(message ?? '');
+  if (!isRichMessage(message)) return String(message ?? '');
+  const rest = Array.isArray(message.followUps) ? message.followUps.filter(isRichMessage) : [];
+  return [message.markdown, ...rest.map((part) => part.markdown)].join('\n\n');
 }
 
 /**
@@ -433,6 +460,8 @@ export function isRichMessagesEnabled() {
  * leaves the bot as plain text:
  * - a rich message (entity card) that fits is passed through unchanged (never
  *   wrapped twice);
+ * - a sequence of rich messages (makeRichMessageSequence) whose cards all fit
+ *   becomes those cards, in order;
  * - plain text, and a card that is too large, become generic reply cards built
  *   from the markdown (buildReplyCard);
  * - text too large for one card is split into several cards, in order, each
@@ -444,7 +473,9 @@ export function prepareRichMessages(message) {
   if (!richMessagesEnabled) return [message];
   const markdown = messageMarkdown(message).trim();
   if (!markdown) return [message];
-  if (isRichMessage(message) && richMessageWireBytes(message) <= MAX_CARD_BYTES) return [message];
+  const sequence = sequenceParts(message);
+  if (sequence && sequence.every((part) => richMessageWireBytes(part) <= MAX_CARD_BYTES)) return sequence;
+  if (isRichMessage(message) && !sequence && richMessageWireBytes(message) <= MAX_CARD_BYTES) return [message];
 
   const asMessage = (text, part) => {
     try {

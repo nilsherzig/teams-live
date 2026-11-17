@@ -1,10 +1,11 @@
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { isRichMessage, messageMarkdown, richMessageWireBytes, setRichMessages } from '../src/teams.mjs';
+import { isRichMessage, messageMarkdown, prepareRichMessages, richMessageWireBytes, setRichMessages } from '../src/teams.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 import { MAX_CARD_BYTES } from '../src/cards.mjs';
 import { AvatarService } from '../src/avatars.mjs';
 import { PLACEHOLDER_AVATAR } from '../src/placeholder-avatar.mjs';
+import { CI_STATUS_ICONS } from '../src/ci-icons.mjs';
 
 // Author pictures on the /mrs list card. All people, images and URLs are generic fakes.
 
@@ -213,11 +214,11 @@ test('/mrs list: bot rows get no picture while every human row has one, also wit
   w.getOrFetchMrsData = async () => mrs;
   const message = await w.getOrFetchMrsText({ mode: 'all' });
   assert.ok(isRichMessage(message));
-  assert.ok(richMessageWireBytes(message) <= MAX_CARD_BYTES);
-  assert.deepEqual(placeholdersIn(message).map((i) => i.altText), ['Alice Example', 'Bob Example', 'Carol Example']);
-  assert.equal(photosIn(message).length, 0);
-  const text = JSON.stringify(cardOf(message));
-  for (const m of mrs) assert.ok(text.includes(`!${m.iid}`), `row !${m.iid} kept`);
+  const parts = partsOf(message);
+  parts.forEach((part) => assert.ok(richMessageWireBytes(part) <= MAX_CARD_BYTES));
+  assert.deepEqual(parts.flatMap((p) => placeholdersIn(p)).map((i) => i.altText), ['Alice Example', 'Bob Example', 'Carol Example']);
+  assert.equal(parts.flatMap((p) => photosIn(p)).length, 0);
+  assert.deepEqual(parts.flatMap(refsOf), mrs.map((m) => m.iid), 'every row kept');
 });
 
 test('/mrs list: a failed fetch shows the placeholder, and a photo that arrives later replaces it', async () => {
@@ -236,119 +237,172 @@ test('/mrs list: a failed fetch shows the placeholder, and a photo that arrives 
   assert.equal(placeholdersIn(second).length, 0);
 });
 
-test('/mrs list: a list near the size limit gets as many pictures as fit and never loses a row or the state icons', async () => {
-  const w = newWatcher({ extra: 2300 });
-  // Titles that fill most of a card with the image form of the list (state glyphs and CI icons).
-  const mrs = Array.from({ length: 7 }, (_, i) =>
-    mr(100 + i, i % 2 ? BOB_GL : ALICE_GL, `Example change number ${i} with a reasonably descriptive title`)
-  );
-  w.getOrFetchMrsData = async () => mrs;
-  const message = await w.getOrFetchMrsText({});
-  assert.ok(isRichMessage(message));
-  assert.ok(richMessageWireBytes(message) <= MAX_CARD_BYTES);
-  assert.equal(personsIn(message).length, mrs.length, 'every human row has a picture slot');
-  const shown = photosIn(message).length;
-  assert.ok(shown > 0 && shown < mrs.length, `some but not every row has a real photo (${shown} of ${mrs.length})`);
-  const text = JSON.stringify(cardOf(message));
-  for (const m of mrs) assert.ok(text.includes(`!${m.iid}`), `row !${m.iid} kept`);
-  assert.ok(text.includes('data:image/png'), 'GitLab state icons are not downgraded to emojis for photos');
-  // Rows are filled in order: the first rows have the pictures.
-  const rowsWithPicture = [];
+// ---- Lists too large for one card are split into several list cards ----
+
+const CI_URLS = new Set(Object.values(CI_STATUS_ICONS).map((i) => i.url));
+// Each card of a (possibly several-card) message.
+const partsOf = (message) => {
+  const { followUps = [], ...head } = message;
+  return [head, ...followUps];
+};
+const nodesOf = (message) => {
+  const found = [];
   const walk = (node) => {
     if (Array.isArray(node)) return node.forEach(walk);
     if (!node || typeof node !== 'object') return;
-    if (node.type === 'ColumnSet' && node.columns?.length === 3 && JSON.stringify(node.columns[2]).includes('"Person"') && !JSON.stringify(node.columns[2]).includes(PLACEHOLDER_AVATAR)) {
-      rowsWithPicture.push(/!(\d+)/.exec(JSON.stringify(node.columns[1]))[1]);
-    }
+    found.push(node);
     Object.values(node).forEach(walk);
   };
-  walk(cardOf(message));
-  assert.deepEqual(rowsWithPicture, mrs.slice(0, rowsWithPicture.length).map((m) => String(m.iid)));
-});
+  walk(cardOf(message).body);
+  return found;
+};
+const textsOf = (message) => nodesOf(message).filter((n) => n.type === 'TextBlock').map((n) => n.text);
+const imagesOf = (message) => nodesOf(message).filter((n) => n.type === 'Image');
+const stateGlyphs = (message) => imagesOf(message).filter((i) => i.altText === 'Open' || i.altText === 'Draft');
+const ciIconsOf = (message) => imagesOf(message).filter((i) => CI_URLS.has(i.url));
+// The merge request numbers a card lists, in display order.
+const refsOf = (message) => textsOf(message).flatMap((t) => [...t.matchAll(/!(\d+)/g)].map((m) => Number(m[1])));
+const mrIn = (project, iid, author, title = `Example change number ${iid} with a reasonably descriptive title`) =>
+  mr(iid, author, title, {
+    web_url: `${GL}/${project}/-/merge_requests/${iid}`,
+    references: { full: `example-group/${project}!${iid}` },
+  });
+const alternating = (count, first = 700, title) =>
+  Array.from({ length: count }, (_, i) => (title ? mr(first + i, i % 2 ? BOB_GL : ALICE_GL, title(i)) : mr(first + i, i % 2 ? BOB_GL : ALICE_GL, `Example change number ${first + i} with a reasonably descriptive title`)));
 
-test('/mrs list: photos replace placeholders by their measured cost, so no further photo would still fit', async () => {
-  let mixed = 0;
-  for (const count of [6, 7, 8, 9, 10, 11, 12]) {
-    const w = newWatcher({ extra: 700 });
-    const mrs = Array.from({ length: count }, (_, i) =>
-      mr(500 + i, i % 2 ? BOB_GL : ALICE_GL, `Example change number ${i} with a reasonably descriptive title`)
-    );
-    w.getOrFetchMrsData = async () => mrs;
-    const message = await w.getOrFetchMrsText({});
-    assert.ok(isRichMessage(message));
-    const bytes = richMessageWireBytes(message);
-    assert.ok(bytes <= MAX_CARD_BYTES);
-    assert.equal(personsIn(message).length, count, `${count} rows: every one has a picture`);
-    const photos = photosIn(message);
-    if (photos.length === 0 || photos.length === count) continue;
-    mixed += 1;
-    // Upgrading one more row only swaps the placeholder for the photo: that is what is left at most.
-    const upgrade = photos[0].url.length - PLACEHOLDER_AVATAR.length;
-    assert.ok(MAX_CARD_BYTES - bytes < upgrade, `${count} rows: ${MAX_CARD_BYTES - bytes} bytes left would still fit another photo (${upgrade})`);
-  }
-  assert.ok(mixed >= 2, `the placement was measured on mixed lists (${mixed})`);
-});
-
-test('/mrs list: a picture that does not fit is skipped and a smaller one after it still gets the room', async () => {
-  // Alice's photo is too big for what the card leaves, Bob's is small.
-  const w = newWatcher({ extraFor: (mri) => (mri === ALICE ? 7000 : 200) });
-  const mrs = Array.from({ length: 8 }, (_, i) =>
-    mr(600 + i, i % 2 ? BOB_GL : ALICE_GL, `Example change number ${i} with a reasonably descriptive title`)
-  );
-  w.getOrFetchMrsData = async () => mrs;
-  const message = await w.getOrFetchMrsText({});
-  assert.ok(isRichMessage(message));
-  assert.ok(richMessageWireBytes(message) <= MAX_CARD_BYTES);
-  const pictures = photosIn(message);
-  assert.ok(pictures.length > 0, 'the small pictures are shown');
-  assert.ok(pictures.every((p) => p.url.length < 1000), 'the big picture is not');
-  const text = JSON.stringify(cardOf(message));
-  for (const m of mrs) assert.ok(text.includes(`!${m.iid}`), `row !${m.iid} kept`);
-});
-
-test('/mrs list: photos that cannot fit leave the placeholders, never a name-only human row', async () => {
-  const w = newWatcher({ extra: 5000 });
-  const mrs = Array.from({ length: 14 }, (_, i) =>
-    mr(300 + i, ALICE_GL, `Example change number ${i} with a reasonably descriptive title`)
-  );
-  w.getOrFetchMrsData = async () => mrs;
-  const message = await w.getOrFetchMrsText({});
-  assert.ok(isRichMessage(message));
-  assert.ok(richMessageWireBytes(message) <= MAX_CARD_BYTES);
-  assert.equal(photosIn(message).length, 0, 'no room for a 5 KB photo');
-  assert.equal(placeholdersIn(message).length, mrs.length, 'every human row has the placeholder');
-  const text = JSON.stringify(cardOf(message));
-  for (const m of mrs) assert.ok(text.includes(`!${m.iid}`), `row !${m.iid} kept`);
-});
-
-test('/mrs list: a list too large for the heavy form takes a lighter form before a row loses its avatar', async () => {
-  for (const count of [13, 14]) {
+test('/mrs list: a list too large for one card becomes several list cards that keep glyphs, CI icons and a picture on every human row', async () => {
+  for (const count of [16, 30]) {
     const w = newWatcher({ photo: false });
-    const mrs = Array.from({ length: count }, (_, i) =>
-      mr(700 + i, i % 2 ? BOB_GL : ALICE_GL, `Example change number ${i} with a reasonably descriptive title`)
-    );
+    const mrs = alternating(count);
     w.getOrFetchMrsData = async () => mrs;
     const message = await w.getOrFetchMrsText({});
     assert.ok(isRichMessage(message));
-    assert.ok(richMessageWireBytes(message) <= MAX_CARD_BYTES);
-    assert.equal(placeholdersIn(message).length, count, `${count} rows: all have the placeholder`);
-    const text = JSON.stringify(cardOf(message));
-    for (const m of mrs) assert.ok(text.includes(`!${m.iid}`), `row !${m.iid} kept`);
-    assert.equal(messageMarkdown(message), messageMarkdown(await noPictures(mrs)));
+    const parts = partsOf(message);
+    assert.ok(parts.length >= 2 && parts.length <= 10, `${count} rows: ${parts.length} cards`);
+    for (const [i, part] of parts.entries()) {
+      assert.ok(isRichMessage(part), `card ${i + 1} is a rich message`);
+      assert.ok(richMessageWireBytes(part) <= MAX_CARD_BYTES, `card ${i + 1} within the budget`);
+      assert.ok(stateGlyphs(part).length > 0, `card ${i + 1} keeps the state glyph images`);
+      assert.equal(ciIconsOf(part).length, stateGlyphs(part).length, `card ${i + 1} keeps the CI icons`);
+      assert.equal(placeholdersIn(part).length, refsOf(part).length, `card ${i + 1}: a picture on every row`);
+      assert.ok(JSON.stringify(cardOf(part)).includes(`Merge requests ${i + 1}/${parts.length}`), `card ${i + 1} is numbered`);
+    }
+    const all = parts.flatMap(refsOf);
+    assert.deepEqual(all, mrs.map((m) => m.iid), 'every row once, in order');
+    assert.equal(parts.flatMap((p) => personsIn(p)).length, count);
+    assert.ok(!parts.some((part) => textsOf(part).some((t) => t.includes('\u2705 CI passed'))), 'no emoji downgrade');
   }
 });
 
-test('/mrs list: a list that cannot carry the placeholders in any form stays the plain card, all or none', async () => {
-  const w = newWatcher({ photo: false });
-  const mrs = Array.from({ length: 22 }, (_, i) =>
-    mr(800 + i, i % 2 ? BOB_GL : ALICE_GL, `Example change number ${i} with a reasonably descriptive title`)
-  );
+test('/mrs list: several cards carry cached photos and placeholders on every human row, and never a picture on a bot', async () => {
+  const w = newWatcher({ extra: 1500 });
+  const mrs = [
+    ...alternating(22),
+    mr(900, { name: 'Dave Nobody', username: 'dave' }),
+    ...Array.from({ length: 3 }, (_, i) => mr(950 + i, { name: 'Renovate Bot', username: 'renovate-bot' }, `chore(deps): update dependency number ${i}`)),
+  ];
   w.getOrFetchMrsData = async () => mrs;
   const message = await w.getOrFetchMrsText({});
-  assert.ok(isRichMessage(message));
-  assert.ok(richMessageWireBytes(message) <= MAX_CARD_BYTES);
-  assert.equal(personsIn(message).length, 0, 'not a few rows with and the rest without');
-  assert.deepEqual(cardOf(message), cardOf(await noPictures(mrs)));
+  const parts = partsOf(message);
+  assert.ok(parts.length >= 2);
+  parts.forEach((part) => assert.ok(richMessageWireBytes(part) <= MAX_CARD_BYTES));
+  const human = mrs.filter((m) => m.iid < 950);
+  assert.equal(parts.flatMap((p) => personsIn(p)).length, human.length, 'a picture on every human row, none on the bots');
+  assert.equal(parts.flatMap((p) => photosIn(p)).length, 22, 'the cached photos are all shown: room is made by another card');
+  assert.equal(parts.flatMap((p) => placeholdersIn(p)).length, 1, 'only the author without a photo has the placeholder');
+  assert.deepEqual(parts.flatMap(refsOf).sort((a, b) => a - b), mrs.map((m) => m.iid).sort((a, b) => a - b));
+});
+
+test('/mrs list: the cards keep the project grouping, repeat the heading and the headline, and put the note on the last card', async () => {
+  const w = newWatcher({ photo: false });
+  const projects = ['alpha', 'beta', 'gamma'];
+  const humans = Array.from({ length: 21 }, (_, i) => mrIn(projects[i % 3], 100 + i, i % 2 ? BOB_GL : ALICE_GL));
+  const bots = Array.from({ length: 8 }, (_, i) =>
+    mrIn('alpha', 300 + i, { name: 'Renovate Bot', username: 'renovate-bot' }, `chore(deps): update dependency number ${i}`)
+  );
+  w.getOrFetchMrsData = async () => [...humans, ...bots];
+  const message = await w.getOrFetchMrsText({});
+  const parts = partsOf(message);
+  assert.ok(parts.length >= 2);
+  // Display order of a card: by project (first appearance), then as listed.
+  const expected = [...projects.flatMap((p) => humans.filter((m) => m.references.full.includes(`/${p}!`))), ...bots.slice(0, 5)].map((m) => m.iid);
+  const listed = parts.flatMap(refsOf);
+  assert.equal(new Set(listed).size, listed.length, 'no row twice');
+  assert.deepEqual([...listed].sort((a, b) => a - b), [...expected].sort((a, b) => a - b), 'no row lost: the humans and the top 5 bots');
+  const projectOf = (iid) => [...humans, ...bots].find((m) => m.iid === iid).references.full.split('/')[1].split('!')[0];
+  const humanProjects = listed.filter((iid) => iid < 300).map(projectOf);
+  assert.deepEqual(humanProjects, [...humanProjects].sort((a, b) => projects.indexOf(a) - projects.indexOf(b)), 'a project is never interleaved with another');
+  for (const [i, part] of parts.entries()) {
+    const text = textsOf(part).join('\n');
+    assert.ok(text.includes('Open Merge Requests'), `card ${i + 1} repeats the headline`);
+    if (i === 0) assert.ok(!/continued/.test(text), 'the first card has the plain headings');
+    assert.equal(text.includes('and 3 more bot MRs'), i === parts.length - 1, `the note is on the last card only (card ${i + 1})`);
+  }
+  assert.ok(parts.slice(1).some((part) => /continued/.test(textsOf(part).join('\n'))), 'a section that goes on says so');
+  // The markdown of the cards, joined, is every row of the regular list.
+  for (const m of [...humans, ...bots.slice(0, 5)]) assert.ok(messageMarkdown(message).includes(`!${m.iid}]`), `!${m.iid} in the fallback markdown`);
+});
+
+test('/mrs list: a long list is a sequence the transport sends card by card, and a later change shows in the cache comparison', async () => {
+  setRichMessages(true);
+  const w = newWatcher({ photo: false });
+  const mrs = alternating(18);
+  w.getOrFetchMrsData = async () => mrs;
+  const message = await w.getOrFetchMrsText({});
+  const prepared = prepareRichMessages(message);
+  assert.equal(prepared.length, partsOf(message).length);
+  assert.ok(prepared.length >= 2);
+  prepared.forEach((part) => assert.ok(isRichMessage(part)));
+  assert.deepEqual(prepared.flatMap(refsOf), mrs.map((m) => m.iid));
+  // executeCachedCommand compares the serialised messages: a change on a later card must differ.
+  const changed = [...mrs.slice(0, -1), { ...mrs.at(-1), title: 'A renamed last change' }];
+  w.getOrFetchMrsData = async () => changed;
+  const later = await w.getOrFetchMrsText({ force: true });
+  assert.notEqual(JSON.stringify(later), JSON.stringify(message));
+  const same = await w.getOrFetchMrsText({ force: true });
+  assert.equal(JSON.stringify(same), JSON.stringify(later));
+});
+
+test('/mrs list: more cards than the transport sends are never made: a lighter form comes first, then the plain markdown', async () => {
+  // Humans with placeholders: the heavy form needs more than 10 cards, a lighter one fewer.
+  const heavy = alternating(130);
+  const w = newWatcher({ photo: false });
+  w.getOrFetchMrsData = async () => heavy;
+  const message = await w.getOrFetchMrsText({ mode: 'all' });
+  const parts = isRichMessage(message) ? partsOf(message) : [];
+  assert.ok(parts.length > 0 && parts.length <= 10, `${parts.length} cards`);
+  parts.forEach((part) => assert.ok(richMessageWireBytes(part) <= MAX_CARD_BYTES));
+  assert.equal(parts.flatMap(refsOf).length, 130, 'every row is still there');
+  assert.equal(parts.flatMap((p) => ciIconsOf(p)).length, 0, 'the CI icons were given up before any row');
+  assert.equal(parts.flatMap((p) => personsIn(p)).length, 130, 'but not the pictures');
+
+  const huge = alternating(900);
+  w.getOrFetchMrsData = async () => huge;
+  const fallback = await w.getOrFetchMrsText({ mode: 'all', force: true });
+  assert.equal(typeof fallback, 'string', 'beyond that, the markdown');
+  assert.ok(fallback.includes('!1599') || fallback.includes('!700'));
+});
+
+test('/mrs list: a single row that cannot carry its photo takes the placeholder, and the cards still fit', async () => {
+  const w = newWatcher({ extraFor: (mri) => (mri === ALICE ? 30000 : 200) });
+  const mrs = alternating(6);
+  w.getOrFetchMrsData = async () => mrs;
+  const message = await w.getOrFetchMrsText({});
+  const parts = partsOf(message);
+  parts.forEach((part) => assert.ok(richMessageWireBytes(part) <= MAX_CARD_BYTES));
+  assert.equal(parts.flatMap((p) => personsIn(p)).length, 6);
+  assert.equal(parts.flatMap((p) => placeholdersIn(p)).length, 3, "Alice's huge photo is not shown, her rows have the placeholder");
+  assert.equal(parts.flatMap((p) => photosIn(p)).length, 3);
+});
+
+test('/mrs list: what fits one card stays one card, with no sequence and no label', async () => {
+  const w = newWatcher({ photo: false });
+  w.getOrFetchMrsData = async () => alternating(5);
+  const message = await w.getOrFetchMrsText({});
+  assert.equal(message.followUps, undefined);
+  assert.equal(partsOf(message).length, 1);
+  assert.ok(!JSON.stringify(cardOf(message)).includes('Merge requests 1/'));
+  assert.equal(placeholdersIn(message).length, 5);
 });
 
 test('/mrs list: regular messages make no picture request and stay markdown', async () => {

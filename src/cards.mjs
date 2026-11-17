@@ -1165,10 +1165,13 @@ function groupRowsByProject(rows) {
  * `avatars: true` adds the author pictures the rows carry (see mrListRow); the
  * caller decides which rows get one, as a card is limited in size.
  *
+ * `part` is `[index, total]` for one card of a list that needs several (the
+ * label says which); the caller gives each card its own sections.
+ *
  * `title`/`heading`/`note` are the markdown of the regular list. Returns null
  * without any row.
  */
-export function buildMrListCard({ title, sections, images = true, ciIcons = images, avatars = false, fallbackText } = {}) {
+export function buildMrListCard({ title, sections, images = true, ciIcons = images, avatars = false, part = null, fallbackText } = {}) {
   const usable = (sections || []).filter((sec) => (sec.rows || []).length > 0);
   if (usable.length === 0) return null;
   const clean = (text) =>
@@ -1201,7 +1204,7 @@ export function buildMrListCard({ title, sections, images = true, ciIcons = imag
   }
   return assembleCard({
     service: 'gitlab',
-    kind: 'Merge requests',
+    kind: part && part[1] > 1 ? `Merge requests ${part[0]}/${part[1]}` : 'Merge requests',
     title: headTitle,
     extraItems: items,
     fallbackText,

@@ -222,15 +222,20 @@ test('/mrs card: every fact of the regular list is kept (links, title, author, C
 });
 
 test('/mrs card: bot truncation note and counts are kept', () => {
+  // With the author pictures the list may take several cards: the texts of all of them.
+  const allTexts = (message) => {
+    const { followUps = [], ...head } = message;
+    return [head, ...followUps].flatMap((part) => texts(part)).join('\n');
+  };
   const message = rich(newWatcher(), [...humanMrs, ...botMrs(8)]);
-  const all = texts(message).join('\n');
+  const all = allTexts(message);
   assert.ok(all.includes('Renovate / Bot Updates (8, showing top 5 ready/recent)'));
   assert.ok(all.includes('...and 3 more bot MRs (use /mrs all to view all, or /mrs bots for only bot MRs)'));
   assert.ok(all.includes('[!104]'));
   assert.ok(!all.includes('[!105]'));
   // /mrs all lists them all.
   const allMode = rich(newWatcher(), [...humanMrs, ...botMrs(8)], { mode: 'all' });
-  assert.ok(texts(allMode).join('\n').includes('[!107]'));
+  assert.ok(allTexts(allMode).includes('[!107]'));
 });
 
 test('/mrs card: the user and bot views have their own headline and no sections heading', () => {
@@ -254,32 +259,41 @@ test('/mrs card: the markdown copy is the regular list, unchanged', () => {
   assert.ok(regular.endsWith('_...and 3 more bot MRs (use `/mrs all` to view all, or `/mrs bots` for only bot MRs)_'));
 });
 
-test('/mrs card: a long list drops the images, a very long one falls back to the full markdown', () => {
+test('/mrs card: a long list is split into several cards with the images, a very long one falls back to the full markdown', () => {
   const w = newWatcher();
+  w.avatarService = null;
   const fits = (message) => isRichMessage(message) && richMessageWireBytes(message) <= MAX_CARD_BYTES;
+  const partsOf = (message) => {
+    const { followUps = [], ...head } = message;
+    return [head, ...followUps];
+  };
 
   const medium = w.formatMrsMessage([...humanMrs, ...humanMrs.map((m, i) => ({ ...m, iid: 200 + i })), ...botMrs(3)], {});
   assert.ok(fits(medium));
+  assert.equal(partsOf(medium).length, 1, 'a card is enough');
 
-  // Enough rows for the images to overflow a card but not the emoji form.
-  const rows = Array.from({ length: 15 }, (_, i) =>
+  // Enough rows for one card to overflow with the images: another card, not the emoji form.
+  const rows = Array.from({ length: 24 }, (_, i) =>
     mr('app', 300 + i, `Example change number ${i} with a reasonably descriptive title`, { head_pipeline: { status: 'success' } })
   );
-  const noImages = w.formatMrsMessage(rows, {});
-  assert.ok(fits(noImages), 'still a card');
-  const withImages = buildMrListCard({
-    title: 'x',
-    sections: [{ rows: rows.map((r) => ({ project: 'app', ref: `!${r.iid}`, url: r.web_url, title: r.title, state: 'open', ciStatus: 'success' })) }],
-  });
-  assert.ok(JSON.stringify(withImages).includes('data:image/png'));
+  const split = w.formatMrsMessage(rows, {});
+  assert.ok(isRichMessage(split), 'still cards');
+  const cards = partsOf(split);
+  assert.ok(cards.length >= 2);
+  for (const card of cards) {
+    assert.ok(fits(card));
+    assert.ok(JSON.stringify(card.card).includes('data:image/png'), 'every card keeps the glyph and CI images');
+    assert.ok(!texts(card).some((t) => t.includes('\u2705 CI passed')));
+  }
+  assert.equal(cards.reduce((sum, card) => sum + images(card).filter((i) => i.altText === 'Open').length, 0), rows.length);
 
-  const many = Array.from({ length: 400 }, (_, i) => mr('app', 1000 + i, `Example change number ${i} with a reasonably long descriptive title`));
+  const many = Array.from({ length: 900 }, (_, i) => mr('app', 1000 + i, `Example change number ${i} with a reasonably long descriptive title`));
   const message = w.formatMrsMessage(many, { mode: 'all' });
   assert.equal(typeof message, 'string');
-  assert.ok(message.includes('!1399') || message.includes('!1000'));
+  assert.ok(message.includes('!1899') || message.includes('!1000'));
 });
 
-test('/mrs card: a list too long for the CI icons keeps the state glyphs and writes the CI status as an emoji', () => {
+test('/mrs card: the CI icons and state glyphs are given up only when even ten cards are not enough', () => {
   const w = newWatcher();
   // The forms of the card itself, without the author pictures (see mrs-list-avatars.test.mjs).
   w.avatarService = null;
@@ -287,21 +301,32 @@ test('/mrs card: a list too long for the CI icons keeps the state glyphs and wri
     Array.from({ length: n }, (_, i) =>
       mr('app', 400 + i, `Example change number ${i} with a reasonably descriptive title`, { head_pipeline: { status: 'success' } })
     );
-  const ciIcons = (message) => images(message).filter((i) => ciUrls.has(i.url)).length;
-  const glyphs = (message) => images(message).filter((i) => i.altText === 'Open').length;
+  const cardsOf = (message) => {
+    const { followUps = [], ...head } = message;
+    return [head, ...followUps];
+  };
+  const count = (message, pick) => cardsOf(message).reduce((sum, card) => sum + pick(card), 0);
+  const ciIcons = (message) => count(message, (card) => images(card).filter((i) => ciUrls.has(i.url)).length);
+  const glyphs = (message) => count(message, (card) => images(card).filter((i) => i.altText === 'Open').length);
 
   const short = rich(w, list(6));
   assert.equal(ciIcons(short), 6);
   assert.equal(glyphs(short), 6);
 
   const long = rich(w, list(14));
-  assert.ok(richMessageWireBytes(long) <= MAX_CARD_BYTES);
-  assert.equal(ciIcons(long), 0, 'CI icons are the first thing given up');
-  assert.equal(glyphs(long), 14, 'the state glyphs stay');
-  assert.ok(texts(long).some((t) => t.includes('\u2705 CI passed')));
+  cardsOf(long).forEach((card) => assert.ok(richMessageWireBytes(card) <= MAX_CARD_BYTES));
+  assert.equal(ciIcons(long), 14, 'a card more instead of giving the CI icons up');
+  assert.equal(glyphs(long), 14);
 
-  const huge = rich(w, list(22));
-  assert.equal(glyphs(huge) + ciIcons(huge), 0, 'beyond that, emojis only');
+  const huge = rich(w, list(150));
+  cardsOf(huge).forEach((card) => assert.ok(richMessageWireBytes(card) <= MAX_CARD_BYTES));
+  assert.ok(cardsOf(huge).length <= 10);
+  assert.equal(ciIcons(huge), 0, 'with more than ten cards of it, the CI icons go first');
+  assert.equal(glyphs(huge), 150, 'the state glyphs stay');
+  assert.ok(cardsOf(huge).some((card) => texts(card).some((t) => t.includes('\u2705 CI passed'))));
+
+  const beyond = w.formatMrsMessage(list(400), {});
+  assert.equal(typeof beyond, 'string');
 });
 
 test('/mrs card: empty lists and regular mode stay as they are', () => {

@@ -25,6 +25,7 @@ import {
   resolveProfiles,
   escapeHtml,
   makeRichMessage,
+  makeRichMessageSequence,
   isRichMessage,
   richMessageWireBytes,
   setRichMessages,
@@ -91,6 +92,8 @@ const MRS_LIST_AVATAR_SIZE = 'HR24x24';
 // The leaderboard podium (top three) shows larger pictures than the rows below it.
 const leaderboardAvatarSize = (index) => (index < PODIUM_SIZE ? 'HR32x32' : 'HR24x24');
 const MRS_LIST_AVATAR_DEADLINE_MS = 2800;
+// A /mrs list needs at most this many cards (the same bound as a generic reply split into cards).
+const MRS_LIST_MAX_CARDS = 10;
 
 const GITLAB_EMOJI_TRANSLATIONS = {
   // Common Teams reaction names / slugs
@@ -5249,7 +5252,9 @@ export class MergeRequestWatcher {
         statusEmoji,
         author: mention,
         authorPerson: authorPersons?.get(mr) || null,
-        // Every human author gets a picture slot (the neutral placeholder when no photo is known).
+        // Every author not taken for a bot gets a picture slot (the neutral placeholder when no photo
+        // is known). isBotMr is a heuristic (name, username and title patterns): a human it takes for
+        // a bot is listed with the bots and has no slot, a limit of that classification, not of the slots.
         avatarSlot: Boolean(authorPersons) && Boolean(mr.author) && typeof mr.author === 'object' && !isBotMr(mr),
         jira: jiraTicket ? { key: jiraTicket.key, url: jiraTicket.url } : null,
         badges: [approvalText, rebaseText, autoMerge ? '🔀 auto-merge' : ''].filter(Boolean),
@@ -5383,53 +5388,101 @@ export class MergeRequestWatcher {
   }
 
   /**
-   * The /mrs list card with an author picture on every human row: a bot has
-   * none. The neutral placeholder is in the baseline of every human row, so a
-   * photo that is missing (no unique identity, not fetched yet, no picture,
-   * failed lookup) or that does not fit shows the placeholder, never a name-only
-   * row. Then each real photo, in row order, replaces its placeholder when the
-   * measured wire size still fits (one that does not is skipped, so a smaller
-   * one after it can still use the room). Returns the message, or null when
-   * there is no human row or the card does not fit even with placeholders only
-   * (the caller then tries a lighter form).
+   * The /mrs list as cards: one when it fits, otherwise several, each a proper
+   * list card (state glyphs, CI status icons, an author picture on every human
+   * row) with its part of the sections. Nothing is traded for room: a list too
+   * large for one card goes on in the next one (the heading is repeated as
+   * "continued", a project heading is repeated where its rows go on, the note
+   * stays with the last row of its section), and every card stays within
+   * MAX_CARD_BYTES on the wire. Rows are placed in the order the card shows
+   * them (grouped by project), each card takes as many as fit, measured on the
+   * real card.
+   *
+   * `avatars`: every human row (`avatarSlot`) shows its photo when one is
+   * cached, else the neutral placeholder (never name-only; a bot has none).
+   * Returns the message (a sequence of rich messages when there are several
+   * cards, see makeRichMessageSequence), or null when a single row does not fit
+   * a card or more than MRS_LIST_MAX_CARDS would be needed (the caller then
+   * tries a lighter form).
    */
-  withMrsListAvatars(listing, { markdown, images, ciIcons }) {
-    if (!this.avatarService || this.suppressAvatars) return null;
+  mrsListCards(listing, { images, ciIcons, avatars }) {
     const rows = listing.sections.flatMap((section) => section.rows);
-    const slots = rows.filter((row) => row.avatarSlot);
     for (const row of rows) delete row.avatar;
-    if (slots.length === 0) return null;
-    const build = () => {
-      const card = buildMrListCard({ title: listing.headline, sections: listing.sections, images, ciIcons, avatars: true });
-      const message = card ? makeRichMessage(markdown, card) : null;
-      return message && richMessageWireBytes(message) <= MAX_CARD_BYTES ? message : null;
+    if (avatars) {
+      for (const row of rows) {
+        if (!row.avatarSlot) continue;
+        const photo = row.authorPerson ? this.avatarService.peek(row.authorPerson, { size: MRS_LIST_AVATAR_SIZE }) : null;
+        row.avatar = isImageDataUri(photo) ? photo : PLACEHOLDER_AVATAR;
+      }
+    }
+    // Rows in display order: a card groups the rows of a section by project, so do the same here.
+    const items = [];
+    const edges = listing.sections.map(() => ({ first: null, last: null }));
+    listing.sections.forEach((section, index) => {
+      const projects = [...new Set(section.rows.map((row) => row.project || ''))];
+      const ordered = [...section.rows].sort((x, y) => projects.indexOf(x.project || '') - projects.indexOf(y.project || ''));
+      for (const row of ordered) items.push({ index, row });
+      edges[index] = { first: ordered[0], last: ordered[ordered.length - 1] };
+    });
+    const continued = (heading) =>
+      /\)\s*:?\s*$/.test(heading) ? heading.replace(/\)\s*:?\s*$/, ', continued):') : `${heading.replace(/:\s*$/, '')} (continued)`;
+    const build = (chunk, part) => {
+      const sections = [];
+      for (const { index, row } of chunk) {
+        if (sections.at(-1)?.index !== index) {
+          const source = listing.sections[index];
+          const starts = edges[index].first === row;
+          sections.push({ index, heading: source.heading && !starts ? continued(source.heading) : source.heading, rows: [], note: null });
+        }
+        sections.at(-1).rows.push(row);
+      }
+      for (const section of sections) {
+        if (section.rows.includes(edges[section.index].last)) section.note = listing.sections[section.index].note;
+      }
+      const markdown = this.renderMrsListing({ headline: listing.headline, sections });
+      const card = buildMrListCard({ title: listing.headline, sections, images, ciIcons, avatars, part });
+      return card ? makeRichMessage(markdown, card) : null;
+    };
+    // The card label ("2/3") is measured at its widest, so the final numbers cannot overflow.
+    const fits = (chunk) => {
+      const message = build(chunk, [MRS_LIST_MAX_CARDS, MRS_LIST_MAX_CARDS]);
+      return Boolean(message) && richMessageWireBytes(message) <= MAX_CARD_BYTES;
     };
     try {
-      for (const row of slots) row.avatar = PLACEHOLDER_AVATAR;
-      let best = build();
-      if (!best) return null;
-      for (const row of slots) {
-        if (!row.authorPerson) continue;
-        const photo = this.avatarService.peek(row.authorPerson, { size: MRS_LIST_AVATAR_SIZE });
-        if (!isImageDataUri(photo)) continue;
-        row.avatar = photo;
-        const candidate = build();
-        if (candidate) best = candidate;
-        else row.avatar = PLACEHOLDER_AVATAR;
+      const chunks = [];
+      let current = [];
+      for (const item of items) {
+        if (fits([...current, item])) {
+          current.push(item);
+          continue;
+        }
+        if (current.length > 0) chunks.push(current);
+        current = [item];
+        if (!fits(current) && item.row.avatar && item.row.avatar !== PLACEHOLDER_AVATAR) {
+          item.row.avatar = PLACEHOLDER_AVATAR;
+        }
+        if (!fits(current) || chunks.length >= MRS_LIST_MAX_CARDS) return null;
       }
-      return best;
+      if (current.length > 0) chunks.push(current);
+      if (chunks.length === 0 || chunks.length > MRS_LIST_MAX_CARDS) return null;
+      const total = chunks.length;
+      const messages = chunks.map((chunk, i) => build(chunk, total > 1 ? [i + 1, total] : null));
+      if (messages.some((message) => !message || richMessageWireBytes(message) > MAX_CARD_BYTES)) return null;
+      return makeRichMessageSequence(messages);
     } catch (e) {
-      log(`building the picture list card failed: ${e.message}`);
+      log(`building the /mrs list cards failed: ${e.message}`);
       return null;
     }
   }
 
   /**
-   * The /mrs reply: regular markdown, or with rich messages the list card
-   * (see buildMrListCard). The card shows the GitLab state glyph images and
-   * CI status icons; a list too long for that is tried again with the CI
-   * status as emojis, then with emojis only, and one still too long
-   * falls back to the full markdown (which is sent as several cards).
+   * The /mrs reply: regular markdown, or with rich messages the list card (see
+   * buildMrListCard and mrsListCards): the GitLab state glyph images and CI
+   * status icons, and a picture on every human row. A list too large for one
+   * card is split into several list cards before anything is given up; only a
+   * list that cannot be split into at most MRS_LIST_MAX_CARDS cards is tried
+   * again without the CI icons, then with emojis only, and finally falls back
+   * to the full markdown (which the transport sends as generic cards).
    */
   formatMrsMessage(mrs, parsed = {}) {
     const listing = this.collectMrsListing(mrs, { ...parsed, rich: this.richMessages });
@@ -5437,20 +5490,15 @@ export class MergeRequestWatcher {
     if (!this.richMessages || listing.text) return markdown;
     // Heaviest form first: state glyphs and CI status icons, then the glyphs only, then emojis.
     const forms = [{ images: true, ciIcons: true }, { images: true, ciIcons: false }, { images: false, ciIcons: false }];
-    // Every human row has a picture (see withMrsListAvatars), so a lighter form is
-    // preferred to a row without one; only a list that cannot carry them goes on without.
-    for (const form of forms) {
-      const withPictures = this.withMrsListAvatars(listing, { markdown, ...form });
-      if (withPictures) return withPictures;
-    }
-    if (listing.sections.some((section) => section.rows.some((row) => row.avatarSlot))) {
-      log('the /mrs list is too large for an author picture on every human row, sending it without pictures');
-    }
-    for (const { images, ciIcons } of forms) {
-      const message = this.richMessage(markdown, () =>
-        buildMrListCard({ title: listing.headline, sections: listing.sections, images, ciIcons })
-      );
-      if (isRichMessage(message)) return message;
+    const hasSlots = Boolean(this.avatarService) && !this.suppressAvatars && listing.sections.some((s) => s.rows.some((r) => r.avatarSlot));
+    for (const avatars of hasSlots ? [true, false] : [false]) {
+      for (const form of forms) {
+        const message = this.mrsListCards(listing, { ...form, avatars });
+        if (message) {
+          if (hasSlots && !avatars) log('the /mrs list is too large for author pictures, sending it without them');
+          return message;
+        }
+      }
     }
     return markdown;
   }
