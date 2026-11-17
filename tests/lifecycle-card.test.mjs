@@ -192,7 +192,7 @@ test('chatList: comma-separated linked names, escaped, no count and no parenthes
   assert.doesNotMatch(FIXTURE_CHATS, /^\d|\(\d|\(Notes/);
 });
 
-test('the override path and the command are code insets, not backtick text', () => {
+test('the override path is a code inset and the command is not shown on the card', () => {
   const card = buildLifecycleCard({
     kind: 'startup',
     facts: STARTUP_FACTS,
@@ -200,7 +200,7 @@ test('the override path and the command are code insets, not backtick text', () 
   });
   const [warning] = find(card, (n) => n.type === 'Container' && n.style === 'warning');
   const insets = (warning.items || []).filter((n) => n.type === 'Container' && n.style === 'emphasis');
-  assert.equal(insets.length, 2);
+  assert.equal(insets.length, 1);
   for (const inset of insets) {
     const [block, ...rest] = inset.items;
     assert.equal(rest.length, 0);
@@ -210,7 +210,9 @@ test('the override path and the command are code insets, not backtick text', () 
   }
   // Markdown characters of a path are escaped so the monospace text shows verbatim.
   assert.equal(insets[0].items[0].text, '/run/a\\_b\\*/token');
-  assert.equal(insets[1].items[0].text, 'cat /run/override-token');
+  // The card drops the command; plain mode keeps it (see the lifecycleMarkdown tests).
+  assert.ok(!JSON.stringify(warning).includes('cat '));
+  assert.ok(textsIn(warning).some((t) => t.endsWith('so it persists.')));
   // The label sits right before its inset; no backticks and no FactSet in the warning.
   const labelIdx = warning.items.findIndex((n) => n.text === 'Override File');
   assert.equal(warning.items[labelIdx + 1], insets[0]);

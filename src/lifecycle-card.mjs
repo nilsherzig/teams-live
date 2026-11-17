@@ -226,7 +226,7 @@ function headerRow(spec) {
 const verbatim = (value) => str(value).replace(/([\\*_[\]`])/g, '\\$1');
 
 /**
- * Code-like inset for a path or a command: a subtle `emphasis` container with a
+ * Code-like inset for a path: a subtle `emphasis` container with a
  * little padding around monospace text. Cards do not render backtick code
  * spans, so this is a real container. The text wraps instead of overflowing a
  * narrow card and stays plain text, so it can be selected and copied as is.
@@ -258,8 +258,8 @@ function noticeContainer(notice) {
   const items = [
     textBlock(`⚠️ ${cardText(notice.title)}`, { weight: 'Bolder', color: 'Warning', spacing: 'None' }),
     ...(notice.facts || []).flatMap(noticeFact),
-    notice.body ? textBlock(cardText(notice.body), { size: 'Small', spacing: 'Small' }) : null,
-    notice.command ? codeInset(notice.command) : null,
+    // The card has no command block (the path above is enough), so the body ends with a period, not a colon.
+    notice.body ? textBlock(cardText(str(notice.body).replace(/:\s*$/, '.')), { size: 'Small', spacing: 'Small' }) : null,
   ].filter(Boolean);
   return { type: 'Container', style: 'warning', bleed: false, spacing: 'Medium', items };
 }
