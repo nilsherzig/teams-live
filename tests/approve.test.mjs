@@ -2182,6 +2182,24 @@ test('the merge switch is read from gitlab.approve.merge_enabled and defaults to
     assert.equal(write({ enable: true }).merge_enabled, false, 'enabling approvals does not enable merging');
     assert.equal(write({ enable: true, merge_enabled: true }).merge_enabled, true);
     assert.equal(write({ enable: true, merge_enabled: false }).merge_enabled, false);
+    // Strict: only the boolean true enables it (a destructive opt-in must not be switched on by a stray string or number).
+    for (const stray of ['false', 'true', 'yes', '1', 0, 1, null, {}, []]) {
+      assert.equal(write({ enable: true, merge_enabled: stray }).merge_enabled, false, `merge_enabled ${JSON.stringify(stray)} stays off`);
+    }
+    // The environment is only read when the file does not set it, and only "true"/"1" enable.
+    const keep = process.env.TEAMS_GITLAB_APPROVE_MERGE_ENABLED;
+    try {
+      process.env.TEAMS_GITLAB_APPROVE_MERGE_ENABLED = 'true';
+      assert.equal(write({ enable: true }).merge_enabled, true);
+      assert.equal(write({ enable: true, merge_enabled: false }).merge_enabled, false, 'the file wins over the environment');
+      process.env.TEAMS_GITLAB_APPROVE_MERGE_ENABLED = 'false';
+      assert.equal(write({ enable: true }).merge_enabled, false);
+      process.env.TEAMS_GITLAB_APPROVE_MERGE_ENABLED = 'yes';
+      assert.equal(write({ enable: true }).merge_enabled, false);
+    } finally {
+      if (keep === undefined) delete process.env.TEAMS_GITLAB_APPROVE_MERGE_ENABLED;
+      else process.env.TEAMS_GITLAB_APPROVE_MERGE_ENABLED = keep;
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
