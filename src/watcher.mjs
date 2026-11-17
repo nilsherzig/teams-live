@@ -55,7 +55,9 @@ import {
 } from './users.mjs';
 import { SnakeGame } from './snake.mjs';
 import {
-  TV_SWITCH_ACTIONS,
+  TV_AUDIO_LABELS,
+  TV_CONTROL_ACTIONS,
+  TV_SWITCH_LABELS,
   TV_USAGE,
   TvProgrammeService,
   TvSwitch,
@@ -495,7 +497,9 @@ const COMMAND_CATEGORIES = [
       '- `/meetings` (or `/cal`, `/calendar`): Summary of meetings for the rest of the current week.',
       '- `/poll "Question" "Opt1" "Opt2"`: Creates an interactive reaction poll.',
       '- `/tv program` (or `/tv programme`): Shows what is on now and next on ARD and ZDF.',
-      '- `/tv ard`, `/tv zdf`, `/tv off`: Switches the stream input to ARD or ZDF, or to the "brb" scene (owner only).',
+      '- `/tv ard`, `/tv zdf`, `/tv tagesschau`, `/tv off`: Switches the stream input, or to the "brb" scene (owner only).',
+      '- `/tv next`, `/tv prev`: Cycles ARD, ZDF, Tagesschau (owner only; from off: next is ARD, prev is Tagesschau).',
+      '- `/tv mute`, `/tv vol up`, `/tv vol down`: Mutes the TV or steps its volume (owner only).',
       '- `/weather [location]`: Shows current weather for location (default: Berlin).',
       '- `/whereis [search]` (or `/where`): Checks if a person is available, in a meeting (with join link), or away.',
       '- `/whois <search>` (or `/who`): Looks up a person in the Teams directory and shows contact details.',
@@ -4633,7 +4637,7 @@ export class MergeRequestWatcher {
 
   async executeTvCommand(event, args = []) {
     const parsed = parseTvArgs(args);
-    if (TV_SWITCH_ACTIONS.includes(parsed.action)) {
+    if (TV_CONTROL_ACTIONS.includes(parsed.action)) {
       await this.executeTvSwitchCommand(event, parsed.action);
       return;
     }
@@ -4660,37 +4664,55 @@ export class MergeRequestWatcher {
   }
 
   /**
-   * `/tv ard|zdf|off`: owner-only (same policy as /restart), fail-closed. The
-   * webhook URL and id never appear in a reply or in the log.
+   * The owner-only `/tv` controls (same policy as /restart), fail-closed:
+   * `ard|zdf|tagesschau|off`, `next|prev`, `mute`, `vol up|down`. Webhook URLs,
+   * ids and the Home Assistant token never appear in a reply or in the log.
    */
   async executeTvSwitchCommand(event, action) {
+    const react = (kind) =>
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS[kind]).catch(() => {});
     if (!this.isAdmin(event)) {
       log(`Unauthorized /tv ${action} attempt from ${event.from || event.fromMri} in ${event.conversationId}`);
       await sendReply(event.conversationId, event, this.respondNotPrivileged(event));
-      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      react('failure');
       return;
     }
-    const label = action === 'off' ? 'off (brb)' : action.toUpperCase();
-    if (!this.tvSwitch.isConfigured(action)) {
-      log(`/tv ${action}: no usable webhook configured`);
+    const name = action.replace('_', ' ');
+    if (!this.tvSwitch.canRun(action)) {
+      log(`/tv ${name}: not configured`);
       await sendReply(
         event.conversationId,
         event,
-        `\u26A0\uFE0F \`/tv ${action}\` is not configured on this daemon (\`tv.switch\`).`
+        `\u26A0\uFE0F \`/tv ${name}\` is not configured on this daemon (\`tv.switch\`).`
       );
-      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
+      react('warning');
       return;
     }
-    log(`Admin /tv ${action} issued by ${event.from || event.fromMri} in ${event.conversationId}`);
-    const result = await this.tvSwitch.switchTo(action);
+    log(`Admin /tv ${name} issued by ${event.from || event.fromMri} in ${event.conversationId}`);
+    let result;
+    let doing;
+    if (action === 'next' || action === 'prev') {
+      doing = 'Switching channel';
+      result = await this.tvSwitch.cycle(action);
+    } else if (action === 'mute') {
+      doing = 'Muting';
+      result = await this.tvSwitch.mute();
+    } else if (action === 'volume_up' || action === 'volume_down') {
+      doing = 'Changing the volume';
+      result = await this.tvSwitch.volumeStep(action === 'volume_up' ? 'up' : 'down');
+    } else {
+      doing = `Switching to ${TV_SWITCH_LABELS[action]}`;
+      result = await this.tvSwitch.switchTo(action);
+    }
     if (!result.ok) {
-      log(`/tv ${action} failed: ${result.error}`);
-      await sendReply(event.conversationId, event, `\u274C Switching to ${label} failed: ${result.error}`);
-      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      log(`/tv ${name} failed: ${result.error}`);
+      await sendReply(event.conversationId, event, `\u274C ${doing} failed: ${result.error}`);
+      react('failure');
       return;
     }
-    await sendReply(event.conversationId, event, `\uD83D\uDCFA Switched to ${label}.`);
-    this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+    const text = TV_AUDIO_LABELS[action] || `Switched to ${TV_SWITCH_LABELS[result.target || action]}.`;
+    await sendReply(event.conversationId, event, `\uD83D\uDCFA ${text}`);
+    react('success');
   }
 
   async executeWeatherCommand(event, args) {

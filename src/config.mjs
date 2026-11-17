@@ -346,6 +346,7 @@ export function loadConfig(configPath) {
     // Only an explicitly configured Home Assistant URL is a base for the TV webhooks, never the built-in default.
     tv: normalizeTvConfig(fileConfig.tv, {
       baseUrl: getString(fileConfig.home_assistant?.url) || process.env.HASS_URL || '',
+      token: getString(fileConfig.home_assistant?.url) || process.env.HASS_URL ? homeAssistant.token || '' : '',
     }),
     teams,
     conversations,

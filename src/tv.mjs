@@ -48,7 +48,7 @@ function validTimeZone(tz) {
  * The `tv` section of the config, with defaults. Never throws on bad input: an
  * unusable value falls back to the default, so a typo cannot take the daemon down.
  */
-export function normalizeTvConfig(raw = {}, { baseUrl = '' } = {}) {
+export function normalizeTvConfig(raw = {}, { baseUrl = '', token = '' } = {}) {
   const input = raw && typeof raw === 'object' ? raw : {};
   const channels = {};
   for (const key of TV_CHANNEL_KEYS) {
@@ -70,7 +70,7 @@ export function normalizeTvConfig(raw = {}, { baseUrl = '' } = {}) {
     timezone: validTimeZone(str(input.timezone)) ? str(input.timezone) : DEFAULT_TIMEZONE,
     cache_ttl_seconds: Number.isFinite(ttl) && ttl >= 0 ? ttl : 300,
     channels,
-    switch: normalizeSwitchConfig(input.switch, baseUrl),
+    switch: normalizeSwitchConfig(input.switch, { baseUrl, token }),
   };
 }
 
@@ -78,7 +78,15 @@ export function normalizeTvConfig(raw = {}, { baseUrl = '' } = {}) {
 // secrets (the id is the only authentication), so they come from the runtime
 // config (`{ "_secret": "/path" }` references, see config.mjs), never from this
 // repository, and are never logged or sent to chat.
-export const TV_SWITCH_ACTIONS = ['ard', 'zdf', 'off'];
+// The cycle order of `/tv next` (and, reversed, `/tv prev`).
+export const TV_SWITCH_TARGETS = ['ard', 'zdf', 'tagesschau'];
+export const TV_SWITCH_ACTIONS = [...TV_SWITCH_TARGETS, 'off'];
+export const TV_CYCLE_ACTIONS = ['next', 'prev'];
+// Audio controls; the routing itself is configured elsewhere, these only fire its webhooks.
+export const TV_AUDIO_ACTIONS = ['mute', 'volume_up', 'volume_down'];
+export const TV_CONTROL_ACTIONS = [...TV_SWITCH_ACTIONS, ...TV_CYCLE_ACTIONS, ...TV_AUDIO_ACTIONS];
+const TV_WEBHOOK_KEYS = [...TV_SWITCH_ACTIONS, ...TV_AUDIO_ACTIONS, 'volume'];
+const DEFAULT_VOLUME_STEP = 0.05;
 const DEFAULT_OFF_SCENE = 'brb';
 
 function httpBase(value) {
@@ -86,19 +94,41 @@ function httpBase(value) {
   return /^https?:\/\/[^/\s]+/i.test(base) ? base : '';
 }
 
-function normalizeSwitchConfig(raw, fallbackBaseUrl) {
+// What Home Assistant reports for each target, lowercased; by default the
+// target's own name. Anything else (the brb scene, an empty input) is "off".
+function normalizeStateValues(raw, key) {
+  const list = Array.isArray(raw) ? raw : [raw];
+  const values = list.map((v) => str(v).toLowerCase()).filter(Boolean);
+  return values.length ? [...new Set(values)] : [key];
+}
+
+function normalizeSwitchConfig(raw, fallback) {
   const input = raw && typeof raw === 'object' ? raw : {};
   const webhooks = {};
-  for (const action of TV_SWITCH_ACTIONS) {
+  for (const action of TV_WEBHOOK_KEYS) {
     const value = input.webhooks?.[action];
     if (typeof value === 'string' && value.trim()) webhooks[action] = value.trim();
   }
   const timeout = Number(input.timeout_seconds);
+  const ownBase = httpBase(input.base_url);
+  const state = input.state && typeof input.state === 'object' ? input.state : {};
+  // The Home Assistant token of the daemon is only ever sent to the Home Assistant URL it belongs to.
+  const token = str(state.token) || (ownBase ? '' : str(fallback.token));
+  const map = {};
+  for (const key of TV_SWITCH_TARGETS) map[key] = normalizeStateValues(state.map?.[key], key);
+  const volume = input.volume && typeof input.volume === 'object' ? input.volume : {};
+  const step = Number(volume.step);
   return {
-    base_url: httpBase(input.base_url) || httpBase(fallbackBaseUrl),
+    base_url: ownBase || httpBase(fallback.baseUrl),
     webhooks,
     off_scene: str(input.off_scene) || DEFAULT_OFF_SCENE,
     timeout_seconds: Number.isFinite(timeout) && timeout > 0 ? timeout : 10,
+    state: { entity_id: str(state.entity_id), token, map },
+    // One step of `/tv vol up|down`, as a fraction of the full range.
+    volume: {
+      entity_id: str(volume.entity_id),
+      step: Number.isFinite(step) && step > 0 && step <= 1 ? step : DEFAULT_VOLUME_STEP,
+    },
   };
 }
 
@@ -396,34 +426,81 @@ export function buildProgrammeCard({ now, timezone, channels }) {
 // ---------------------------------------------------------------- command
 
 const PROGRAMME_ALIASES = new Set(['program', 'programm', 'programme', 'prog']);
+const NEXT_ALIASES = new Set(['next', 'n', 'weiter']);
+const PREV_ALIASES = new Set(['prev', 'previous', 'p', 'zurueck']);
+const VOLUME_ALIASES = new Set(['vol', 'volume']);
+const UP_ALIASES = new Set(['up', 'louder', '+']);
+const DOWN_ALIASES = new Set(['down', 'quieter', '-']);
+const TAGESSCHAU_ALIASES = new Set(['ts', 'tagesschau', 'tagesshau', 'tageschau']);
+
+/** Optimal string alignment distance: insertions, deletions, substitutions and adjacent swaps. */
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 0; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+      }
+    }
+  }
+  return d[a.length][b.length];
+}
+
+// "tagesschau" is long and easy to mistype, so a few slips (even a swapped pair) are accepted.
+const isTagesschau = (word) =>
+  TAGESSCHAU_ALIASES.has(word) || (word.length >= 6 && editDistance(word, 'tagesschau') <= 3);
 
 /**
- * `/tv` arguments to an action: `programme`, `ard`, `zdf`, `off`, `help` (no
- * argument) or `unknown`.
+ * `/tv` arguments to an action: `programme`, `ard`, `zdf`, `tagesschau`, `off`,
+ * `next`, `prev`, `help` (no argument) or `unknown`.
  */
 export function parseTvArgs(args = []) {
   const first = str(args[0]).toLowerCase();
   if (!first) return { action: 'help' };
+  if (first === 'mute') return { action: 'mute' };
+  if (VOLUME_ALIASES.has(first)) {
+    const dir = str(args[1]).toLowerCase();
+    if (UP_ALIASES.has(dir)) return { action: 'volume_up' };
+    if (DOWN_ALIASES.has(dir)) return { action: 'volume_down' };
+    return { action: 'unknown', arg: `${first} ${dir}`.trim() };
+  }
   if (PROGRAMME_ALIASES.has(first)) return { action: 'programme' };
   if (TV_CHANNEL_KEYS.includes(first)) return { action: first };
   if (first === 'off') return { action: 'off' };
+  if (NEXT_ALIASES.has(first)) return { action: 'next' };
+  if (PREV_ALIASES.has(first)) return { action: 'prev' };
+  if (isTagesschau(first)) return { action: 'tagesschau' };
   return { action: 'unknown', arg: first };
 }
 
 export const TV_USAGE =
-  'Usage: `/tv program` (what is on now and next on ARD and ZDF), `/tv ard`, `/tv zdf`, `/tv off` [owner only].';
+  'Usage: `/tv program` (what is on now and next on ARD and ZDF); owner only: `/tv ard`, `/tv zdf`, `/tv tagesschau`, `/tv next`, `/tv prev`, `/tv off`, `/tv mute`, `/tv vol up`, `/tv vol down`.';
 
 // ---------------------------------------------------------------- switching
 
+export const TV_AUDIO_LABELS = { mute: 'Muted.', volume_up: 'Volume up.', volume_down: 'Volume down.' };
+export const TV_SWITCH_LABELS = { ard: 'ARD', zdf: 'ZDF', tagesschau: 'Tagesschau', off: 'off (brb)' };
+
 /**
- * Switches the OBS input through a Home Assistant webhook. Failures are
- * reported as a short, fixed text: neither the webhook URL nor its id (nor the
- * low-level error, which may contain the host) ever leaves this class.
+ * Switches the OBS input through Home Assistant webhooks and cycles through the
+ * channels. Failures are reported as a short, fixed text: neither a webhook
+ * URL or id, nor the Home Assistant token, nor the low-level error (which may
+ * contain the host) ever leaves this class.
+ *
+ * Every switch and cycle runs through one queue, so two commands never
+ * overlap: a `/tv next` always reads the channel the previous one left.
  */
 export class TvSwitch {
   constructor(config, { fetchImpl = (...args) => globalThis.fetch(...args) } = {}) {
     this.config = config;
     this.fetchImpl = fetchImpl;
+    this.queue = Promise.resolve();
+    // The channel this daemon switched to last (null: off). Only a fallback
+    // for cycling when no Home Assistant readback is configured.
+    this.lastKnown = undefined;
   }
 
   /** The webhook URL of an action, or null when it is not configured (or unusable). */
@@ -439,22 +516,146 @@ export class TvSwitch {
     return this.webhookUrl(action) !== null;
   }
 
-  /** `{ ok: true }` or `{ ok: false, error }` with a short error that is safe to show. */
-  async switchTo(action) {
+  /** Whether a `/tv` control has what it needs configured (any one of the targets for next/prev). */
+  canRun(action) {
+    if (action === 'next' || action === 'prev') return TV_SWITCH_TARGETS.some((key) => this.isConfigured(key));
+    if (action === 'volume_up' || action === 'volume_down') return this.isConfigured(action) || this.isConfigured('volume');
+    return this.isConfigured(action);
+  }
+
+  /** True when the current channel can be read back from Home Assistant. */
+  hasReadback() {
+    const { state, base_url: base } = this.config;
+    return Boolean(state?.entity_id && state.token && base);
+  }
+
+  /** Runs `task` after everything queued before it, whatever happened to that. */
+  serialize(task) {
+    const run = this.queue.then(task, task);
+    this.queue = run.catch(() => {});
+    return run;
+  }
+
+  async request(url, init) {
+    try {
+      return { res: await this.fetchImpl(url, { ...init, signal: AbortSignal.timeout(this.config.timeout_seconds * 1000) }) };
+    } catch (err) {
+      return { error: err?.name === 'TimeoutError' ? 'timeout' : 'request failed' };
+    }
+  }
+
+  /**
+   * The channel Home Assistant says is on: `{ ok: true, channel }` with
+   * `channel` null for anything that is not a channel (the brb scene, off), or
+   * `{ ok: false, error }` when the state cannot be read or is not usable.
+   */
+  async readEntity(entityId) {
+    const { state } = this.config;
+    const { res, error } = await this.request(
+      `${this.config.base_url}/api/states/${encodeURIComponent(entityId)}`,
+      { headers: { Authorization: `Bearer ${state.token}` } }
+    );
+    if (error) return { ok: false, error };
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    try {
+      return { ok: true, body: (await res.json()) ?? {} };
+    } catch {
+      return { ok: false, error: 'bad response' };
+    }
+  }
+
+  async readChannel() {
+    if (!this.hasReadback()) return { ok: false, error: 'not configured' };
+    const { state } = this.config;
+    const read = await this.readEntity(state.entity_id);
+    if (!read.ok) return read;
+    const value = str(read.body.state).toLowerCase();
+    if (!value || value === 'unavailable' || value === 'unknown') return { ok: false, error: 'state unavailable' };
+    const channel = TV_SWITCH_TARGETS.find((key) => state.map[key].includes(value));
+    return { ok: true, channel: channel || null };
+  }
+
+  async post(action, extra = {}) {
     const url = this.webhookUrl(action);
     if (!url) return { ok: false, error: 'not configured' };
-    const payload = action === 'off' ? { action, scene: this.config.off_scene } : { action };
-    let res;
-    try {
-      res = await this.fetchImpl(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(this.config.timeout_seconds * 1000),
-      });
-    } catch (err) {
-      return { ok: false, error: err?.name === 'TimeoutError' ? 'timeout' : 'request failed' };
-    }
-    return res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status}` };
+    const payload = action === 'off' ? { action, scene: this.config.off_scene } : { action, ...extra };
+    const { res, error } = await this.request(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (error) return { ok: false, error };
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    if (TV_SWITCH_ACTIONS.includes(action)) this.lastKnown = action === 'off' ? null : action;
+    return { ok: true };
+  }
+
+  /** `{ ok: true }` or `{ ok: false, error }` with a short error that is safe to show. */
+  switchTo(action) {
+    return this.serialize(() => this.post(action));
+  }
+
+  /**
+   * `/tv next` and `/tv prev`: ard -> zdf -> tagesschau -> ard (reversed for
+   * prev). From off (or from anything that is no channel) next is the first
+   * channel (ARD) and prev the last (Tagesschau). Targets without a webhook
+   * are skipped. The channel is read back from Home Assistant when that is
+   * configured; a failing readback stops the command rather than guessing,
+   * and a failing switch never counts as an advance.
+   *
+   * Resolves to `{ ok: true, target, from }` or `{ ok: false, error }`.
+   */
+  cycle(direction) {
+    return this.serialize(async () => {
+      const step = direction === 'prev' ? -1 : 1;
+      const order = TV_SWITCH_TARGETS;
+      if (!order.some((key) => this.isConfigured(key))) return { ok: false, error: 'not configured' };
+
+      let from;
+      if (this.hasReadback()) {
+        const read = await this.readChannel();
+        if (!read.ok) return { ok: false, error: `could not read the current channel (${read.error})` };
+        from = read.channel;
+      } else {
+        from = this.lastKnown ?? null;
+      }
+
+      // Off sits "between" the last and the first channel.
+      let index = from ? order.indexOf(from) : step > 0 ? -1 : order.length;
+      let target = null;
+      for (let i = 0; i < order.length && !target; i++) {
+        index = (index + step + order.length) % order.length;
+        if (this.isConfigured(order[index])) target = order[index];
+      }
+      const result = await this.post(target);
+      return result.ok ? { ok: true, target, from } : result;
+    });
+  }
+
+  /** `/tv mute`: mute on, never a toggle, so repeating it is harmless. */
+  mute() {
+    return this.serialize(() => this.post('mute', { muted: true }));
+  }
+
+  /**
+   * `/tv vol up|down`: one bounded step. With a volume entity configured the
+   * level is read, moved by one step, clamped to 0..1 and set absolutely (the
+   * `volume` webhook), which keeps repeated steps exact; without it the
+   * receiver gets `volume_up`/`volume_down` with the step and does the maths.
+   * It never unmutes by itself.
+   */
+  volumeStep(direction) {
+    return this.serialize(async () => {
+      const action = direction === 'down' ? 'volume_down' : 'volume_up';
+      const { step, entity_id: entity } = this.config.volume;
+      if (!(entity && this.hasReadback() && this.isConfigured('volume'))) return this.post(action, { step });
+      const read = await this.readEntity(entity);
+      if (!read.ok) return { ok: false, error: `could not read the volume (${read.error})` };
+      const level = Number(read.body.attributes?.volume_level);
+      if (!Number.isFinite(level)) return { ok: false, error: 'could not read the volume (state unavailable)' };
+      const next = Math.min(1, Math.max(0, Math.round((level + (action === 'volume_up' ? step : -step)) * 1000) / 1000));
+      const result = await this.post('volume', { level: next });
+      return result.ok ? { ok: true, level: next } : result;
+    });
   }
 }

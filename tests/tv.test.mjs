@@ -12,6 +12,8 @@ import {
   loadProgrammes,
   normalizeTvConfig,
   parseArdProgram,
+  TV_SWITCH_TARGETS,
+  TV_USAGE,
   parseTvArgs,
   parseXmltv,
   parseXmltvTime,
@@ -449,7 +451,7 @@ async function runSwitch(action, { as = OWNER_MRI, tv = switchConfig(), handler,
   const origError = console.error;
   console.error = (...a) => logged.push(a.join(' '));
   try {
-    await watcher.executeTvCommand({ ...event, fromMri: as }, [action]);
+    await watcher.executeTvCommand({ ...event, fromMri: as }, Array.isArray(action) ? action : [action]);
   } finally {
     console.error = origError;
     rec.restore();
@@ -535,6 +537,10 @@ test('/tv usage and help mention the switch', async () => {
     rec.restore();
   }
   assert.ok(rec.calls[0][1].includes('/tv off'));
+  for (const word of ['/tv tagesschau', '/tv next', '/tv prev', '/tv mute', '/tv vol up', '/tv vol down']) {
+    assert.ok(rec.calls[0][1].includes(word), word);
+    assert.ok(TV_USAGE.includes(word), word);
+  }
 });
 
 test('loadConfig: the tv switch takes secrets from files and falls back to an explicit home_assistant url only', async () => {
@@ -561,5 +567,309 @@ test('loadConfig: the tv switch takes secrets from files and falls back to an ex
     if (savedHass === undefined) delete process.env.HASS_URL;
     else process.env.HASS_URL = savedHass;
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------------------- tagesschau, next/prev, mute, volume
+
+const TOKEN = 'secret-ha-token-4567';
+const STATE_URL = 'https://ha.example/api/states/select.scene_x';
+const readbackConfig = (extra = {}) =>
+  config({
+    switch: {
+      base_url: 'https://ha.example',
+      webhooks: {
+        ard: SECRET_ID + '-ard',
+        zdf: SECRET_ID + '-zdf',
+        tagesschau: SECRET_ID + '-tagesschau',
+        off: SECRET_ID + '-off',
+        mute: SECRET_ID + '-mute',
+        volume: SECRET_ID + '-volume',
+        volume_up: SECRET_ID + '-volume_up',
+        volume_down: SECRET_ID + '-volume_down',
+      },
+      state: { entity_id: 'select.scene_x', token: TOKEN, map: { ard: ['ard', 'Scene ARD'], zdf: ['zdf', 'scene zdf'] } },
+      volume: { entity_id: 'media_player.tv_x' },
+      ...extra,
+    },
+  });
+
+/** A fake Home Assistant: `scene` is what the state read returns, `volume` the volume_level attribute. */
+function fakeHa({ scene = 'ard', volume = 0.5, fail = () => false, delayMs = 0 } = {}) {
+  const ha = { scene, volume, posts: [] };
+  const handler = async (url, init) => {
+    if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+    if (fail(url, init)) return { ok: false, status: 503 };
+    if (url.includes('/api/states/media_player.')) {
+      return { ok: true, status: 200, json: async () => ({ state: 'on', attributes: { volume_level: ha.volume } }) };
+    }
+    if (url.includes('/api/states/')) return { ok: true, status: 200, json: async () => ({ state: ha.scene }) };
+    const body = JSON.parse(init.body);
+    ha.posts.push(body);
+    if (['ard', 'zdf', 'tagesschau'].includes(body.action)) ha.scene = body.action === 'tagesschau' ? 'tagesschau' : body.action;
+    if (body.action === 'off') ha.scene = 'brb';
+    if (body.action === 'volume') ha.volume = body.level;
+    return { ok: true, status: 200 };
+  };
+  return { ha, handler, ...recordingFetch(handler) };
+}
+
+test('parseTvArgs: tagesschau aliases and typos, next/prev, mute, vol', () => {
+  for (const a of ['tagesschau', 'Tagesschau', 'ts', 'taggeesscahu', 'tagesshau', 'tageschau', 'tagesschua']) {
+    assert.equal(parseTvArgs([a]).action, 'tagesschau', a);
+  }
+  for (const a of ['next', 'n', 'NEXT']) assert.equal(parseTvArgs([a]).action, 'next');
+  for (const a of ['prev', 'previous', 'p']) assert.equal(parseTvArgs([a]).action, 'prev');
+  assert.equal(parseTvArgs(['mute']).action, 'mute');
+  assert.equal(parseTvArgs(['vol', 'up']).action, 'volume_up');
+  assert.equal(parseTvArgs(['volume', 'DOWN']).action, 'volume_down');
+  assert.equal(parseTvArgs(['vol']).action, 'unknown');
+  for (const a of ['tag', 'program2', 'zdfneo', 'abc']) assert.equal(parseTvArgs([a]).action, 'unknown', a);
+  assert.deepEqual(TV_SWITCH_TARGETS, ['ard', 'zdf', 'tagesschau']);
+});
+
+test('TvSwitch.cycle: forward, reverse and wrap follow the channel Home Assistant reports', async () => {
+  const forward = { ard: 'zdf', zdf: 'tagesschau', tagesschau: 'ard' };
+  const backward = { ard: 'tagesschau', zdf: 'ard', tagesschau: 'zdf' };
+  for (const [direction, table] of [['next', forward], ['prev', backward]]) {
+    for (const [scene, expected] of Object.entries(table)) {
+      const { ha, impl } = fakeHa({ scene });
+      const sw = new TvSwitch(readbackConfig().switch, { fetchImpl: impl });
+      const out = await sw.cycle(direction);
+      assert.deepEqual(out, { ok: true, target: expected, from: scene }, `${direction} from ${scene}`);
+      assert.deepEqual(ha.posts, [{ action: expected }]);
+    }
+  }
+});
+
+test('TvSwitch.cycle: from off (brb or anything unmapped) next is ARD and prev is Tagesschau', async () => {
+  for (const scene of ['brb', 'something else']) {
+    const a = fakeHa({ scene });
+    assert.equal((await new TvSwitch(readbackConfig().switch, { fetchImpl: a.impl }).cycle('next')).target, 'ard');
+    const b = fakeHa({ scene });
+    assert.equal((await new TvSwitch(readbackConfig().switch, { fetchImpl: b.impl }).cycle('prev')).target, 'tagesschau');
+  }
+  // The mapped state values are matched case-insensitively.
+  const mapped = fakeHa({ scene: 'Scene ZDF' });
+  assert.equal((await new TvSwitch(readbackConfig().switch, { fetchImpl: mapped.impl }).cycle('next')).target, 'tagesschau');
+});
+
+test('TvSwitch.cycle: the readback is authenticated, and a failing or unusable one stops the command', async () => {
+  const ok = fakeHa({ scene: 'ard' });
+  await new TvSwitch(readbackConfig().switch, { fetchImpl: ok.impl }).cycle('next');
+  assert.equal(ok.requests[0].url, STATE_URL);
+  assert.equal(ok.requests[0].init.headers.Authorization, `Bearer ${TOKEN}`);
+  assert.equal(ok.requests[1].init.headers.Authorization, undefined, 'the token is not sent to the webhook');
+
+  for (const scene of ['unavailable', 'unknown', '']) {
+    const bad = fakeHa({ scene });
+    const out = await new TvSwitch(readbackConfig().switch, { fetchImpl: bad.impl }).cycle('next');
+    assert.equal(out.ok, false, scene);
+    assert.match(out.error, /could not read the current channel/);
+    assert.deepEqual(bad.ha.posts, [], 'no switch without a trustworthy current channel');
+  }
+  const down = fakeHa({ fail: (url) => url.includes('/api/states/') });
+  const out = await new TvSwitch(readbackConfig().switch, { fetchImpl: down.impl }).cycle('next');
+  assert.deepEqual(out, { ok: false, error: 'could not read the current channel (HTTP 503)' });
+  assert.deepEqual(down.ha.posts, []);
+});
+
+test('TvSwitch.cycle: a failed switch does not advance', async () => {
+  const flaky = fakeHa({ scene: 'ard', fail: (url) => url.includes('/api/webhook/') });
+  const sw = new TvSwitch(readbackConfig().switch, { fetchImpl: flaky.impl });
+  assert.deepEqual(await sw.cycle('next'), { ok: false, error: 'HTTP 503' });
+  assert.equal(flaky.ha.scene, 'ard');
+  assert.equal(sw.lastKnown, undefined);
+  // Without readback the remembered channel is untouched by the failure too.
+  const noRead = readbackConfig({ state: {} }).switch;
+  const ha = fakeHa({ fail: (url, init) => init?.body?.includes('zdf') });
+  const local = new TvSwitch(noRead, { fetchImpl: ha.impl });
+  assert.equal((await local.cycle('next')).target, 'ard');
+  assert.equal((await local.cycle('next')).ok, false);
+  assert.equal(local.lastKnown, 'ard');
+});
+
+test('TvSwitch.cycle: without readback it falls back to the last channel it switched to', async () => {
+  const { impl } = fakeHa();
+  const sw = new TvSwitch(readbackConfig({ state: {} }).switch, { fetchImpl: impl });
+  assert.equal(sw.hasReadback(), false);
+  const seen = [];
+  for (const d of ['next', 'next', 'next', 'next', 'prev']) seen.push((await sw.cycle(d)).target);
+  assert.deepEqual(seen, ['ard', 'zdf', 'tagesschau', 'ard', 'tagesschau']);
+  await sw.switchTo('off');
+  assert.equal((await sw.cycle('prev')).target, 'tagesschau');
+});
+
+test('TvSwitch.cycle: targets without a webhook are skipped; none at all is not configured', async () => {
+  const cfg = readbackConfig().switch;
+  delete cfg.webhooks.zdf;
+  const { impl } = fakeHa({ scene: 'ard' });
+  const sw = new TvSwitch(cfg, { fetchImpl: impl });
+  assert.equal((await sw.cycle('next')).target, 'tagesschau');
+  const none = new TvSwitch(normalizeTvConfig({ switch: { base_url: 'https://ha.example' } }).switch, { fetchImpl: impl });
+  assert.deepEqual(await none.cycle('next'), { ok: false, error: 'not configured' });
+  assert.equal(none.canRun('next'), false);
+});
+
+test('TvSwitch: concurrent next commands are serialized, two presses advance twice', async () => {
+  const { ha, impl } = fakeHa({ scene: 'ard', delayMs: 5 });
+  const sw = new TvSwitch(readbackConfig().switch, { fetchImpl: impl });
+  const [a, b, c] = await Promise.all([sw.cycle('next'), sw.cycle('next'), sw.cycle('prev')]);
+  assert.deepEqual([a.target, b.target, c.target], ['zdf', 'tagesschau', 'zdf']);
+  assert.deepEqual(ha.posts.map((p) => p.action), ['zdf', 'tagesschau', 'zdf']);
+
+  // A failure in the middle of the queue does not wedge the commands behind it.
+  let calls = 0;
+  const flaky = fakeHa({ scene: 'ard', fail: (url) => url.includes('/api/webhook/') && ++calls === 1 });
+  const s2 = new TvSwitch(readbackConfig().switch, { fetchImpl: flaky.impl });
+  const [x, y] = await Promise.all([s2.cycle('next'), s2.cycle('next')]);
+  assert.equal(x.ok, false);
+  assert.equal(y.ok, true);
+  assert.equal(y.target, 'zdf', 'the failed press did not advance, so the next one starts from ARD again');
+});
+
+test('TvSwitch: state read is sent to the explicit base URL only, with the daemon token as the fallback', () => {
+  const own = normalizeTvConfig(
+    { switch: { base_url: 'https://other.example', state: { entity_id: 'x.y' } } },
+    { baseUrl: 'https://ha.example', token: TOKEN }
+  ).switch;
+  assert.equal(own.state.token, '', 'the daemon token is not sent to a different host');
+  const inherited = normalizeTvConfig({ switch: { state: { entity_id: 'x.y' } } }, { baseUrl: 'https://ha.example', token: TOKEN }).switch;
+  assert.equal(inherited.state.token, TOKEN);
+  assert.equal(new TvSwitch(own).hasReadback(), false);
+  assert.equal(new TvSwitch(inherited).hasReadback(), true);
+});
+
+test('TvSwitch.mute: always an explicit mute-on request, never a toggle, repeatable', async () => {
+  const { ha, impl } = fakeHa();
+  const sw = new TvSwitch(readbackConfig().switch, { fetchImpl: impl });
+  assert.deepEqual(await sw.mute(), { ok: true });
+  assert.deepEqual(await sw.mute(), { ok: true });
+  assert.deepEqual(ha.posts, [{ action: 'mute', muted: true }, { action: 'mute', muted: true }]);
+  assert.equal(sw.lastKnown, undefined, 'muting is not a channel change');
+  const failing = fakeHa({ fail: () => true });
+  assert.deepEqual(await new TvSwitch(readbackConfig().switch, { fetchImpl: failing.impl }).mute(), { ok: false, error: 'HTTP 503' });
+});
+
+test('TvSwitch.volumeStep: with a volume entity the level is read, stepped by 5 points and clamped to 0..1', async () => {
+  const cfg = readbackConfig().switch;
+  const { ha, impl } = fakeHa({ volume: 0.5 });
+  const sw = new TvSwitch(cfg, { fetchImpl: impl });
+  assert.deepEqual(await sw.volumeStep('up'), { ok: true, level: 0.55 });
+  assert.deepEqual(await sw.volumeStep('down'), { ok: true, level: 0.5 });
+  for (const [start, dir, level] of [[0.98, 'up', 1], [1, 'up', 1], [0.03, 'down', 0], [0, 'down', 0]]) {
+    const edge = fakeHa({ volume: start });
+    const out = await new TvSwitch(cfg, { fetchImpl: edge.impl }).volumeStep(dir);
+    assert.deepEqual(out, { ok: true, level }, `${start} ${dir}`);
+    assert.deepEqual(edge.ha.posts, [{ action: 'volume', level }]);
+  }
+  assert.equal(ha.posts.length, 2);
+  // A configurable step.
+  const custom = readbackConfig({ volume: { entity_id: 'media_player.tv_x', step: 0.1 } }).switch;
+  const c = fakeHa({ volume: 0.2 });
+  assert.equal((await new TvSwitch(custom, { fetchImpl: c.impl }).volumeStep('up')).level, 0.3);
+  // A nonsensical step falls back to the default.
+  assert.equal(normalizeTvConfig({ switch: { volume: { step: 7 } } }).switch.volume.step, 0.05);
+});
+
+test('TvSwitch.volumeStep: concurrent steps do not lose updates', async () => {
+  const { ha, impl } = fakeHa({ volume: 0.5, delayMs: 5 });
+  const sw = new TvSwitch(readbackConfig().switch, { fetchImpl: impl });
+  const out = await Promise.all([sw.volumeStep('up'), sw.volumeStep('up'), sw.volumeStep('up')]);
+  assert.deepEqual(out.map((o) => o.level), [0.55, 0.6, 0.65]);
+  assert.equal(ha.volume, 0.65);
+});
+
+test('TvSwitch.volumeStep: a failed read or write changes nothing; without an entity the receiver gets the step', async () => {
+  const cfg = readbackConfig().switch;
+  const readFail = fakeHa({ fail: (url) => url.includes('media_player') });
+  const out = await new TvSwitch(cfg, { fetchImpl: readFail.impl }).volumeStep('up');
+  assert.deepEqual(out, { ok: false, error: 'could not read the volume (HTTP 503)' });
+  assert.deepEqual(readFail.ha.posts, []);
+  const writeFail = fakeHa({ fail: (url) => url.includes('/api/webhook/') });
+  assert.deepEqual(await new TvSwitch(cfg, { fetchImpl: writeFail.impl }).volumeStep('down'), { ok: false, error: 'HTTP 503' });
+  assert.equal(writeFail.ha.volume, 0.5);
+
+  const relative = readbackConfig({ volume: {} }).switch;
+  const rel = fakeHa();
+  assert.deepEqual(await new TvSwitch(relative, { fetchImpl: rel.impl }).volumeStep('down'), { ok: true });
+  assert.deepEqual(rel.ha.posts, [{ action: 'volume_down', step: 0.05 }]);
+  assert.equal(rel.ha.posts.some((p) => 'muted' in p), false, 'no automatic unmute');
+});
+
+test('/tv tagesschau, taggeesscahu, next, prev: the owner switches and the reply names the channel', async () => {
+  const cases = [
+    [['tagesschau'], 'ard', 'tagesschau', 'Switched to Tagesschau'],
+    [['taggeesscahu'], 'ard', 'tagesschau', 'Switched to Tagesschau'],
+    [['next'], 'zdf', 'tagesschau', 'Switched to Tagesschau'],
+    [['prev'], 'zdf', 'ard', 'Switched to ARD'],
+    [['next'], 'brb', 'ard', 'Switched to ARD'],
+    [['prev'], 'brb', 'tagesschau', 'Switched to Tagesschau'],
+  ];
+  for (const [args, scene, target, reply] of cases) {
+    const { ha, handler } = fakeHa({ scene });
+    const r = await runSwitch(args, { tv: readbackConfig(), handler });
+    assert.deepEqual(ha.posts.map((p) => p.action), [target], args.join(' ') + ' from ' + scene);
+    assert.match(r.replies, new RegExp(reply));
+    assert.match(r.reactions[0], /whiteheavycheckmark/);
+  }
+});
+
+test('/tv next|prev|mute|vol: anyone but the owner is refused and nothing is called', async () => {
+  for (const args of [['next'], ['prev'], ['tagesschau'], ['mute'], ['vol', 'up'], ['vol', 'down']]) {
+    const { handler } = fakeHa();
+    const r = await runSwitch(args, { as: OTHER_MRI, tv: readbackConfig(), handler });
+    assert.equal(r.requests.length, 0, args.join(' '));
+    assert.match(r.replies, /not in the sudoers file/);
+    assert.match(r.reactions[0], /crossmark/);
+    const anon = await runSwitch(args, { as: '', tv: readbackConfig(), handler });
+    assert.equal(anon.requests.length, 0);
+  }
+});
+
+test('/tv mute and /tv vol up|down: the owner controls the audio, replies and reactions', async () => {
+  const mute = fakeHa();
+  const m = await runSwitch(['mute'], { tv: readbackConfig(), handler: mute.handler });
+  assert.deepEqual(mute.ha.posts, [{ action: 'mute', muted: true }]);
+  assert.match(m.replies, /Muted\./);
+  assert.match(m.reactions[0], /whiteheavycheckmark/);
+
+  const up = fakeHa({ volume: 0.5 });
+  const u = await runSwitch(['vol', 'up'], { tv: readbackConfig(), handler: up.handler });
+  assert.deepEqual(up.ha.posts, [{ action: 'volume', level: 0.55 }]);
+  assert.match(u.replies, /Volume up\./);
+  const down = fakeHa({ volume: 0.5 });
+  const d = await runSwitch(['vol', 'down'], { tv: readbackConfig(), handler: down.handler });
+  assert.deepEqual(down.ha.posts, [{ action: 'volume', level: 0.45 }]);
+  assert.match(d.replies, /Volume down\./);
+});
+
+test('/tv next|mute|vol: not configured is explained and not attempted', async () => {
+  for (const args of [['mute'], ['vol', 'up'], ['vol', 'down']]) {
+    const r = await runSwitch(args, { tv: config({ switch: { base_url: 'https://ha.example', webhooks: { ard: 'x' } } }) });
+    assert.equal(r.requests.length, 0, args.join(' '));
+    assert.match(r.replies, /not configured/);
+    assert.match(r.reactions[0], /warning/i);
+  }
+  const bare = await runSwitch(['next'], { tv: config({}) });
+  assert.equal(bare.requests.length, 0);
+  assert.match(bare.replies, /not configured/);
+});
+
+test('/tv next|mute|vol failures: a failure reaction, never the URL, id, token or host', async () => {
+  for (const args of [['next'], ['prev'], ['mute'], ['vol', 'up'], ['tagesschau']]) {
+    for (const failure of [
+      () => new Error(`getaddrinfo ENOTFOUND ${SECRET_URL} ${TOKEN}`),
+      () => ({ ok: false, status: 502 }),
+    ]) {
+      const r = await runSwitch(args, { tv: readbackConfig(), handler: failure });
+      assert.match(r.reactions[0], /crossmark/, args.join(' '));
+      for (const text of [r.replies, r.logged]) {
+        for (const secret of [SECRET_ID, SECRET_URL, TOKEN, 'ha.example', 'select.scene_x']) {
+          assert.equal(text.includes(secret), false, `${args.join(' ')} leaked ${secret}`);
+        }
+      }
+      assert.match(r.replies, /failed/);
+    }
   }
 });
