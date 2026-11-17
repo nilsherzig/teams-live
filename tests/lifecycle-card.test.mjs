@@ -2,7 +2,7 @@ import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { setRichMessages, transport } from '../src/teams.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
-import { LIFECYCLE_KINDS, buildLifecycleCard, lifecycleMarkdown } from '../src/lifecycle-card.mjs';
+import { LIFECYCLE_KINDS, buildLifecycleCard, chatList, chatUrl, lifecycleMarkdown } from '../src/lifecycle-card.mjs';
 import { ADAPTIVE_CARD_VERSION, MAX_CARD_BYTES } from '../src/cards.mjs';
 import { SERVICE_ICONS } from '../src/card-icons.mjs';
 import { LIFECYCLE_ICONS, LIFECYCLE_ICONS_PX } from '../src/lifecycle-icons.mjs';
@@ -15,14 +15,23 @@ afterEach(() => setRichMessages(false));
 // Helper module: markdown (regular message) and card
 // ---------------------------------------------------------------------------
 
+// Generic fixture names and ids: no real chat appears in the tests. The names are labels of the fixture only.
+const FIXTURE_GROUP_ID = '19:fixture-group@thread.v2';
+const FIXTURE_GROUP_URL = 'https://teams.microsoft.com/l/chat/19%3Afixture-group%40thread.v2/0';
+const FIXTURE_CHATS = chatList([
+  { name: 'Example Group', id: FIXTURE_GROUP_ID },
+  { name: 'Notes', id: '48:notes' },
+]);
+const FIXTURE_CHATS_MD = `[Example Group](${FIXTURE_GROUP_URL}), Notes`;
+
 const STARTUP_FACTS = [
   ['Host', '`bot-host`'],
   ['PID', '`4242`'],
   ['Runtime', 'Node.js `v22.1.0` (linux x64)'],
   ['Memory', '80 MB'],
   ['Started', '2026-11-17 10:00:00 UTC'],
-  ['Watched Conversations', '2 (Notes, Team_Chat)'],
-  ['GitLab', 'Polling every 60s'],
+  ['Watched Conversations', FIXTURE_CHATS, FIXTURE_CHATS],
+  ['GitLab', 'Polling every 60s', 'Polling · 60s'],
   ['Jira', 'Not configured'],
   ['Home Assistant (HR works)', 'Active'],
   ['Precompute Cache', 'Active (every 5m)'],
@@ -74,7 +83,7 @@ test('lifecycleMarkdown: startup message is the regular message, byte for byte',
       '- **Runtime**: Node.js `v22.1.0` (linux x64)\n' +
       '- **Memory**: 80 MB\n' +
       '- **Started**: 2026-11-17 10:00:00 UTC\n' +
-      '- **Watched Conversations**: 2 (Notes, Team_Chat)\n' +
+      `- **Watched Conversations**: ${FIXTURE_CHATS_MD}\n` +
       '- **GitLab**: Polling every 60s\n' +
       '- **Jira**: Not configured\n' +
       '- **Home Assistant (HR works)**: Active\n' +
@@ -141,8 +150,9 @@ test('cards keep every fact of the regular message, code spans shown plainly, ma
   const byTitle = gridFacts(card);
   assert.equal(byTitle.Host, 'bot-host');
   assert.equal(byTitle.Runtime, 'Node.js v22.1.0 (linux x64)');
-  // An underscore in a value is not read as emphasis.
-  assert.equal(byTitle.Chats, '2 (Notes, Team\\_Chat)');
+  // The chat list is the card's own markdown: links stay links.
+  assert.equal(byTitle.Chats, FIXTURE_CHATS_MD);
+  assert.equal(byTitle.GitLab, 'Polling · 60s');
   assert.ok(!JSON.stringify(card).includes('`'));
 });
 
@@ -159,6 +169,27 @@ test('token override warning becomes a warning container with the same informati
     find(buildLifecycleCard({ kind: 'startup', facts: STARTUP_FACTS }), (n) => n.style === 'warning').length,
     0
   );
+});
+
+test('chatUrl: a Teams deep link for thread chats only, the id encoded for the path', () => {
+  assert.equal(chatUrl(FIXTURE_GROUP_ID), FIXTURE_GROUP_URL);
+  // A configured id that is already URL-encoded gives the same link, not a double encoding.
+  assert.equal(chatUrl('19%3Afixture-group%40thread.v2'), FIXTURE_GROUP_URL);
+  assert.equal(chatUrl('19:a_b@unq.gbl.spaces'), 'https://teams.microsoft.com/l/chat/19%3Aa_b%40unq.gbl.spaces/0');
+  // Characters encodeURIComponent keeps are encoded too, so the markdown link cannot end early.
+  assert.equal(chatUrl('19:x(1)@thread.v2'), 'https://teams.microsoft.com/l/chat/19%3Ax%281%29%40thread.v2/0');
+  // No link rather than a broken one: self chat, channels, malformed ids.
+  for (const id of ['48:notes', '19:chan@thread.tacv2', '', undefined, 'not an id', '19:a/b@thread.v2', '19:a b@thread.v2']) {
+    assert.equal(chatUrl(id), null, String(id));
+  }
+});
+
+test('chatList: comma-separated linked names, escaped, no count and no parentheses', () => {
+  assert.equal(chatList([{ name: 'Example Group', id: FIXTURE_GROUP_ID }, { name: 'Notes', id: '48:notes' }]), FIXTURE_CHATS_MD);
+  assert.equal(chatList([{ name: 'A_b [x] *y*', id: '48:notes' }]), 'A\\_b \\[x\\] \\*y\\*');
+  assert.equal(chatList([{ name: '', id: FIXTURE_GROUP_ID }]), 'none');
+  assert.equal(chatList([]), 'none');
+  assert.doesNotMatch(FIXTURE_CHATS, /^\d|\(\d|\(Notes/);
 });
 
 test('the override path and the command are code insets, not backtick text', () => {
@@ -396,4 +427,122 @@ test('rich mode: shutdown is the red last-will card with signal and uptime', asy
   assert.equal(facts.Signal, 'SIGTERM');
   assert.ok(facts.Uptime);
   assert.deepEqual(Object.keys(facts), ['Host', 'PID', 'Signal', 'Uptime', 'Time']);
+});
+
+// ---------------------------------------------------------------------------
+// Watcher: the Chats fact lists the real titles, linked; the GitLab fact is short in the card
+// ---------------------------------------------------------------------------
+
+const GROUP_B_ID = '19:fixture-other@thread.v2';
+
+function chatsWatcher(conversations, teams = { rich_messages: true }, gitlab = {}) {
+  const watcher = newWatcher(teams, gitlab);
+  watcher.config.conversations = conversations;
+  return watcher;
+}
+
+async function withTitles(titles, fn) {
+  const original = transport.getConversationTitle;
+  const looked = [];
+  transport.getConversationTitle = async (id) => {
+    looked.push(id);
+    const title = titles[id];
+    if (title instanceof Error) throw title;
+    return title ?? '';
+  };
+  try {
+    return await fn(looked);
+  } finally {
+    transport.getConversationTitle = original;
+  }
+}
+
+test('rich mode: Chats lists the titles Teams shows as links, not the configured handles or a count', async () => {
+  const watcher = chatsWatcher([
+    { id: FIXTURE_GROUP_ID, name: 'config_handle' },
+    { id: '48:notes', name: 'Notes' },
+  ]);
+  await withTitles({ [FIXTURE_GROUP_ID]: 'Example Group' }, async (looked) => {
+    const [call] = await announce(watcher, 'sendStartupAnnouncement');
+    assert.equal(gridFacts(cardOf(call[2])).Chats, FIXTURE_CHATS_MD);
+    // The Notes self-chat is not looked up: its configured label is the name and it has no link.
+    assert.deepEqual(looked, [FIXTURE_GROUP_ID]);
+    assert.ok(!call[1].includes('config_handle'));
+    // The regular message (plain mode) lists the same linked names.
+    const plain = chatsWatcher(watcher.config.conversations, {});
+    const [plainCall] = await announce(plain, 'sendStartupAnnouncement');
+    // (the regular message goes out as HTML)
+    assert.ok(plainCall[1].includes(`<b>Watched Conversations</b>: <a href="${FIXTURE_GROUP_URL}">Example Group</a>, Notes</li>`));
+  });
+});
+
+test('Chats falls back to the configured label when the lookup fails, is empty or hangs; ids and handles never leak as links', async () => {
+  const watcher = chatsWatcher([
+    { id: FIXTURE_GROUP_ID, name: 'Fixture Label' },
+    { id: GROUP_B_ID, name: 'Other Label' },
+    { id: '19:fixture-third@thread.v2' },
+  ]);
+  await withTitles({ [FIXTURE_GROUP_ID]: new Error('boom'), [GROUP_B_ID]: '  ' }, async () => {
+    const chats = await watcher.lifecycleChats();
+    assert.deepEqual(
+      chats.map((c) => c.name),
+      ['Fixture Label', 'Other Label', 'Chat']
+    );
+    const [call] = await announce(watcher, 'sendStartupAnnouncement');
+    const chatsValue = gridFacts(cardOf(call[2])).Chats;
+    assert.match(chatsValue, /^\[Fixture Label\]\(https:\/\/teams\.microsoft\.com\/l\/chat\/19%3Afixture-group%40thread\.v2\/0\), /);
+    // A conversation without a title or label is a generic "Chat", never its raw id.
+    assert.ok(chatsValue.endsWith(', [Chat](https://teams.microsoft.com/l/chat/19%3Afixture-third%40thread.v2/0)'));
+    assert.ok(!chatsValue.includes('fixture-third@'));
+  });
+});
+
+test('a found title is remembered; a later failed lookup keeps it', async () => {
+  const watcher = chatsWatcher([{ id: FIXTURE_GROUP_ID, name: 'Fixture Label' }]);
+  await withTitles({ [FIXTURE_GROUP_ID]: 'Example Group' }, () => watcher.lifecycleChats());
+  await withTitles({ [FIXTURE_GROUP_ID]: new Error('offline') }, async (looked) => {
+    const chats = await watcher.lifecycleChats();
+    assert.equal(chats[0].name, 'Example Group');
+    assert.deepEqual(looked, []);
+  });
+});
+
+test('duplicate configured conversations (encoded and decoded id) are listed once', async () => {
+  const watcher = chatsWatcher([
+    { id: FIXTURE_GROUP_ID, name: 'A' },
+    { id: encodeURIComponent(FIXTURE_GROUP_ID), name: 'A' },
+  ]);
+  await withTitles({}, async () => {
+    assert.equal((await watcher.lifecycleChats()).length, 1);
+  });
+});
+
+test('rich mode: the GitLab fact is short in the card and keeps the real interval; the plain message stays full', async () => {
+  const polling = chatsWatcher([]);
+  polling.pollIntervalMs = 90000;
+  let [call] = await announce(polling, 'sendStartupAnnouncement');
+  assert.equal(gridFacts(cardOf(call[2])).GitLab, 'Polling · 90s');
+  const plainPolling = chatsWatcher([], {});
+  plainPolling.pollIntervalMs = 90000;
+  assert.match((await announce(plainPolling, 'sendStartupAnnouncement'))[0][1], /<b>GitLab<\/b>: Polling every 90s/);
+
+  for (const [setup, expected] of [
+    [{ ok: true, group: 'fixture-group', hookId: 32 }, 'Webhooks · fallback 60s'],
+    [null, 'Webhook listener · fallback 60s'],
+  ]) {
+    const hooks = chatsWatcher([]);
+    hooks.webhookServer = { listening: true, port: 8123 };
+    hooks.webhookSetupStatus = setup;
+    [call] = await announce(hooks, 'sendStartupAnnouncement');
+    const value = gridFacts(cardOf(call[2])).GitLab;
+    assert.equal(value, expected);
+    assert.doesNotMatch(value, /fixture-group|32|\(/);
+    // Plain mode keeps the full detail.
+    const plainHooks = chatsWatcher([], {});
+    plainHooks.webhookServer = hooks.webhookServer;
+    plainHooks.webhookSetupStatus = setup;
+    const [plainCall] = await announce(plainHooks, 'sendStartupAnnouncement');
+    assert.match(plainCall[1], /<b>GitLab<\/b>: Webhooks active \(/);
+    if (setup) assert.match(plainCall[1], /configured on <code>fixture-group<\/code> id: 32, fallback poll every 60s\)/);
+  }
 });

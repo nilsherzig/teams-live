@@ -71,6 +71,39 @@ export function lifecycleMarkdown({ kind, facts = [], notice = null }) {
   return msg;
 }
 
+/**
+ * Teams deep link to a chat, or null when no valid link exists: only thread
+ * and 1:1 chats (`19:...`) have the `/l/chat/<id>/0` form, so the Notes
+ * self-chat (`48:notes`) and channels get none rather than a broken one. The
+ * id is URL-decoded once first (a configured id may already be encoded), then
+ * encoded for the path, including the characters encodeURIComponent keeps.
+ */
+export function chatUrl(conversationId) {
+  let id = str(conversationId);
+  try {
+    id = decodeURIComponent(id);
+  } catch {}
+  if (!/^19:[^\s/?#]+$/.test(id) || id.includes('@thread.tacv2')) return null;
+  const encoded = encodeURIComponent(id).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `https://teams.microsoft.com/l/chat/${encoded}/0`;
+}
+
+/**
+ * The comma-separated chat names of the "Chats" fact, each a link to its chat
+ * when it has one. `chats` are `{ name, id }`. The markdown is already escaped
+ * and serves the regular message and the card alike (pass it as the third
+ * element of the fact so the card does not escape the links again). An empty
+ * list reads "none".
+ */
+export function chatList(chats) {
+  const escape = (text) => str(text).replace(/([\\*_[\]`])/g, '\\$1');
+  const parts = chats
+    .map(({ name, id }) => ({ name: escape(name), url: chatUrl(id) }))
+    .filter((c) => c.name)
+    .map(({ name, url }) => (url ? `[${name}](${url})` : name));
+  return parts.length > 0 ? parts.join(', ') : 'none';
+}
+
 /** Card text: code spans shown as plain text, and what a TextBlock would read as markdown escaped. */
 function cardText(value) {
   return str(value)
@@ -149,9 +182,10 @@ function factRow({ label, value, icon }) {
 /** The fact grid of the card body: one icon row per fact, as one container so the grid keeps its spacing. */
 function factGrid(facts) {
   const rows = facts
-    .map(([label, value]) => ({
+    .map(([label, value, card]) => ({
       label: cardText(CARD_LABELS[str(label)] ?? label),
-      value: cardText(value),
+      // A third element is the card's own, already escaped markdown (for example links).
+      value: card === undefined ? cardText(value) : str(card),
       icon: FACT_ICONS[str(label)],
     }))
     .filter((f) => f.label && f.value)

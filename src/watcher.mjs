@@ -28,6 +28,7 @@ import {
   isRichMessage,
   richMessageWireBytes,
   setRichMessages,
+  transport,
 } from './teams.mjs';
 import {
   buildMergeRequestCard,
@@ -45,7 +46,7 @@ import {
 } from './cards.mjs';
 import { buildHelpCard, helpEntries, splitHelpCategories } from './card-help.mjs';
 import { LEADERBOARD_MAX_ENTRIES, PODIUM_SIZE, buildLeaderboardCard, rankLeaderboard } from './card-leaderboard.mjs';
-import { buildLifecycleCard, lifecycleMarkdown } from './lifecycle-card.mjs';
+import { buildLifecycleCard, chatList, lifecycleMarkdown } from './lifecycle-card.mjs';
 import {
   UserDirectory,
   normalizeName,
@@ -1416,6 +1417,50 @@ export class MergeRequestWatcher {
     return notesConv ? notesConv.id : '48:notes';
   }
 
+  /**
+   * The watched conversations as `{ name, id }` for the startup announcement.
+   * The name is the title Teams shows (read-only lookup, remembered once found),
+   * not the configured label, which is a short handle; when the lookup is
+   * unavailable (or for the Notes self-chat) the configured label is the
+   * fallback, so a failing lookup never blocks the announcement.
+   */
+  async lifecycleChats() {
+    const lookupMs = 5000;
+    this.conversationTitles ??= new Map();
+    const seen = new Set();
+    const entries = [];
+    for (const c of this.config.conversations || []) {
+      let id = String(c.id || '');
+      try {
+        id = decodeURIComponent(id);
+      } catch {}
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      entries.push({ id, label: String(c.name || '').trim() });
+    }
+    return Promise.all(
+      entries.map(async ({ id, label }) => {
+        if (id.startsWith('19:') && !this.conversationTitles.has(id)) {
+          let timer;
+          try {
+            const title = await Promise.race([
+              transport.getConversationTitle(id),
+              new Promise((resolve) => {
+                timer = setTimeout(() => resolve(''), lookupMs);
+              }),
+            ]);
+            if (typeof title === 'string' && title.trim()) this.conversationTitles.set(id, title.trim());
+          } catch (err) {
+            log(`Chat title lookup failed for a watched conversation: ${err.message}`);
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+        return { id, name: this.conversationTitles.get(id) || label || 'Chat' };
+      })
+    );
+  }
+
   async sendStartupAnnouncement() {
     const adminConv = this.getAdminConversationId();
     if (!adminConv) return;
@@ -1425,10 +1470,11 @@ export class MergeRequestWatcher {
     const version = process.version;
     const platform = `${process.platform} ${process.arch}`;
     const startTime = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
-    const convNames = this.config.conversations.map((c) => c.name || c.id).join(', ');
+    const chats = chatList(await this.lifecycleChats());
     const memRss = Math.round(process.memoryUsage().rss / 1024 / 1024);
 
     const isWhListening = Boolean(this.webhookServer?.listening);
+    const pollSec = `${this.pollIntervalMs / 1000}s`;
     let gitlabFact;
     if (isWhListening) {
       const targetGroup = this.webhookSetupStatus?.group || this.config.gitlab?.group || this.gitlab?.group;
@@ -1438,9 +1484,11 @@ export class MergeRequestWatcher {
       } else {
         setupDetail = `listening on :${this.webhookServer.port}, `;
       }
-      gitlabFact = ['GitLab', `Webhooks active (${setupDetail}fallback poll every ${this.pollIntervalMs / 1000}s)`];
+      // The card drops the group and the hook id: the state and the fallback interval are what matter.
+      const cardValue = this.webhookSetupStatus?.ok ? `Webhooks · fallback ${pollSec}` : `Webhook listener · fallback ${pollSec}`;
+      gitlabFact = ['GitLab', `Webhooks active (${setupDetail}fallback poll every ${pollSec})`, cardValue];
     } else {
-      gitlabFact = ['GitLab', `Polling every ${this.pollIntervalMs / 1000}s`];
+      gitlabFact = ['GitLab', `Polling every ${pollSec}`, `Polling · ${pollSec}`];
     }
 
     const facts = [
@@ -1449,7 +1497,7 @@ export class MergeRequestWatcher {
       ['Runtime', `Node.js \`${version}\` (${platform})`],
       ['Memory', `${memRss} MB`],
       ['Started', startTime],
-      ['Watched Conversations', `${this.watchedConversations.size} (${convNames})`],
+      ['Watched Conversations', chats, chats],
       gitlabFact,
       ['Jira', this.jira?.isConfigured() ? 'Active (CKS)' : 'Not configured'],
       ['Home Assistant (HR works)', this.hrworks?.isConfigured() ? 'Active' : 'Not configured'],

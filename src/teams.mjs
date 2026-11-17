@@ -4,6 +4,7 @@ import {
   sendMessage,
   getThreadMessages,
   getMessage as mcpGetMessage,
+  getConversationProperties as mcpGetConversationProperties,
   editMessage,
   parseContentWithMentionsAndLinks,
 } from 'msteams-mcp/dist/api/chatsvc-messaging.js';
@@ -29,6 +30,25 @@ export async function getMessage(conversationId, messageId) {
     res = await mcpGetMessage(conversationId, messageId);
   }
   return res;
+}
+
+/**
+ * The display name Teams shows for a conversation (a group's topic, or the
+ * members of a chat without one), or '' when it cannot be read. Read-only and
+ * never throws: the caller falls back to a configured label. Test runs never
+ * reach Teams.
+ */
+async function liveConversationTitle(conversationId) {
+  if (isTestRun()) return '';
+  try {
+    let res = await mcpGetConversationProperties(conversationId);
+    if (!res.ok && (await attemptTokenRefreshOnAuthError(res))) {
+      res = await mcpGetConversationProperties(conversationId);
+    }
+    return res.ok && typeof res.value?.displayName === 'string' ? res.value.displayName.trim() : '';
+  } catch {
+    return '';
+  }
 }
 
 async function attemptTokenRefreshOnAuthError(res) {
@@ -244,6 +264,8 @@ export const transport = {
   editMessage: async (...args) => refuseLiveWriteInTests('editMessage') || editMessage(...args),
   addReaction: liveAddReaction,
   removeReaction: liveRemoveReaction,
+  // Read-only lookup; here so tests can supply titles without a Teams session.
+  getConversationTitle: liveConversationTitle,
 };
 
 export const botSentMessageIds = new Set();
