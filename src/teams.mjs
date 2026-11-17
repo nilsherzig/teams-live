@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   sendMessage,
   getThreadMessages,
@@ -227,6 +228,10 @@ export async function getUserPresence(mris) {
   return response;
 }
 
+// Send/edit entry points of the Teams chat service. Indirection so tests can
+// observe the exact payloads without a Teams session.
+export const transport = { sendMessage, editMessage };
+
 export const botSentMessageIds = new Set();
 export const BOT_WATERMARK = '\u200B\u200C\u200B';
 
@@ -295,7 +300,59 @@ export function buildMentionsProperty(mentions) {
   return JSON.stringify(mentionObjects);
 }
 
+export const ADAPTIVE_CARD_CONTENT_TYPE = 'application/vnd.microsoft.card.adaptive';
+
+const RICH_MESSAGE = Symbol.for('teams-live.richMessage');
+
+/**
+ * A message that can be shown as an Adaptive Card (`teams.rich_messages`) and
+ * always carries its regular markdown text as the fallback.
+ * Without a card this returns the plain markdown string, so callers can pass
+ * the result to the send/update/edit functions either way.
+ */
+export function makeRichMessage(markdown, card) {
+  const text = String(markdown ?? '').trim();
+  if (!card || typeof card !== 'object') return text;
+  return { [RICH_MESSAGE]: true, markdown: text, card };
+}
+
+export function isRichMessage(message) {
+  return Boolean(message && typeof message === 'object' && message[RICH_MESSAGE] === true && message.card);
+}
+
+/** The regular markdown text of a plain or rich message. */
+export function messageMarkdown(message) {
+  return isRichMessage(message) ? message.markdown : String(message ?? '');
+}
+
+/**
+ * Transport for an Adaptive Card in the Teams chat service: the HTML body
+ * references the card with an `<attachment id>` tag and the card itself goes
+ * into the `cards` message property as a JSON string.
+ * Best effort: callers fall back to the plain markdown when the send fails.
+ */
+export function buildCardAttachment(message) {
+  const id = randomUUID();
+  const content = { ...message.card };
+  if (!content.fallbackText && message.markdown) {
+    content.fallbackText = message.markdown;
+  }
+  return {
+    id,
+    tag: `<attachment id="${id}"></attachment>`,
+    cards: JSON.stringify([{ id, contentType: ADAPTIVE_CARD_CONTENT_TYPE, content }]),
+  };
+}
+
 export function renderReplyContent(replyMarkdown) {
+  if (isRichMessage(replyMarkdown)) {
+    const attachment = buildCardAttachment(replyMarkdown);
+    return {
+      html: `${attachment.tag}<span style="display:none">${BOT_WATERMARK}</span>`,
+      mentions: [],
+      cards: attachment.cards,
+    };
+  }
   const cleanMarkdown = String(replyMarkdown || '').trim();
   const parsed = parseContentWithMentionsAndLinks(cleanMarkdown);
   const mentions = parsed.mentions || [];
@@ -361,29 +418,51 @@ export function buildQuotedReplyHtml({ messageId, from, fromMri, previewText, re
     `<p itemprop="preview">${escapeHtml(cleanPreview)}</p>` +
     '</blockquote>';
 
-  const { html, mentions } = renderReplyContent(replyMarkdown);
+  const { html, mentions, cards } = renderReplyContent(replyMarkdown);
   return {
     html: quote + html,
     mentions,
+    cards,
   };
+}
+
+/**
+ * Runs a send/update/edit for a message. A rich message that fails to go out
+ * as an Adaptive Card is retried once as its regular markdown text, so a
+ * transport problem with cards never costs the notification.
+ */
+async function withCardFallback(message, run) {
+  const result = await run(message);
+  // Network and auth failures were already retried; a plain message would not fare better.
+  if (result.ok || !isRichMessage(message) || isRetryableNetworkError(result)) return result;
+  console.warn(
+    new Date().toISOString(),
+    '[teams] Adaptive Card message failed, retrying as regular message:',
+    result.error?.message || result.error
+  );
+  return run(message.markdown);
 }
 
 /**
  * Sends a direct (non-reply) message to a conversation.
  */
 export async function sendDirectMessage(conversationId, markdown) {
-  const { html, mentions } = renderReplyContent(markdown);
+  return withCardFallback(markdown, (message) => sendDirectMessageOnce(conversationId, message));
+}
+
+async function sendDirectMessageOnce(conversationId, markdown) {
+  const { html, mentions, cards } = renderReplyContent(markdown);
   const options = {
     contentType: 'html',
     properties: {
       formatVariant: 'TEAMS',
       mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
-      cards: '[]',
+      cards: cards || '[]',
       links: '[]',
       files: '[]',
     },
   };
-  const result = await retrySendWithRecovery(() => sendMessage(conversationId, html, options));
+  const result = await retrySendWithRecovery(() => transport.sendMessage(conversationId, html, options));
   if (!result.ok) {
     console.error(new Date().toISOString(), `[teams] sendDirectMessage failed in ${conversationId}:`, result.error?.message || result.error);
   } else if (result.value) {
@@ -398,10 +477,21 @@ export async function sendDirectMessage(conversationId, markdown) {
  * Handles both channel threads (@thread.tacv2) and chat/meeting quote-replies.
  */
 export async function sendReply(conversationId, originalMessage, replyMarkdown, opts = {}) {
+  const pendingUpdateId = originalMessage?.replyMessageIdToUpdate;
+  return withCardFallback(replyMarkdown, (message) => {
+    // sendReplyOnce consumes the pending update id; restore it for the plain retry
+    if (originalMessage && pendingUpdateId && !originalMessage.replyMessageIdToUpdate) {
+      originalMessage.replyMessageIdToUpdate = pendingUpdateId;
+    }
+    return sendReplyOnce(conversationId, originalMessage, message, opts);
+  });
+}
+
+async function sendReplyOnce(conversationId, originalMessage, replyMarkdown, opts = {}) {
   const updateId = opts.updateMessageId || originalMessage?.replyMessageIdToUpdate;
   if (updateId) {
     if (originalMessage) originalMessage.replyMessageIdToUpdate = null;
-    const updateResult = await updateReply(conversationId, updateId, originalMessage, replyMarkdown);
+    const updateResult = await updateReplyOnce(conversationId, updateId, originalMessage, replyMarkdown);
     if (updateResult.ok) {
       return updateResult;
     }
@@ -414,7 +504,7 @@ export async function sendReply(conversationId, originalMessage, replyMarkdown, 
   const fromMri = originalMessage.fromMri || originalMessage.sender?.mri || '';
   const previewText = originalMessage.previewText || originalMessage.content || originalMessage.text || '';
 
-  const { html, mentions } = buildQuotedReplyHtml({
+  const { html, mentions, cards } = buildQuotedReplyHtml({
     messageId,
     from,
     fromMri,
@@ -427,7 +517,7 @@ export async function sendReply(conversationId, originalMessage, replyMarkdown, 
   const properties = {
     formatVariant: 'TEAMS',
     mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
-    cards: '[]',
+    cards: cards || '[]',
     links: '[]',
     files: '[]',
   };
@@ -456,7 +546,7 @@ export async function sendReply(conversationId, originalMessage, replyMarkdown, 
     options.replyToMessageId = messageId;
   }
 
-  const result = await retrySendWithRecovery(() => sendMessage(conversationId, html, options));
+  const result = await retrySendWithRecovery(() => transport.sendMessage(conversationId, html, options));
   if (!result.ok) {
     console.error(new Date().toISOString(), `[teams] sendReply failed in ${conversationId}:`, result.error?.message || result.error);
   } else if (result.value) {
@@ -470,13 +560,19 @@ export async function sendReply(conversationId, originalMessage, replyMarkdown, 
  * Updates an existing reply message in-place.
  */
 export async function updateReply(conversationId, serverMessageId, originalMessage, replyMarkdown) {
+  return withCardFallback(replyMarkdown, (message) =>
+    updateReplyOnce(conversationId, serverMessageId, originalMessage, message)
+  );
+}
+
+async function updateReplyOnce(conversationId, serverMessageId, originalMessage, replyMarkdown) {
   recordBotMessageId(serverMessageId);
   const messageId = originalMessage.messageId || originalMessage.id;
   const from = originalMessage.from || originalMessage.sender?.displayName || '';
   const fromMri = originalMessage.fromMri || originalMessage.sender?.mri || '';
   const previewText = originalMessage.previewText || originalMessage.content || originalMessage.text || '';
 
-  const { html, mentions } = buildQuotedReplyHtml({
+  const { html, mentions, cards } = buildQuotedReplyHtml({
     messageId,
     from,
     fromMri,
@@ -489,6 +585,7 @@ export async function updateReply(conversationId, serverMessageId, originalMessa
   const properties = {
     mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
   };
+  if (cards) properties.cards = cards;
 
   if (messageId) {
     properties.hasValidMsgReferences = true;
@@ -509,7 +606,7 @@ export async function updateReply(conversationId, serverMessageId, originalMessa
     properties,
   };
 
-  const result = await retrySendWithRecovery(() => editMessage(conversationId, String(serverMessageId), html, 'html', options));
+  const result = await retrySendWithRecovery(() => transport.editMessage(conversationId, String(serverMessageId), html, 'html', options));
   if (!result.ok) {
     console.error(new Date().toISOString(), `[teams] updateReply failed for ${serverMessageId} in ${conversationId}:`, result.error?.message || result.error);
   }
@@ -642,7 +739,7 @@ export async function appendThumbnailToMessage(
   };
 
   const result = await retrySendWithRecovery(() =>
-    editMessage(conversationId, String(serverMessageId), newHtml, 'html', options)
+    transport.editMessage(conversationId, String(serverMessageId), newHtml, 'html', options)
   );
   if (!result.ok) {
     console.error(
@@ -659,22 +756,29 @@ export async function appendThumbnailToMessage(
  * Preserves the original URL link and appends the rendered card HTML.
  */
 export async function editOriginalMessage(conversationId, messageId, originalUrl, cardMarkdown) {
+  return withCardFallback(cardMarkdown, (message) =>
+    editOriginalMessageOnce(conversationId, messageId, originalUrl, message)
+  );
+}
+
+async function editOriginalMessageOnce(conversationId, messageId, originalUrl, cardMarkdown) {
   recordBotMessageId(messageId);
   const cleanUrl = String(originalUrl || '').trim();
-  const cleanMarkdown = String(cardMarkdown || '').trim();
-  const { html: cardHtml, mentions } = renderReplyContent(cleanMarkdown);
+  const { html: cardHtml, mentions, cards } = renderReplyContent(
+    isRichMessage(cardMarkdown) ? cardMarkdown : String(cardMarkdown || '').trim()
+  );
   const baseHtml = cleanUrl ? `<p><a href="${escapeHtml(cleanUrl)}">${escapeHtml(cleanUrl)}</a></p>` : '';
   const fullHtml = `${baseHtml}<div style="margin-top:6px;">${cardHtml}</div>`;
 
   const properties = {
     mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
-    cards: '[]',
+    cards: cards || '[]',
     links: '[]',
     files: '[]',
   };
 
   const result = await retrySendWithRecovery(() =>
-    editMessage(conversationId, String(messageId), fullHtml, 'html', { properties })
+    transport.editMessage(conversationId, String(messageId), fullHtml, 'html', { properties })
   );
   if (!result.ok) {
     console.error(

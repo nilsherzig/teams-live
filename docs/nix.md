@@ -132,6 +132,7 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `teams.registration_interval_minutes` | How often push registrations are renewed (15). |
 | `teams.max_session_minutes` | Age after which the push session is replaced (60). |
 | `teams.history_poll_interval_seconds` | Poll of the watched chats for missed pushes (120, 0 disables). |
+| `teams.rich_messages` | Post the watcher messages as Adaptive Cards (false). See [Rich messages](#rich-messages). |
 | `teams.troll_user` | User MRI whose `/exec` gets a joke reply instead of the fake shell output. |
 | `browser_daemon.url`, `.profile`, `.secret_file` | browser-daemon used to sign in to Teams again. |
 | `gitlab.host`, `.group`, `.token_file` | GitLab instance, group for `/mrs`, API token. |
@@ -148,3 +149,37 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `home_assistant.url`, `.token_file` | Home Assistant with the HR WORKS integration, for `/whereis`. |
 | `home_assistant.hrworks_batch_size` | Organizational units per HR WORKS request when prefetching the company (4). Keep each request under the proxy timeout. |
 | `conversations` | Chats to watch: `{ id, name, gitlab }`. Default: the self chat `48:notes`. |
+
+## Rich messages
+
+By default the watcher posts regular markdown messages. With
+`teams.rich_messages = true` it posts an Adaptive Card per entity instead, laid
+out for what the entity is:
+
+| Entity | Card |
+| --- | --- |
+| GitLab merge request (open, merged, closed, rebase required, rebased) | Title, state colour, approval, pipeline, rebase, auto-merge, target branch, Jira key, links |
+| GitLab job and pipeline | Status colour, stage, ref, duration, failure reason, linked merge request |
+| Jira issue | Summary, type, status, priority, assignee |
+| OpsGenie alert | Message, priority, status, owner |
+| Confluence page | Title, space, author |
+
+Replies, in-place updates and edits of the author's message behave as with
+regular messages: channel replies stay in the thread, chat replies quote the
+original, and the card replaces the previous message content. The regular text
+is kept as the card's `fallbackText` (used for notifications and previews). If
+Teams rejects a card, the message is sent again as regular text.
+
+```nix
+services.teams-live.settings.teams.rich_messages = true;
+```
+
+Card delivery relies on the Teams chat service accepting an `<attachment>` with
+the card in the `cards` message property. Try it in your own notes chat first:
+
+```bash
+node src/smoke-rich.mjs <your-notes-conversation-id> --mode both --kind mr,jira
+node src/smoke-rich.mjs <conversation-id> --dry-run   # print the payloads only
+```
+
+The script uses generic fixture data and refuses channel conversations.

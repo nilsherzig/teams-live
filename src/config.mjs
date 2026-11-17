@@ -250,6 +250,8 @@ export function loadConfig(configPath) {
     credentials_file: getNullableString(fileConfig.teams?.credentials_file) || process.env.TEAMS_CREDENTIALS_FILE || null,
     troll_user: (getString(fileConfig.teams?.troll_user) || process.env.TEAMS_TROLL_USER || '').trim(),
     edit_own_url_messages: Boolean(fileConfig.teams?.edit_own_url_messages ?? false),
+    // Opt-in: send GitLab/Jira/OpsGenie/Confluence updates as Adaptive Cards
+    rich_messages: fileConfig.teams?.rich_messages === true,
     admin_ids: Array.isArray(fileConfig.teams?.admin_ids)
       ? fileConfig.teams.admin_ids.map(String)
       : [],

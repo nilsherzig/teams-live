@@ -51,3 +51,21 @@ test('loadConfig resolves secrets before reading values', () => {
   assert.equal(config.gitlab.host, 'git.example.com');
   assert.equal(config.conversations[0].id, '48:notes');
 });
+
+test('teams.rich_messages is off by default and only enabled by boolean true', () => {
+  const dir = tmpDir();
+  const write = (teams) => {
+    const configPath = path.join(dir, `config-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ conversations: [{ id: '48:notes', name: 'Notes' }], ...(teams ? { teams } : {}) }),
+    );
+    return loadConfig(configPath);
+  };
+
+  assert.equal(write().teams.rich_messages, false);
+  assert.equal(write({}).teams.rich_messages, false);
+  assert.equal(write({ rich_messages: false }).teams.rich_messages, false);
+  assert.equal(write({ rich_messages: 'false' }).teams.rich_messages, false);
+  assert.equal(write({ rich_messages: true }).teams.rich_messages, true);
+});

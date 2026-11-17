@@ -23,7 +23,16 @@ import {
   searchPeople,
   resolveProfiles,
   escapeHtml,
+  makeRichMessage,
 } from './teams.mjs';
+import {
+  buildMergeRequestCard,
+  buildJobCard,
+  buildPipelineCard,
+  buildJiraIssueCard,
+  buildOpsGenieAlertCard,
+  buildConfluencePageCard,
+} from './cards.mjs';
 import {
   UserDirectory,
   normalizeName,
@@ -1041,6 +1050,7 @@ export class MergeRequestWatcher {
     this.selfMri = null;
     this.selfOid = null;
     this.editOwnUrlMessages = Boolean(config.teams?.edit_own_url_messages ?? false);
+    this.richMessages = config.teams?.rich_messages === true;
     this.adminOids = new Set(
       (config.teams?.admin_ids || []).map(extractUserOid).filter(Boolean)
     );
@@ -2258,6 +2268,74 @@ export class MergeRequestWatcher {
     }
   }
 
+  /**
+   * Returns the markdown message as is, or (with `teams.rich_messages`) wrapped
+   * together with its Adaptive Card. The markdown stays the fallback.
+   */
+  richMessage(markdown, buildCard) {
+    if (!this.richMessages) return markdown;
+    try {
+      return makeRichMessage(markdown, buildCard());
+    } catch (e) {
+      log(`building Adaptive Card failed, using regular message: ${e.message}`);
+      return markdown;
+    }
+  }
+
+  findMrJiraTicket(mrDetails, title) {
+    return (
+      mrDetails?.jiraTicket ||
+      (this.jira?.findAssociatedIssue
+        ? this.jira.findAssociatedIssue({
+            title,
+            description: mrDetails?.description,
+            source_branch: mrDetails?.source_branch,
+          })
+        : null)
+    );
+  }
+
+  /** Card data for the pipeline of a merge request (live pipeline, else last reported). */
+  mrCardPipeline(mr, pipeline, { useLastReported = false } = {}) {
+    if (pipeline) {
+      return {
+        id: pipeline.id,
+        status: pipeline.status,
+        url: pipeline.web_url || (pipeline.id ? this.gitlab.pipelineLink(mr.project, pipeline.id) : null),
+      };
+    }
+    if (useLastReported && mr.lastReportedPipelineId) {
+      return {
+        id: mr.lastReportedPipelineId,
+        status: mr.lastReportedPipelineStatus,
+        url: this.gitlab.pipelineLink(mr.project, mr.lastReportedPipelineId),
+      };
+    }
+    return null;
+  }
+
+  /** Builds the merge request card. `state` is open, merged, closed, rebase or rebased. */
+  buildMrCard(mr, mrDetails, { state = 'open', pipeline = null, title = null } = {}) {
+    const cardTitle = title || mrDetails?.title || mr.title;
+    const jiraTicket = this.findMrJiraTicket(mrDetails, cardTitle);
+    return buildMergeRequestCard({
+      state,
+      iid: mr.iid,
+      project: mr.project,
+      title: cardTitle,
+      url: mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid),
+      targetBranch: mrDetails?.target_branch,
+      approved: Boolean(mrDetails?.approved || mrDetails?.status === 'approved'),
+      approvedBy: mrDetails?.approvedBy,
+      needsRebase: Boolean(mrDetails?.needsRebase),
+      hasConflicts: Boolean(mrDetails?.hasConflicts),
+      autoMerge: Boolean(mrDetails?.autoMerge),
+      autoMergeUser: mrDetails?.autoMergeUser,
+      pipeline,
+      jira: jiraTicket ? { key: jiraTicket.key, url: jiraTicket.url } : null,
+    });
+  }
+
   async handleCiStatusComment(entry, mr, pipeline, mrDetails) {
     if (!this.config.gitlab.notify?.ci?.enable) return;
 
@@ -2303,7 +2381,12 @@ export class MergeRequestWatcher {
       return;
     }
 
-    const msg = this.formatMrStatusMessage(mr, pipeline, mrDetails);
+    const msg = this.richMessage(this.formatMrStatusMessage(mr, pipeline, mrDetails), () =>
+      this.buildMrCard(mr, mrDetails, {
+        state: mrDetails?.state === 'closed' || mrDetails?.status === 'closed' ? 'closed' : 'open',
+        pipeline: this.mrCardPipeline(mr, pipeline),
+      })
+    );
 
     const mrUrl = mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid);
 
@@ -2367,7 +2450,9 @@ export class MergeRequestWatcher {
       }
       lines.push(`⚠️ **Rebase required** for [${mrRef}](${mrUrl})`);
       lines.push(`Branch has ${reason} (status: \`${mrDetails.detailedMergeStatus}\`).`);
-      const msg = lines.join('\n\n');
+      const msg = this.richMessage(lines.join('\n\n'), () =>
+        this.buildMrCard(mr, mrDetails, { state: 'rebase' })
+      );
 
       if (mr.rebaseMessageServerId) {
         log(`updating rebase comment for ${mr.project}!${mr.iid} (msg ${mr.rebaseMessageServerId})`);
@@ -2396,7 +2481,9 @@ export class MergeRequestWatcher {
         lines.push(titleLine);
       }
       lines.push(`✅ **Rebased** [${mrRef}](${mrUrl}) is now up to date and conflict-free.`);
-      const msg = lines.join('\n\n');
+      const msg = this.richMessage(lines.join('\n\n'), () =>
+        this.buildMrCard(mr, mrDetails, { state: 'rebased' })
+      );
       if (mr.rebaseMessageServerId) {
         log(`updating rebase comment to resolved for ${mr.project}!${mr.iid} (msg ${mr.rebaseMessageServerId})`);
         const updateResult = await updateReply(entry.conversationId, mr.rebaseMessageServerId, entry, msg);
@@ -2464,7 +2551,13 @@ export class MergeRequestWatcher {
       lines.push(`${pipeIcon} [Pipeline #${mr.lastReportedPipelineId}](${pipeUrl})`);
     }
 
-    const msg = lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
+    const msg = this.richMessage(lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim(), () =>
+      this.buildMrCard(mr, { ...mrDetails, jiraTicket }, {
+        state: 'merged',
+        title,
+        pipeline: this.mrCardPipeline(mr, pipe, { useLastReported: true }),
+      })
+    );
 
     if (this.shouldEditOriginalMessage(entry, mrUrl)) {
       log(`editing original message to merged for ${mr.project}!${mr.iid}`);
@@ -2567,7 +2660,13 @@ export class MergeRequestWatcher {
       lines.push(`${pipeIcon} [Pipeline #${mr.lastReportedPipelineId}](${pipeUrl})`);
     }
 
-    const msg = lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
+    const msg = this.richMessage(lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim(), () =>
+      this.buildMrCard(mr, { ...mrDetails, jiraTicket }, {
+        state: 'closed',
+        title,
+        pipeline: this.mrCardPipeline(mr, pipe, { useLastReported: true }),
+      })
+    );
 
     if (this.shouldEditOriginalMessage(entry, mrUrl)) {
       log(`editing original message to closed for ${mr.project}!${mr.iid}`);
@@ -2747,11 +2846,50 @@ export class MergeRequestWatcher {
     return lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
   }
 
+  buildJobCardFromData(jobData, project, mr = null) {
+    const pipe = jobData.pipeline;
+    const pipeId = pipe?.id || jobData.pipeline_id;
+    return buildJobCard({
+      id: jobData.id,
+      name: jobData.name,
+      project: project.split('/').pop() || project,
+      status: jobData.status,
+      stage: jobData.stage,
+      ref: jobData.ref,
+      duration: jobData.duration ? formatDuration(jobData.duration) : '',
+      failureReason: jobData.failure_reason,
+      url: jobData.web_url || this.gitlab.jobLink(project, jobData.id),
+      pipeline: pipeId
+        ? {
+            id: pipeId,
+            status: pipe?.status,
+            url: pipe?.web_url || this.gitlab.pipelineLink(project, pipeId),
+          }
+        : null,
+      mr: mr ? { iid: mr.iid, title: mr.title, url: mr.web_url } : null,
+    });
+  }
+
+  buildPipelineCardFromData(pipeData, project, mr = null) {
+    return buildPipelineCard({
+      id: pipeData.id,
+      project: project.split('/').pop() || project,
+      status: pipeData.status,
+      ref: pipeData.ref,
+      duration: pipeData.duration ? formatDuration(pipeData.duration) : '',
+      yamlErrors: pipeData.yaml_errors,
+      url: pipeData.web_url || this.gitlab.pipelineLink(project, pipeData.id),
+      mr: mr ? { iid: mr.iid, title: mr.title, url: mr.web_url } : null,
+    });
+  }
+
   async handleJobStatusComment(entry, job, jobData) {
     if (!job.mr) {
       job.mr = await this.gitlab.getMrForJob(job.project, jobData).catch(() => null);
     }
-    const msg = this.formatJobStatusMessage(jobData, job.project, job.mr);
+    const msg = this.richMessage(this.formatJobStatusMessage(jobData, job.project, job.mr), () =>
+      this.buildJobCardFromData(jobData, job.project, job.mr)
+    );
     const jobUrl = jobData?.web_url || (job.project && job.jobId ? this.gitlab.jobLink?.(job.project, job.jobId) : null);
 
     if (this.shouldEditOriginalMessage(entry, jobUrl)) {
@@ -2790,7 +2928,9 @@ export class MergeRequestWatcher {
     if (!pipe.mr) {
       pipe.mr = await this.gitlab.getMrForPipeline(pipe.project, pipeData).catch(() => null);
     }
-    const msg = this.formatPipelineStatusMessage(pipeData, pipe.project, pipe.mr);
+    const msg = this.richMessage(this.formatPipelineStatusMessage(pipeData, pipe.project, pipe.mr), () =>
+      this.buildPipelineCardFromData(pipeData, pipe.project, pipe.mr)
+    );
     const pipeUrl = pipeData?.web_url || (pipe.project && pipe.pipelineId ? this.gitlab.pipelineLink?.(pipe.project, pipe.pipelineId) : null);
 
     if (this.shouldEditOriginalMessage(entry, pipeUrl)) {
@@ -2867,6 +3007,16 @@ export class MergeRequestWatcher {
     return lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
   }
 
+  opsGenieOwnerText(alert) {
+    if (alert.owner) {
+      return humanizeRecipient(alert.owner);
+    }
+    if (Array.isArray(alert.responders) && alert.responders.length > 0) {
+      return alert.responders.map((r) => r.name || r.username || r.id).filter(Boolean).join(', ') || 'Unassigned';
+    }
+    return 'Unassigned';
+  }
+
   formatOpsGenieAlertMessage(alert) {
     const pIcons = {
       P1: '🚨',
@@ -2881,12 +3031,7 @@ export class MergeRequestWatcher {
     const sIcon = isClosed ? '⚪' : '🟢';
     const ackText = alert.acknowledged ? 'acknowledged' : 'unacknowledged';
 
-    let ownerText = 'Unassigned';
-    if (alert.owner) {
-      ownerText = humanizeRecipient(alert.owner);
-    } else if (Array.isArray(alert.responders) && alert.responders.length > 0) {
-      ownerText = alert.responders.map((r) => r.name || r.username || r.id).filter(Boolean).join(', ') || 'Unassigned';
-    }
+    const ownerText = this.opsGenieOwnerText(alert);
 
     const label = alert.tinyId ? `Alert #${alert.tinyId}` : `Alert ${alert.id.slice(0, 8)}`;
 
@@ -2901,7 +3046,7 @@ export class MergeRequestWatcher {
   }
 
   async handleJiraIssueComment(entry, issue, issueData) {
-    const msg = this.formatJiraIssueMessage(issueData);
+    const msg = this.richMessage(this.formatJiraIssueMessage(issueData), () => buildJiraIssueCard(issueData));
     const issueUrl = issueData?.url || issue?.url;
 
     if (this.shouldEditOriginalMessage(entry, issueUrl)) {
@@ -2935,7 +3080,9 @@ export class MergeRequestWatcher {
   }
 
   async handleOpsGenieAlertComment(entry, alert, alertData) {
-    const msg = this.formatOpsGenieAlertMessage(alertData);
+    const msg = this.richMessage(this.formatOpsGenieAlertMessage(alertData), () =>
+      buildOpsGenieAlertCard({ ...alertData, owner: this.opsGenieOwnerText(alertData) })
+    );
     const alertUrl = alertData?.url || alert?.url;
 
     if (this.shouldEditOriginalMessage(entry, alertUrl)) {
@@ -2981,7 +3128,9 @@ export class MergeRequestWatcher {
   }
 
   async handleConfluencePageComment(entry, doc, pageData) {
-    const msg = this.formatConfluencePageMessage(pageData);
+    const msg = this.richMessage(this.formatConfluencePageMessage(pageData), () =>
+      buildConfluencePageCard(pageData)
+    );
     const pageUrl = pageData?.url || doc?.url;
 
     if (this.shouldEditOriginalMessage(entry, pageUrl)) {
