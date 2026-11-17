@@ -14,6 +14,8 @@ import {
   mdLink,
 } from '../src/cards.mjs';
 import { SERVICE_ICONS } from '../src/card-icons.mjs';
+import { GITLAB_ICONS } from '../src/gitlab-icons.mjs';
+import { GITLAB_ICONS_SMALL } from '../src/gitlab-icons-small.mjs';
 
 const items = (card) => card.body[0].items;
 // Text with markdown links reduced to their labels (and escapes removed).
@@ -97,7 +99,7 @@ test('merge request card: open, approved, green pipeline, auto-merge', () => {
   assert.equal(mainTitle(card), 'Add example feature');
   assert.equal(style(card), 'good');
   const f = facts(card);
-  assert.equal(f.Status, 'Open');
+  assert.equal(f.Status, '\u{1F7E2} Open');
   assert.equal(f.Approval, '\u{1F44D} Approved by Alice Example, Bob Example');
   assert.equal(f.Pipeline, '\u2705 Passed (#7)');
   assert.equal(f['Auto-merge'], '\u{1F500} Enabled by Alice Example');
@@ -129,13 +131,13 @@ test('merge request card: needs rebase and not approved', () => {
 
 test('merge request card: merged, closed, rebase and rebased states', () => {
   const merged = buildMergeRequestCard({ ...baseMr, state: 'merged', targetBranch: 'main', approved: false });
-  assert.equal(style(merged), 'good');
-  assert.equal(facts(merged).Status, '\u{1F389} Merged');
+  assert.equal(style(merged), 'emphasis');
+  assert.equal(facts(merged).Status, '\u{1F7E3} Merged');
   assert.equal(facts(merged).Approval, undefined);
 
   const closed = buildMergeRequestCard({ ...baseMr, state: 'closed' });
   assert.equal(style(closed), 'attention');
-  assert.equal(facts(closed).Status, '\u{1F6AB} Closed (unmerged)');
+  assert.equal(facts(closed).Status, '\u{1F534} Closed (unmerged)');
 
   const rebase = buildMergeRequestCard({ ...baseMr, state: 'rebase', hasConflicts: false });
   assert.equal(style(rebase), 'warning');
@@ -450,7 +452,7 @@ test('cross references inside the card are linked when their URL is known', () =
   assert.equal(rawFacts(mr).Pipeline, `\u2705 [Passed (#7)](${pipelineUrl})`);
   assert.equal(rawFacts(mr).Jira, `[EX-123](${jiraUrl})`);
   // Status-like facts without a link stay plain.
-  assert.equal(rawFacts(mr).Status, 'Open');
+  assert.equal(rawFacts(mr).Status, '\u{1F7E2} Open');
 
   const job = buildJobCard({
     id: 5,
@@ -511,7 +513,7 @@ test('status emojis match the ones of the regular messages', () => {
     pipeline: { id: 3, status: 'running' },
   });
   assert.deepEqual(facts(open), {
-    Status: 'Open',
+    Status: '\u{1F7E2} Open',
     Approval: '\u23f3 Not approved yet',
     Pipeline: '\u23f3 Running (#3)',
     Rebase: '\u26a0\ufe0f Required: behind target branch',
@@ -701,6 +703,41 @@ test('buildMarkdownCard: a nested bullet without an emoji gets an explicit sub-b
   assert.equal(nested.columns[1].items[0].text, '\u25e6 child');
 });
 
+test('merge request state badges follow GitLab: open green, merged purple, closed red, draft neutral', () => {
+  // Palette of a compact (PNG8) glyph as hex RGB triplets.
+  const palette = (url) => {
+    const png = Buffer.from(url.split(',')[1], 'base64');
+    const at = png.indexOf('PLTE');
+    const length = png.readUInt32BE(at - 4);
+    const colours = [];
+    for (let i = 0; i < length; i += 3) colours.push(png.subarray(at + 4 + i, at + 7 + i).toString('hex'));
+    return colours;
+  };
+  assert.ok(palette(GITLAB_ICONS_SMALL['merge-request-open']).includes('2da160'), 'open is green');
+  assert.ok(palette(GITLAB_ICONS_SMALL.merge).includes('7b58cf'), 'merged is purple');
+  assert.ok(palette(GITLAB_ICONS_SMALL['merge-request-close']).includes('dd2b0e'), 'closed is red');
+  assert.ok(palette(GITLAB_ICONS_SMALL['merge-request']).includes('737278'), 'draft is neutral');
+  const open = buildMergeRequestCard({ ...baseMr, state: 'open' });
+  const draft = buildMergeRequestCard({ ...baseMr, state: 'open', draft: true });
+  const merged = buildMergeRequestCard({ ...baseMr, state: 'merged', draft: true });
+  const closed = buildMergeRequestCard({ ...baseMr, state: 'closed', draft: true });
+  assert.equal(headerGlyph(open).altText, 'Open');
+  assert.equal(headerGlyph(draft).altText, 'Draft');
+  assert.equal(headerGlyph(merged).altText, 'Merged', 'a draft flag never masks merged');
+  assert.equal(headerGlyph(closed).altText, 'Closed', 'a draft flag never masks closed');
+  const urls = new Set([open, draft, merged, closed].map((c) => headerGlyph(c).url));
+  assert.equal(urls.size, 4, 'four distinct glyphs');
+  assert.equal(headerGlyph(draft).url, GITLAB_ICONS['merge-request']);
+  assert.equal(facts(open).Status, '\u{1F7E2} Open');
+  assert.equal(facts(draft).Status, '\u26aa Draft');
+  assert.equal(facts(merged).Status, '\u{1F7E3} Merged');
+  assert.equal(facts(closed).Status, '\u{1F534} Closed (unmerged)');
+  assert.equal(style(draft), 'emphasis');
+  assert.equal(style(merged), 'emphasis');
+  assert.equal(style(closed), 'attention');
+  for (const c of [open, draft, merged, closed]) assertValidCard(c);
+});
+
 test('GitLab cards carry a state icon from the GitLab icon set next to the logo; emojis and labels stay', () => {
   const dataPng = /^data:image\/png;base64,iVBOR/;
   const mrCases = [
@@ -837,7 +874,7 @@ test('merge request card: the Jira fact is prefixed by the embedded Jira logo, n
   assert.equal(textColumn.items[0].text, `[EX-123](${url})`);
   // The row sits in place: the facts before it and after it stay in FactSets, none is lost.
   const f = facts(card);
-  assert.equal(f.Status, 'Open');
+  assert.equal(f.Status, '\u{1F7E2} Open');
   assert.equal(f.Target, 'main');
   // No external image URL anywhere in the card.
   const urls = [];

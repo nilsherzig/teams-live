@@ -188,7 +188,7 @@ test('MR merged and closed cards keep what is known', async () => {
     )
   );
   const mergedFacts = factsOf(cardOf(merged[0].args[2]));
-  assert.equal(mergedFacts.Status, '\u{1F389} Merged');
+  assert.equal(mergedFacts.Status, '\u{1F7E3} Merged');
   assert.equal(mergedFacts.Approval, '\u{1F44D} Approved by Alice Example');
   assert.equal(mergedFacts['Auto-merge'], '\u{1F500} Enabled');
 
@@ -201,7 +201,7 @@ test('MR merged and closed cards keep what is known', async () => {
     )
   );
   const closedFacts = factsOf(cardOf(closed[0].args[2]));
-  assert.equal(closedFacts.Status, '\u{1F6AB} Closed (unmerged)');
+  assert.equal(closedFacts.Status, '\u{1F534} Closed (unmerged)');
   assert.equal(closedFacts.Approval, '\u{1F44D} Approved');
   assert.equal(closedFacts['Auto-merge'], '\u{1F500} Enabled');
 });

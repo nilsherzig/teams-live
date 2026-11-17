@@ -20,11 +20,13 @@ pkg_version="$(jq -r .version "$work/pkg/package/package.json")"
   exit 1
 }
 
-# name:colour (GitLab's own status colours)
+# name:colour (GitLab's own status colours: open green, merged purple, closed
+# red, draft neutral)
 icons=(
   merge-request-open:#2da160
-  merge:#1f75cb
+  merge:#7b58cf
   merge-request-close:#dd2b0e
+  merge-request:#737278
   pipeline:#1f75cb
   status_success:#2da160
   status_failed:#dd2b0e
@@ -65,7 +67,7 @@ echo "wrote $out"
 # merge request glyph.
 small_icons=(
   merge-request-open:#2da160
-  merge:#1f75cb
+  merge:#7b58cf
   merge-request-close:#dd2b0e
   merge-request:#737278
   status_success:#2da160

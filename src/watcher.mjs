@@ -2461,6 +2461,7 @@ export class MergeRequestWatcher {
       targetBranch: mrDetails?.target_branch,
       approved,
       approvedBy,
+      draft: mrDetails?.draft === true,
       needsRebase: mrDetails?.needsRebase === true,
       hasConflicts: mrDetails?.hasConflicts === true,
       detailedMergeStatus: mrDetails?.detailedMergeStatus,

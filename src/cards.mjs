@@ -374,10 +374,14 @@ export function ciStatusGlyph(status) {
   return icon ? { icon, label: `Pipeline ${s.replace(/_/g, ' ')}` } : null;
 }
 
-/** GitLab merge request state icon: open, merged or closed. */
-function mrGlyph(state) {
+/**
+ * GitLab merge request state icon, in GitLab's colours: open green, merged
+ * purple, closed red, draft neutral. A draft never masks a merged or closed one.
+ */
+function mrGlyph(state, draft = false) {
   if (state === 'merged') return { icon: 'merge', label: 'Merged' };
   if (state === 'closed') return { icon: 'merge-request-close', label: 'Closed' };
+  if (draft) return { icon: 'merge-request', label: 'Draft' };
   return { icon: 'merge-request-open', label: 'Open' };
 }
 
@@ -445,7 +449,8 @@ const tri = (value) => (value === true ? true : value === false ? false : null);
  * (unknown reads "Unknown (not retrieved)", never "no"). `pipelineKnown`
  * (true/false/undefined) tells "no pipeline" from a failed lookup. The rebase fact
  * appears only while a rebase is required. Merged and closed merge requests
- * keep the details that are known. `approveUrl` adds an "✅ Approve" button
+ * keep the details that are known. `draft` marks an open merge request as a
+ * draft (neutral); it never masks a merged or closed one. `approveUrl` adds an "✅ Approve" button
  * that opens a confirmation page (see src/approve.mjs); it never approves by
  * itself.
  */
@@ -458,13 +463,15 @@ export function buildMergeRequestCard(mr) {
   const rebaseRequired = state === 'rebase' || (state !== 'rebased' && mr.needsRebase === true);
   const reason = mr.hasConflicts ? 'merge conflicts' : 'behind target branch';
 
-  let statusLabel = 'Open';
-  let style = 'accent';
+  const draft = mr.draft === true && live;
+  // The coloured dots follow GitLab's state colours; the label carries the state too.
+  let statusLabel = draft ? '⚪ Draft' : '🟢 Open';
+  let style = draft ? 'emphasis' : 'accent';
   if (state === 'merged') {
-    statusLabel = '🎉 Merged';
-    style = 'good';
+    statusLabel = '🟣 Merged';
+    style = 'emphasis';
   } else if (state === 'closed') {
-    statusLabel = '🚫 Closed (unmerged)';
+    statusLabel = '🔴 Closed (unmerged)';
     style = 'attention';
   } else if (state === 'rebase') {
     statusLabel = mr.hasConflicts ? '⚠️ Rebase required (merge conflicts)' : '⚠️ Rebase required';
@@ -474,9 +481,9 @@ export function buildMergeRequestCard(mr) {
     style = 'good';
   } else if (ci?.style === 'attention') {
     style = 'attention';
-  } else if (approved === true && ci?.style === 'good') {
+  } else if (!draft && approved === true && ci?.style === 'good') {
     style = 'good';
-  } else if (rebaseRequired) {
+  } else if (!draft && rebaseRequired) {
     style = 'warning';
   }
 
@@ -505,7 +512,7 @@ export function buildMergeRequestCard(mr) {
   return assembleCard({
     service: 'gitlab',
     kind: 'Merge request',
-    glyph: mrGlyph(state),
+    glyph: mrGlyph(state, draft),
     style,
     title: mr.title || 'Merge request',
     titleUrl: mr.url,
