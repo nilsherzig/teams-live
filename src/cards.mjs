@@ -250,7 +250,8 @@ function header(service, kind, glyph = null, ref = null, stats = null) {
 
 /**
  * Wraps the entity body in a coloured container and assembles the card.
- * `titleUrl` turns the title into a hyperlink to the entity. `ref` is the
+ * `titleUrl` turns the title into a hyperlink to the entity; `titleSize` is its
+ * Adaptive Card text size (default Medium). `ref` is the
  * entity's identifier (`{ text, url }`) shown large at the right of the header,
  * so the title and subtitle do not repeat it.
  * `style` is an Adaptive Card container style (`good`, `attention`,
@@ -265,6 +266,7 @@ export function assembleCard({
   style = 'emphasis',
   title,
   titleUrl,
+  titleSize = 'Medium',
   ref = null,
   subtitle,
   badges = [],
@@ -277,7 +279,7 @@ export function assembleCard({
   const items = [
     header(service, kind, glyph, ref, stats),
     // `title: null` is a card whose header already names it (no second heading).
-    title === null ? null : textBlock(mdLink(title || subtitle || 'Update', titleUrl), { weight: 'Bolder', size: 'Medium' }),
+    title === null ? null : textBlock(mdLink(title || subtitle || 'Update', titleUrl), { weight: 'Bolder', size: titleSize }),
     subtitle && title ? textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }) : null,
     badgeRow(badges),
     ...factBlocks(facts),
@@ -529,6 +531,8 @@ export function buildMergeRequestCard(mr) {
     style: 'emphasis',
     title: mr.title || 'Merge request',
     titleUrl: mr.url,
+    // The merge request title is the card's main line: one step above the others.
+    titleSize: 'Large',
     ref: numericReference('!', mr.iid, mr.url),
     subtitle: mr.project,
     stats: mr.diffStats,

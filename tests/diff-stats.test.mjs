@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { GitLabClient } from '../src/gitlab.mjs';
-import { buildMergeRequestCard } from '../src/cards.mjs';
+import { buildJobCard, buildMergeRequestCard } from '../src/cards.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 
 const SHA = 'a'.repeat(40);
@@ -137,4 +137,19 @@ test('an in-place refresh keeps the last known totals of the same head commit wh
   assert.equal(texts(statsBlock(watcher.buildMrCard(mr, { ...details, diffStats: null }))), 'GitLab · Merge request  +10 −4');
   // Another head commit: the old totals no longer apply, so the row is left out.
   assert.equal(statsBlock(watcher.buildMrCard(mr, { ...details, sha: 'd'.repeat(40), diffStats: null })), undefined);
+});
+
+test('the merge request title is one size larger than other cards and stays a wrapping link', () => {
+  const card = buildMergeRequestCard({ ...base, diffStats: { additions: 42, deletions: 7 } });
+  const [head, title, subtitle] = card.body[0].items;
+  assert.equal(title.size, 'Large');
+  assert.equal(title.weight, 'Bolder');
+  assert.equal(title.wrap, true);
+  assert.match(title.text, /^\[Example\]\(https:\/\/gitlab\.example\.com\/x\)$/);
+  assert.equal(subtitle.text, 'group/app');
+  assert.equal(subtitle.size, 'Small', 'the project subtitle keeps its hierarchy');
+  assert.equal(head.type, 'ColumnSet', 'the header, with its counts, is untouched');
+  assert.equal(texts(headerBlock(card)), 'GitLab · Merge request  +42 −7');
+  const job = buildJobCard({ name: 'build', project: 'group/app', url: 'https://gitlab.example.com/j', status: 'success' });
+  assert.equal(job.body[0].items[1].size, 'Medium', 'only the merge request title grows');
 });
