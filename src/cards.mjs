@@ -1097,7 +1097,7 @@ function mrListMetaLine({ before, ci, after, ciStatus, ciIcons }) {
         width: LIST_ICON_PX,
         items: [{ type: 'Image', url: icon.url, altText: icon.alt, width: LIST_ICON_PX, height: LIST_ICON_PX }],
       },
-      { type: 'Column', width: 'stretch', verticalContentAlignment: 'Center', items: [textBlock([ci, ...before, ...after].join(' \u00b7 '), small)] },
+      { type: 'Column', width: 'stretch', items: [textBlock([ci, ...before, ...after].join(' \u00b7 '), small)] },
     ],
   };
 }
