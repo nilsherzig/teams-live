@@ -47,10 +47,10 @@ function factSet(facts) {
  * `[title, text]` fact, byte for byte; otherwise it carries the people so
  * `factBlocks` can render a picture row. `avatars` maps a name to a data URI.
  */
-function personFact(title, text, names, avatars, headline = '') {
+function personFact(title, text, names, avatars, headline = '', pill = null) {
   const has = (name) => avatars && Object.hasOwn(avatars, name) && avatars[name];
   if (!names.some(has)) return [title, text];
-  return [title, text, { headline, people: names.map((name) => ({ name, avatar: has(name) ? avatars[name] : undefined })) }];
+  return [title, text, { headline, pill, people: names.map((name) => ({ name, avatar: has(name) ? avatars[name] : undefined })) }];
 }
 
 /**
@@ -135,7 +135,7 @@ function factBlocks(facts) {
   return shown.map((fact) => {
     const extra = fact[2];
     const built = extra?.people
-      ? userRow(str(fact[0]), extra.people, { headline: extra.headline, charBudget: budget, labelWidth: width })
+      ? userRow(str(fact[0]), extra.people, { headline: extra.headline, pill: extra.pill, charBudget: budget, labelWidth: width })
       : null;
     if (built) {
       budget -= built.usedChars;
