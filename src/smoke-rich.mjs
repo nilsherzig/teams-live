@@ -148,7 +148,7 @@ async function main() {
   if (opts.dryRun) {
     transport.sendMessage = async (conversationId, html, options) => {
       console.log(JSON.stringify({ call: 'sendMessage', conversationId, html, options }, null, 2));
-      return { ok: true, value: { messageId: String(Date.now()), timestamp: String(Date.now()) } };
+      return { ok: true, value: { messageId: `${Date.now()}000000`, timestamp: String(Date.now()) } };
     };
     transport.editMessage = async (conversationId, messageId, html, format, options) => {
       console.log(JSON.stringify({ call: 'editMessage', conversationId, messageId, html, options }, null, 2));
@@ -157,29 +157,56 @@ async function main() {
   }
 
   const modes = opts.mode === 'both' ? ['regular', 'rich'] : [opts.mode];
+  const describe = (result, ok) => (result.ok ? ok : `FAILED: ${result.error?.message || result.error}`);
+  // Teams edits and quotes need the server timestamp id (as the watcher stores it);
+  // `messageId` is a client-generated id that the edit endpoint rejects.
+  const serverId = (result) => {
+    const value = result.value;
+    if (!value?.timestamp) console.warn('Send result has no timestamp; falling back to messageId (edits may fail):', Object.keys(value || {}));
+    const id = value?.timestamp ?? value?.messageId;
+    return id ? String(id) : null;
+  };
+  const asMessage = (mode, text, card) => (mode === 'rich' ? makeRichMessage(text, card) : text);
+
+  // The last successfully sent message is the one quoted by the reply below.
+  let lastSent = null;
   for (const kind of opts.kinds) {
     for (const mode of modes) {
       const { markdown, card } = FIXTURES[kind]();
       const label = `[smoke-rich ${mode}/${kind}]`;
-      const text = `${label} ${markdown}`;
-      const body = mode === 'rich' ? makeRichMessage(text, card) : text;
-      const result = await sendDirectMessage(opts.conversationId, body);
-      console.log(label, result.ok ? `sent (${result.value?.messageId})` : `FAILED: ${result.error?.message || result.error}`);
-      if (!result.ok) process.exitCode = 1;
+      const result = await sendDirectMessage(opts.conversationId, asMessage(mode, `${label} ${markdown}`, card));
+      const id = result.ok ? serverId(result) : null;
+      console.log(label, describe(result, `sent (${id})`));
+      if (id) lastSent = { messageId: id, label };
+      else process.exitCode = 1;
     }
   }
+  if (!lastSent) {
+    console.error('Nothing was sent successfully; skipping the reply and update checks.');
+    process.exit(1);
+  }
 
-  // Reply (quote) and in-place update paths with a card, on the last sent message.
-  const { markdown, card } = FIXTURES[opts.kinds[0]]();
-  const original = { messageId: String(Date.now()), from: 'Smoke Test', fromMri: '', previewText: 'smoke test message' };
-  const reply = await sendReply(opts.conversationId, original, makeRichMessage(`${markdown} (quote reply)`, card));
-  console.log('[smoke-rich reply]', reply.ok ? `sent (${reply.value?.messageId})` : `FAILED: ${reply.error?.message || reply.error}`);
-  if (reply.ok && reply.value?.messageId) {
-    const updated = await updateReply(opts.conversationId, reply.value.messageId, original, makeRichMessage(`${markdown} (updated)`, card));
-    console.log('[smoke-rich update]', updated.ok ? 'updated in place' : `FAILED: ${updated.error?.message || updated.error}`);
+  // Quote reply and in-place update of that reply, once per requested mode.
+  // In rich mode the reply is finally updated back to regular text, which must clear the card.
+  const { markdown, card } = FIXTURES[opts.kinds[opts.kinds.length - 1]]();
+  const original = { messageId: lastSent.messageId, from: 'Smoke Test', fromMri: '', previewText: lastSent.label };
+  for (const mode of modes) {
+    const label = `[smoke-rich ${mode} reply]`;
+    const reply = await sendReply(opts.conversationId, original, asMessage(mode, `${label} ${markdown}`, card));
+    const replyId = reply.ok ? serverId(reply) : null;
+    console.log(label, describe(reply, `sent (${replyId})`));
+    if (!replyId) {
+      process.exitCode = 1;
+      continue;
+    }
+    const updated = await updateReply(opts.conversationId, replyId, original, asMessage(mode, `${label} updated ${markdown}`, card));
+    console.log(label, describe(updated, 'updated in place'));
     if (!updated.ok) process.exitCode = 1;
-  } else {
-    process.exitCode = 1;
+    if (mode === 'rich') {
+      const cleared = await updateReply(opts.conversationId, replyId, original, `${label} updated back to regular text`);
+      console.log(label, describe(cleared, 'updated back to regular text (card cleared)'));
+      if (!cleared.ok) process.exitCode = 1;
+    }
   }
 }
 

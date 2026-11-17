@@ -202,16 +202,16 @@ test('updateReply edits in place with the card, and falls back to plain text', a
   }
   assert.equal(rec2.calls.length, 2);
   assert.ok(!rec2.calls[1].args[2].includes('<attachment'));
-  assert.equal(rec2.calls[1].args[4].properties.cards, undefined);
+  assert.equal(rec2.calls[1].args[4].properties.cards, '[]');
 
-  // Plain updates do not touch the cards property at all.
+  // A plain update explicitly clears a card that the message had before.
   const rec3 = recordTransport();
   try {
     await updateReply(CONV, '1700000000005', ORIGINAL, MARKDOWN);
   } finally {
     rec3.restore();
   }
-  assert.equal(rec3.calls[0].args[4].properties.cards, undefined);
+  assert.equal(rec3.calls[0].args[4].properties.cards, '[]');
 });
 
 test('sendReply restores the pending update id for the plain retry', async () => {
@@ -234,6 +234,38 @@ test('sendReply restores the pending update id for the plain retry', async () =>
   const retry = rec.calls[2].args;
   assert.equal(retry[1], '1700000000009');
   assert.ok(!retry[2].includes('<attachment'));
+});
+
+const MENTION_MARKDOWN = 'Assigned to @[Alice Example](8:orgid:alice) in [EX-1](https://jira.example.com/browse/EX-1)';
+
+test('a rich message whose text has mentions is rendered as a regular message', async () => {
+  const rich = makeRichMessage(MENTION_MARKDOWN, CARD);
+  const plain = renderReplyContent(MENTION_MARKDOWN);
+  const rendered = renderReplyContent(rich);
+  assert.equal(plain.mentions.length, 1);
+  assert.deepEqual(rendered.mentions, plain.mentions);
+  assert.equal(rendered.cards, undefined);
+  assert.ok(!rendered.html.includes('<attachment'));
+  assert.ok(rendered.html.includes('Alice Example'));
+
+  const rec = recordTransport();
+  try {
+    await sendDirectMessage(CONV, rich);
+    await sendReply(CONV, ORIGINAL, rich);
+    await updateReply(CONV, '1700000000005', ORIGINAL, rich);
+    await editOriginalMessage(CONV, '1700000000000', 'https://example.com/x', rich);
+  } finally {
+    rec.restore();
+  }
+  assert.equal(rec.calls.length, 4);
+  for (const { args } of rec.calls) {
+    const { html, options } = args.length === 3 ? { html: args[1], options: args[2] } : { html: args[2], options: args[4] };
+    assert.ok(!html.includes('<attachment'));
+    assert.equal(options.properties.cards, '[]');
+    const mentions = JSON.parse(options.properties.mentions);
+    assert.equal(mentions.length, 1);
+    assert.equal(mentions[0].mri, '8:orgid:alice');
+  }
 });
 
 test('editOriginalMessage keeps the user URL and adds the card', async () => {

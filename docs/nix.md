@@ -168,7 +168,10 @@ Replies, in-place updates and edits of the author's message behave as with
 regular messages: channel replies stay in the thread, chat replies quote the
 original, and the card replaces the previous message content. The regular text
 is kept as the card's `fallbackText` (used for notifications and previews). If
-Teams rejects a card, the message is sent again as regular text.
+Teams rejects a card, the message is sent again as regular text. A message
+whose text mentions someone is always sent as regular text, because a card
+cannot carry the mention. Updating a card message with regular text clears the
+card.
 
 ```nix
 services.teams-live.settings.teams.rich_messages = true;
@@ -178,7 +181,7 @@ Card delivery relies on the Teams chat service accepting an `<attachment>` with
 the card in the `cards` message property. Try it in your own notes chat first:
 
 ```bash
-node src/smoke-rich.mjs <your-notes-conversation-id> --mode both --kind mr,jira
+node src/smoke-rich.mjs <your-notes-conversation-id> --mode both --kind mr,jira   # --mode regular|rich sends only that kind of message and reply
 node src/smoke-rich.mjs <conversation-id> --dry-run   # print the payloads only
 ```
 

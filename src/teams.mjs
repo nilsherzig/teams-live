@@ -344,8 +344,18 @@ export function buildCardAttachment(message) {
   };
 }
 
+/**
+ * Renders a message to Teams HTML plus its mention and card properties.
+ *
+ * A rich message is sent as an Adaptive Card only when its text has no
+ * mentions: a card cannot carry the mention metadata, so a message that
+ * mentions someone is rendered from its regular markdown instead, and the
+ * mention (and its notification) keeps working.
+ */
 export function renderReplyContent(replyMarkdown) {
   if (isRichMessage(replyMarkdown)) {
+    const plain = renderPlainContent(replyMarkdown.markdown);
+    if (plain.mentions.length > 0) return plain;
     const attachment = buildCardAttachment(replyMarkdown);
     return {
       html: `${attachment.tag}<span style="display:none">${BOT_WATERMARK}</span>`,
@@ -353,6 +363,10 @@ export function renderReplyContent(replyMarkdown) {
       cards: attachment.cards,
     };
   }
+  return renderPlainContent(replyMarkdown);
+}
+
+function renderPlainContent(replyMarkdown) {
   const cleanMarkdown = String(replyMarkdown || '').trim();
   const parsed = parseContentWithMentionsAndLinks(cleanMarkdown);
   const mentions = parsed.mentions || [];
@@ -585,7 +599,8 @@ async function updateReplyOnce(conversationId, serverMessageId, originalMessage,
   const properties = {
     mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
   };
-  if (cards) properties.cards = cards;
+  // Always set, so an update from a card back to plain text clears the old card.
+  properties.cards = cards || '[]';
 
   if (messageId) {
     properties.hasValidMsgReferences = true;
