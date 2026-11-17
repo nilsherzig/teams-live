@@ -48,7 +48,7 @@ function validTimeZone(tz) {
  * The `tv` section of the config, with defaults. Never throws on bad input: an
  * unusable value falls back to the default, so a typo cannot take the daemon down.
  */
-export function normalizeTvConfig(raw = {}) {
+export function normalizeTvConfig(raw = {}, { baseUrl = '' } = {}) {
   const input = raw && typeof raw === 'object' ? raw : {};
   const channels = {};
   for (const key of TV_CHANNEL_KEYS) {
@@ -70,6 +70,35 @@ export function normalizeTvConfig(raw = {}) {
     timezone: validTimeZone(str(input.timezone)) ? str(input.timezone) : DEFAULT_TIMEZONE,
     cache_ttl_seconds: Number.isFinite(ttl) && ttl >= 0 ? ttl : 300,
     channels,
+    switch: normalizeSwitchConfig(input.switch, baseUrl),
+  };
+}
+
+// The input switch: one Home Assistant webhook per target. The webhook ids are
+// secrets (the id is the only authentication), so they come from the runtime
+// config (`{ "_secret": "/path" }` references, see config.mjs), never from this
+// repository, and are never logged or sent to chat.
+export const TV_SWITCH_ACTIONS = ['ard', 'zdf', 'off'];
+const DEFAULT_OFF_SCENE = 'brb';
+
+function httpBase(value) {
+  const base = str(value).replace(/\/+$/, '');
+  return /^https?:\/\/[^/\s]+/i.test(base) ? base : '';
+}
+
+function normalizeSwitchConfig(raw, fallbackBaseUrl) {
+  const input = raw && typeof raw === 'object' ? raw : {};
+  const webhooks = {};
+  for (const action of TV_SWITCH_ACTIONS) {
+    const value = input.webhooks?.[action];
+    if (typeof value === 'string' && value.trim()) webhooks[action] = value.trim();
+  }
+  const timeout = Number(input.timeout_seconds);
+  return {
+    base_url: httpBase(input.base_url) || httpBase(fallbackBaseUrl),
+    webhooks,
+    off_scene: str(input.off_scene) || DEFAULT_OFF_SCENE,
+    timeout_seconds: Number.isFinite(timeout) && timeout > 0 ? timeout : 10,
   };
 }
 
@@ -381,4 +410,51 @@ export function parseTvArgs(args = []) {
   return { action: 'unknown', arg: first };
 }
 
-export const TV_USAGE = 'Usage: `/tv program` (what is on now and next on ARD and ZDF).';
+export const TV_USAGE =
+  'Usage: `/tv program` (what is on now and next on ARD and ZDF), `/tv ard`, `/tv zdf`, `/tv off` [owner only].';
+
+// ---------------------------------------------------------------- switching
+
+/**
+ * Switches the OBS input through a Home Assistant webhook. Failures are
+ * reported as a short, fixed text: neither the webhook URL nor its id (nor the
+ * low-level error, which may contain the host) ever leaves this class.
+ */
+export class TvSwitch {
+  constructor(config, { fetchImpl = (...args) => globalThis.fetch(...args) } = {}) {
+    this.config = config;
+    this.fetchImpl = fetchImpl;
+  }
+
+  /** The webhook URL of an action, or null when it is not configured (or unusable). */
+  webhookUrl(action) {
+    const value = this.config.webhooks?.[action];
+    if (!value) return null;
+    if (/^https?:\/\//i.test(value)) return /^https?:\/\/[^/\s]+\/\S/i.test(value) ? value : null;
+    if (!this.config.base_url) return null;
+    return `${this.config.base_url}/api/webhook/${encodeURIComponent(value)}`;
+  }
+
+  isConfigured(action) {
+    return this.webhookUrl(action) !== null;
+  }
+
+  /** `{ ok: true }` or `{ ok: false, error }` with a short error that is safe to show. */
+  async switchTo(action) {
+    const url = this.webhookUrl(action);
+    if (!url) return { ok: false, error: 'not configured' };
+    const payload = action === 'off' ? { action, scene: this.config.off_scene } : { action };
+    let res;
+    try {
+      res = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(this.config.timeout_seconds * 1000),
+      });
+    } catch (err) {
+      return { ok: false, error: err?.name === 'TimeoutError' ? 'timeout' : 'request failed' };
+    }
+    return res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status}` };
+  }
+}

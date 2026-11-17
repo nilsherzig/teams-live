@@ -153,6 +153,11 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `opsgenie.base_url`, `.web_base_url` | OpsGenie API and web URLs. |
 | `home_assistant.url`, `.token_file` | Home Assistant with the HR WORKS integration, for `/whereis`. |
 | `home_assistant.hrworks_batch_size` | Organizational units per HR WORKS request when prefetching the company (4). Keep each request under the proxy timeout. |
+| `tv.timezone`, `.cache_ttl_seconds` | `/tv program`: time zone for the times shown (`Europe/Berlin`) and how long a programme lookup is cached (300). |
+| `tv.channels.{ard,zdf}.{name,type,url,channel_id}` | Programme sources for `/tv program`. `type` is `ard-api` (the keyless ARD programme API, the default for `ard`) or `xmltv` (an XMLTV file, plain or gzip; the default for `zdf` is a community file). |
+| `tv.switch.base_url` | Home Assistant base URL for `/tv ard`, `/tv zdf` and `/tv off`. Falls back to an explicitly configured `home_assistant.url` or `HASS_URL`; there is no built-in default. |
+| `tv.switch.webhooks.{ard,zdf,off}` | One Home Assistant webhook per target: the bare webhook id, or a full `http(s)` URL. The id authenticates the call, so give it as `{ _secret = path; }`. A target without a webhook answers "not configured". |
+| `tv.switch.off_scene`, `.timeout_seconds` | OBS scene sent along with `/tv off` (`brb`) and the request timeout (10). |
 | `conversations` | Chats to watch: `{ id, name, gitlab }`. Default: the self chat `48:notes`. |
 
 ### Connector alerts

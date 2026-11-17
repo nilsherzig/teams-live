@@ -5,6 +5,7 @@ import { setRichMessages, transport } from '../src/teams.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 import {
   TvProgrammeService,
+  TvSwitch,
   buildProgrammeCard,
   currentAndNext,
   formatProgrammeText,
@@ -85,6 +86,28 @@ test('normalizeTvConfig: defaults, overrides, and a bad value never throws', () 
   assert.equal(t.channels.ard.type, 'xmltv');
   assert.equal(t.channels.ard.url, '');
   assert.equal(normalizeTvConfig('junk').channels.ard.name, 'Das Erste');
+});
+
+test('normalizeTvConfig: the switch section is empty by default and idempotent', () => {
+  const d = normalizeTvConfig(undefined);
+  assert.deepEqual(d.switch.webhooks, {});
+  assert.equal(d.switch.base_url, '', 'there is no built-in base URL');
+  assert.equal(d.switch.off_scene, 'brb');
+  assert.equal(d.switch.timeout_seconds, 10);
+
+  const raw = {
+    switch: { base_url: 'https://ha.example/', webhooks: { ard: ' id-a ', zdf: '', off: 7, bogus: 'x' }, off_scene: 'away' },
+  };
+  const n = normalizeTvConfig(raw);
+  assert.equal(n.switch.base_url, 'https://ha.example');
+  assert.deepEqual(n.switch.webhooks, { ard: 'id-a' });
+  assert.equal(n.switch.off_scene, 'away');
+  assert.deepEqual(normalizeTvConfig(n), n);
+
+  // An explicit base URL wins over the fallback; a junk base URL is dropped.
+  assert.equal(normalizeTvConfig(raw, { baseUrl: 'https://other.example' }).switch.base_url, 'https://ha.example');
+  assert.equal(normalizeTvConfig({}, { baseUrl: 'https://other.example/' }).switch.base_url, 'https://other.example');
+  assert.equal(normalizeTvConfig({ switch: { base_url: 'ha.example' } }, { baseUrl: 'nope' }).switch.base_url, '');
 });
 
 test('parseXmltvTime handles offsets and rejects junk', () => {
@@ -341,6 +364,202 @@ test('loadConfig carries the tv section with defaults', async () => {
     fs.writeFileSync(file, '{}');
     assert.equal(loadConfig(file).tv.timezone, 'Europe/Berlin');
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------------------------------------------ switching
+
+const SECRET_ID = 'secret-webhook-id-0123';
+const SECRET_URL = 'https://ha.example/api/webhook/' + SECRET_ID;
+const OWNER_MRI = '8:orgid:00000000-0000-0000-0000-000000000001';
+const OTHER_MRI = '8:orgid:00000000-0000-0000-0000-000000000002';
+
+const switchConfig = (extra = {}) =>
+  config({
+    switch: {
+      base_url: 'https://ha.example',
+      webhooks: { ard: SECRET_ID + '-ard', zdf: SECRET_ID + '-zdf', off: SECRET_ID + '-off' },
+      ...extra,
+    },
+  });
+
+function recordingFetch(handler = () => ({ ok: true, status: 200 })) {
+  const requests = [];
+  const impl = async (url, init) => {
+    requests.push({ url: String(url), init });
+    const out = await handler(String(url), init);
+    if (out instanceof Error) throw out;
+    return out;
+  };
+  return { requests, impl };
+}
+
+test('TvSwitch builds the webhook URL from the base URL and an id, or takes a full URL', () => {
+  const sw = new TvSwitch(
+    normalizeTvConfig({
+      switch: { base_url: 'https://ha.example', webhooks: { ard: 'a b/c', zdf: 'https://hooks.example/h/zdf', off: 'ftp://x' } },
+    }).switch
+  );
+  assert.equal(sw.webhookUrl('ard'), 'https://ha.example/api/webhook/a%20b%2Fc');
+  assert.equal(sw.webhookUrl('zdf'), 'https://hooks.example/h/zdf');
+  assert.equal(sw.webhookUrl('off'), 'https://ha.example/api/webhook/ftp%3A%2F%2Fx');
+  assert.equal(sw.isConfigured('ard'), true);
+  // An id without any base URL cannot be used.
+  const bare = new TvSwitch(normalizeTvConfig({ switch: { webhooks: { ard: 'id' } } }).switch);
+  assert.equal(bare.webhookUrl('ard'), null);
+  assert.equal(bare.isConfigured('zdf'), false);
+});
+
+test('TvSwitch posts the target, sends the scene for off, and maps errors without leaking', async () => {
+  const cfg = switchConfig().switch;
+  const ok = recordingFetch();
+  const sw = new TvSwitch(cfg, { fetchImpl: ok.impl });
+  assert.deepEqual(await sw.switchTo('ard'), { ok: true });
+  assert.deepEqual(await sw.switchTo('off'), { ok: true });
+  assert.equal(ok.requests[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(ok.requests[0].init.body), { action: 'ard' });
+  assert.deepEqual(JSON.parse(ok.requests[1].init.body), { action: 'off', scene: 'brb' });
+  assert.ok(ok.requests[1].url.endsWith('-off'));
+
+  const down = await new TvSwitch(cfg, { fetchImpl: recordingFetch(() => ({ ok: false, status: 503 })).impl }).switchTo('zdf');
+  assert.deepEqual(down, { ok: false, error: 'HTTP 503' });
+
+  const dns = await new TvSwitch(cfg, {
+    fetchImpl: recordingFetch(() => new Error(`getaddrinfo ENOTFOUND ${SECRET_URL}`)).impl,
+  }).switchTo('zdf');
+  assert.deepEqual(dns, { ok: false, error: 'request failed' });
+
+  const slow = Object.assign(new Error('The operation timed out'), { name: 'TimeoutError' });
+  assert.deepEqual(
+    await new TvSwitch(cfg, { fetchImpl: recordingFetch(() => slow).impl }).switchTo('ard'),
+    { ok: false, error: 'timeout' }
+  );
+  assert.deepEqual(await new TvSwitch(normalizeTvConfig({}).switch).switchTo('ard'), { ok: false, error: 'not configured' });
+});
+
+async function runSwitch(action, { as = OWNER_MRI, tv = switchConfig(), handler, teams = {} } = {}) {
+  const rec = recordTransport();
+  const { watcher, reactions } = newWatcher(teams);
+  watcher.selfMri = OWNER_MRI;
+  watcher.selfOid = '00000000-0000-0000-0000-000000000001';
+  const fetched = recordingFetch(handler);
+  watcher.tvSwitch = new TvSwitch(tv.switch, { fetchImpl: fetched.impl });
+  const logged = [];
+  const origError = console.error;
+  console.error = (...a) => logged.push(a.join(' '));
+  try {
+    await watcher.executeTvCommand({ ...event, fromMri: as }, [action]);
+  } finally {
+    console.error = origError;
+    rec.restore();
+  }
+  const replies = rec.calls.map((c) => c[1]).join('\n');
+  return { replies, reactions, requests: fetched.requests, logged: logged.join('\n') };
+}
+
+test('/tv ard|zdf|off: the owner switches; off asks for the brb scene', async () => {
+  for (const action of ['ard', 'zdf', 'off']) {
+    const r = await runSwitch(action);
+    assert.equal(r.requests.length, 1, action);
+    assert.ok(r.requests[0].url.endsWith(`-${action}`));
+    assert.match(r.replies, /Switched to/);
+    assert.match(r.reactions[0], /whiteheavycheckmark/);
+  }
+  const off = await runSwitch('off');
+  assert.deepEqual(JSON.parse(off.requests[0].init.body), { action: 'off', scene: 'brb' });
+  assert.match(off.replies, /brb/);
+});
+
+test('/tv ard: anyone but the owner is refused fail-closed and nothing is called', async () => {
+  const r = await runSwitch('ard', { as: OTHER_MRI });
+  assert.equal(r.requests.length, 0);
+  assert.match(r.replies, /not in the sudoers file/);
+  assert.match(r.reactions[0], /crossmark/);
+  const anon = await runSwitch('off', { as: '' });
+  assert.equal(anon.requests.length, 0);
+  assert.match(anon.reactions[0], /crossmark/);
+});
+
+test('/tv ard: a configured admin may switch', async () => {
+  const rec = recordTransport();
+  const { watcher } = newWatcher();
+  watcher.adminOids = new Set(['00000000-0000-0000-0000-000000000002']);
+  const fetched = recordingFetch();
+  watcher.tvSwitch = new TvSwitch(switchConfig().switch, { fetchImpl: fetched.impl });
+  try {
+    await watcher.executeTvCommand({ ...event, fromMri: OTHER_MRI }, ['zdf']);
+  } finally {
+    rec.restore();
+  }
+  assert.equal(fetched.requests.length, 1);
+});
+
+test('/tv ard: not configured is explained, not attempted', async () => {
+  const r = await runSwitch('ard', { tv: config() });
+  assert.equal(r.requests.length, 0);
+  assert.match(r.replies, /not configured/);
+  assert.match(r.reactions[0], /warning/);
+  const partial = await runSwitch('zdf', { tv: config({ switch: { base_url: 'https://ha.example', webhooks: { ard: 'x' } } }) });
+  assert.equal(partial.requests.length, 0);
+  assert.match(partial.replies, /not configured/);
+});
+
+test('/tv ard: a failing Home Assistant is a failure reaction without a URL or id in the reply or log', async () => {
+  for (const handler of [
+    () => ({ ok: false, status: 500 }),
+    () => new Error(`connect ECONNREFUSED ${SECRET_URL}`),
+  ]) {
+    const r = await runSwitch('ard', { handler });
+    assert.match(r.replies, /Switching to ARD failed/);
+    assert.match(r.reactions[0], /crossmark/);
+    for (const text of [r.replies, r.logged]) {
+      assert.ok(!text.includes(SECRET_ID), 'no webhook id');
+      assert.ok(!text.includes('ha.example'), 'no host');
+      assert.ok(!text.includes('/api/webhook'), 'no URL');
+    }
+  }
+  const ok = await runSwitch('zdf');
+  assert.ok(!ok.replies.includes(SECRET_ID) && !ok.logged.includes(SECRET_ID));
+  assert.ok(!ok.logged.includes('ha.example'));
+});
+
+test('/tv usage and help mention the switch', async () => {
+  const { calls } = await runCommand({}, ['wat']);
+  assert.ok(calls[0][1].includes('/tv ard'));
+  const { watcher } = newWatcher();
+  const rec = recordTransport();
+  try {
+    await watcher.executeHelpCommand(event, ['tools']);
+  } finally {
+    rec.restore();
+  }
+  assert.ok(rec.calls[0][1].includes('/tv off'));
+});
+
+test('loadConfig: the tv switch takes secrets from files and falls back to an explicit home_assistant url only', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { loadConfig } = await import('../src/config.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-switch-'));
+  const savedHass = process.env.HASS_URL;
+  delete process.env.HASS_URL;
+  try {
+    const idFile = path.join(dir, 'id');
+    fs.writeFileSync(idFile, `${SECRET_ID}\n`);
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ tv: { switch: { webhooks: { ard: { _secret: idFile } } } } }));
+    let tv = loadConfig(file).tv;
+    assert.equal(tv.switch.webhooks.ard, SECRET_ID);
+    assert.equal(tv.switch.base_url, '', 'the built-in home_assistant default is not inherited');
+
+    fs.writeFileSync(file, JSON.stringify({ home_assistant: { url: 'https://ha.example/' }, tv: { switch: { webhooks: { ard: 'x' } } } }));
+    tv = loadConfig(file).tv;
+    assert.equal(tv.switch.base_url, 'https://ha.example');
+  } finally {
+    if (savedHass === undefined) delete process.env.HASS_URL;
+    else process.env.HASS_URL = savedHass;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

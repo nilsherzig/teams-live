@@ -343,7 +343,10 @@ export function loadConfig(configPath) {
     confluence,
     opsgenie,
     home_assistant: homeAssistant,
-    tv: normalizeTvConfig(fileConfig.tv),
+    // Only an explicitly configured Home Assistant URL is a base for the TV webhooks, never the built-in default.
+    tv: normalizeTvConfig(fileConfig.tv, {
+      baseUrl: getString(fileConfig.home_assistant?.url) || process.env.HASS_URL || '',
+    }),
     teams,
     conversations,
   };

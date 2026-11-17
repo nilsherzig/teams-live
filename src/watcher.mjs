@@ -55,8 +55,10 @@ import {
 } from './users.mjs';
 import { SnakeGame } from './snake.mjs';
 import {
+  TV_SWITCH_ACTIONS,
   TV_USAGE,
   TvProgrammeService,
+  TvSwitch,
   buildProgrammeCard,
   formatProgrammeText,
   normalizeTvConfig,
@@ -493,6 +495,7 @@ const COMMAND_CATEGORIES = [
       '- `/meetings` (or `/cal`, `/calendar`): Summary of meetings for the rest of the current week.',
       '- `/poll "Question" "Opt1" "Opt2"`: Creates an interactive reaction poll.',
       '- `/tv program` (or `/tv programme`): Shows what is on now and next on ARD and ZDF.',
+      '- `/tv ard`, `/tv zdf`, `/tv off`: Switches the stream input to ARD or ZDF, or to the "brb" scene (owner only).',
       '- `/weather [location]`: Shows current weather for location (default: Berlin).',
       '- `/whereis [search]` (or `/where`): Checks if a person is available, in a meeting (with join link), or away.',
       '- `/whois <search>` (or `/who`): Looks up a person in the Teams directory and shows contact details.',
@@ -1068,7 +1071,9 @@ export class MergeRequestWatcher {
     this.selfOid = null;
     this.editOwnUrlMessages = Boolean(config.teams?.edit_own_url_messages ?? false);
     this.richMessages = config.teams?.rich_messages === true;
-    this.tv = new TvProgrammeService(normalizeTvConfig(config.tv));
+    const tvConfig = normalizeTvConfig(config.tv);
+    this.tv = new TvProgrammeService(tvConfig);
+    this.tvSwitch = new TvSwitch(tvConfig.switch);
     // Rich mode covers every outward message, not only the ones built with richMessage() (see prepareRichMessages).
     setRichMessages(this.richMessages);
     this.approveFlow = null;
@@ -4628,6 +4633,10 @@ export class MergeRequestWatcher {
 
   async executeTvCommand(event, args = []) {
     const parsed = parseTvArgs(args);
+    if (TV_SWITCH_ACTIONS.includes(parsed.action)) {
+      await this.executeTvSwitchCommand(event, parsed.action);
+      return;
+    }
     if (parsed.action !== 'programme') {
       await sendReply(event.conversationId, event, `\u2139\uFE0F ${TV_USAGE}`);
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
@@ -4648,6 +4657,40 @@ export class MergeRequestWatcher {
       await sendReply(event.conversationId, event, `\u274C TV programme lookup failed: ${err.message}`);
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
     }
+  }
+
+  /**
+   * `/tv ard|zdf|off`: owner-only (same policy as /restart), fail-closed. The
+   * webhook URL and id never appear in a reply or in the log.
+   */
+  async executeTvSwitchCommand(event, action) {
+    if (!this.isAdmin(event)) {
+      log(`Unauthorized /tv ${action} attempt from ${event.from || event.fromMri} in ${event.conversationId}`);
+      await sendReply(event.conversationId, event, this.respondNotPrivileged(event));
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+    const label = action === 'off' ? 'off (brb)' : action.toUpperCase();
+    if (!this.tvSwitch.isConfigured(action)) {
+      log(`/tv ${action}: no usable webhook configured`);
+      await sendReply(
+        event.conversationId,
+        event,
+        `\u26A0\uFE0F \`/tv ${action}\` is not configured on this daemon (\`tv.switch\`).`
+      );
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
+      return;
+    }
+    log(`Admin /tv ${action} issued by ${event.from || event.fromMri} in ${event.conversationId}`);
+    const result = await this.tvSwitch.switchTo(action);
+    if (!result.ok) {
+      log(`/tv ${action} failed: ${result.error}`);
+      await sendReply(event.conversationId, event, `\u274C Switching to ${label} failed: ${result.error}`);
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+    await sendReply(event.conversationId, event, `\uD83D\uDCFA Switched to ${label}.`);
+    this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
   }
 
   async executeWeatherCommand(event, args) {
