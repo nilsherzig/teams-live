@@ -229,21 +229,30 @@ export class WebhookReconciler {
       return this.#fail(`state file unusable: ${err.message}`);
     }
 
-    // Rotation of the source secret: every derived token is void, so the
-    // generations tracked so far are superseded like after a hostname change.
-    if (this.managed) {
-      const fp = secretFingerprint(this.secret, state.ownerId);
-      if (state.secretFp && state.secretFp !== fp) {
-        this.#supersede(state.current, 'secret-rotated', true);
-        this.#supersede(state.replacement, 'secret-rotated', true);
-        state.current = null;
-        state.replacement = null;
-        this.log('The webhook secret changed; the managed hook is replaced by a new generation');
-      }
-      if (state.secretFp !== fp) {
-        state.secretFp = fp;
-        this.saveState();
-      }
+    // A change of the token a hook has to present (rotation, weak <-> strong,
+    // none <-> some) voids every hook created for the old one: the receiver
+    // would answer 401 to it while the listing still looks fine. The
+    // fingerprint covers every mode ('none' stands for no secret at all), so
+    // such a transition supersedes the tracked generations like a hostname
+    // change does and a new generation with the right token is created.
+    const fp = this.secret ? secretFingerprint(this.secret, state.ownerId) : 'none';
+    let voided = state.secretFp != null && state.secretFp !== fp;
+    if (state.secretFp == null && this.managed) {
+      // State from before the fingerprint covered every mode: a hook that is
+      // not adopted and has no fingerprint was registered with the raw secret
+      // (or none), which a strong-secret receiver no longer accepts.
+      voided = [state.current, state.replacement].some((h) => h && !h.legacy);
+    }
+    if (voided) {
+      this.#supersede(state.current, 'secret-changed');
+      this.#supersede(state.replacement, 'secret-changed');
+      state.current = null;
+      state.replacement = null;
+      this.log('The webhook secret changed; the registered hook is replaced by a new generation');
+    }
+    if (state.secretFp !== fp) {
+      state.secretFp = fp;
+      this.saveState();
     }
 
     let hooks;
@@ -301,11 +310,11 @@ export class WebhookReconciler {
 
       if (!state.current || state.current.url !== this.url) {
         if (state.replacement && state.replacement.url !== this.url) {
-          this.#supersede(state.replacement, 'superseded', this.managed);
+          this.#supersede(state.replacement, 'superseded');
           state.replacement = null;
         }
         if (state.current && state.current.url !== this.url) {
-          this.#supersede(state.current, 'url-changed', this.managed);
+          this.#supersede(state.current, 'url-changed');
           state.current = null;
         }
         this.saveState();
@@ -337,11 +346,14 @@ export class WebhookReconciler {
     return entry?.id != null ? live.get(entry.id) || null : null;
   }
 
-  #supersede(entry, reason, track) {
-    if (!entry || entry.id == null || !track) return;
+  // Always recorded, so an old hook of ours on the configured URL is never
+  // "unexplained"; it is deleted only when the secret is strong (see #cleanup).
+  #supersede(entry, reason) {
+    if (!entry || entry.id == null) return;
     if (this.state.stale.some((s) => s.id === entry.id)) return;
     this.state.stale.push({ id: entry.id, url: entry.url, genId: entry.genId ?? null, legacy: Boolean(entry.legacy), reason });
     if (this.state.stale.length > MAX_STALE) this.state.stale.splice(0, this.state.stale.length - MAX_STALE);
+    if (!this.managed) this.log(`Superseded webhook ${entry.id} is left in place: automatic cleanup needs a secret of at least ${MIN_SECRET_LENGTH} characters`);
   }
 
   #promote() {
@@ -350,7 +362,8 @@ export class WebhookReconciler {
     if (!rep || rep.id == null || rep.url !== this.url) return;
     // Nothing to wait for when nothing is superseded; otherwise the proof and
     // the cleanup come first.
-    if (state.stale.length === 0 && (rep.verifiedAt || !state.current)) {
+    // Without a strong secret there is no proof and no cleanup to wait for.
+    if (!this.managed || (state.stale.length === 0 && (rep.verifiedAt || !state.current))) {
       state.current = { id: rep.id, url: rep.url, genId: rep.genId, legacy: false };
       state.replacement = null;
       this.saveState();
@@ -427,7 +440,14 @@ export class WebhookReconciler {
 
   async #createReplacement(hooks) {
     const state = this.state;
-    if (hooks.some((h) => h.url === this.url && !parseMarker(h) && !state.current)) {
+    const tracked = [state.current, state.replacement, ...state.stale].filter(Boolean);
+    const unmarked = hooks.some((h) => h.url === this.url && !parseMarker(h) && !state.current && !tracked.some((t) => t.id === h.id));
+    if (unmarked && !this.managed) {
+      // Both hooks would present the same shared secret and every event would
+      // be delivered twice, so nothing is created.
+      throw new Error('a hook without an ownership marker already uses the configured URL and the secret is not strong enough for separate tokens; list it in adopt_hooks to take it over');
+    }
+    if (unmarked) {
       this.log('A hook without an ownership marker already uses the configured URL; it is left alone and a separate hook is created (list it in adopt_hooks to take it over)');
     }
     const genId = state.replacement?.genId || crypto.randomUUID();

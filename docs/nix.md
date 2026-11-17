@@ -183,6 +183,12 @@ to decide which hook is its own:
   run, a hook that changed since it was recorded is left alone, and the plan is
   written to the state file before each deletion. Without a strong secret hooks
   are only registered.
+- Any change of the secret creates a new generation with a token the receiver
+  accepts: a rotation, weak to strong, strong to weak, none to some. The old
+  hooks are recorded (and deleted only with a strong secret and a proven
+  replacement). Without a strong secret a hook without a marker on the
+  configured URL blocks creation (an error status) instead of being duplicated;
+  list it in `adopt_hooks`.
 - The run happens at startup, every ten minutes and after a verified delivery.
   A sample delivery is requested from GitLab after creating a hook
   where the API allows it.
@@ -336,7 +342,8 @@ How the link is built:
   sessions per minute. Reads of the confirmation page are cached for 5 s.
 - The link store is bounded (500). When it is full, used-up and superseded
   records are dropped first; a still-valid open link is never evicted, and no
-  new link is minted until there is room. Once the configured account approved
+  new link is minted until there is room (the warning is logged at most once
+  per 10 minutes; a restart with a full store behaves the same). Once the configured account approved
   a head commit, no new link is minted for it (remembered for 7 days). This is
   only a hint: it is re-checked against GitLab at most every 30 s while a card
   is rendered, and a revoked approval makes the button return.

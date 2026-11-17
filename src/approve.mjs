@@ -28,6 +28,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+const FULL_WARN_INTERVAL_MS = 10 * 60 * 1000;
 const log = (...args) => console.error(new Date().toISOString(), '[approve]', ...args);
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -69,8 +70,11 @@ const keyOf = (project, iid) => `${String(project).toLowerCase()}!${iid}`;
  * commit. The token itself is never stored.
  */
 export class ApprovalStore {
-  constructor({ file = null, ttlMs = DEFAULT_LINK_TTL_S * 1000, max = MAX_RECORDS, now = Date.now } = {}) {
+  constructor({ file = null, ttlMs = DEFAULT_LINK_TTL_S * 1000, max = MAX_RECORDS, now = Date.now, logger = log } = {}) {
     this.file = file;
+    this.logger = logger;
+    this.fullWarnedAt = -Infinity;
+    this.refusedMints = 0;
     this.ttlMs = ttlMs;
     this.max = max;
     this.now = now;
@@ -198,7 +202,13 @@ export class ApprovalStore {
     if (this.prune(1)) changed = true;
     if (this.records.size >= this.max) {
       // Never revoke a link that is still advertised on a card.
-      log(`Approval link store is full (${this.max}); no new link is created`);
+      // Every card render would repeat this, so it is logged once per interval.
+      this.refusedMints++;
+      const t = this.now();
+      if (t - this.fullWarnedAt >= FULL_WARN_INTERVAL_MS) {
+        this.logger(`Approval link store is full (${this.max} open links); no new links are created (${this.refusedMints} refused so far)`);
+        this.fullWarnedAt = t;
+      }
       if (changed) this.persist();
       return null;
     }

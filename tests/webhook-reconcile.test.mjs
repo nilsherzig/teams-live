@@ -436,7 +436,10 @@ test('crash recovery: a generation persisted before the hook existed is matched 
   const r = make(g, file);
   // simulate: state written, POST succeeded, id never persisted
   const genId = '33333333-3333-4333-8333-333333333333';
-  r.loadState();
+  // a first run that got as far as recording the secret fingerprint
+  g.failList = true;
+  await r.reconcile();
+  g.failList = false;
   r.state.replacement = { id: null, url: URL_A, genId, verifiedAt: null };
   r.saveState();
   g.hooks.push({ id: 77, url: URL_A, description: `teams-live-owner:${r.state.ownerId} gen:${genId} v1` });
@@ -531,4 +534,120 @@ test('the plain receiver is unchanged: single shared secret, or open without one
   assert.equal(s.verifyToken('abd'), false);
   assert.equal(s.verifyToken(''), false);
   assert.equal(new GitLabWebhookServer({}).verifyToken(undefined), true);
+});
+
+// ---- secret / token mode transitions
+
+const tokenOf = (r, token) => r.acceptedTokens().some((t) => t.token === token);
+
+test('every secret transition creates a new generation with a token the receiver accepts', async () => {
+  const STRONG2 = 'r'.repeat(40);
+  const cases = [
+    { name: 'none -> strong', from: null, to: SECRET },
+    { name: 'none -> weak', from: null, to: 'short' },
+    { name: 'weak -> weak', from: 'short', to: 'other' },
+    { name: 'weak -> strong', from: 'short', to: SECRET },
+    { name: 'strong -> weak', from: SECRET, to: 'short' },
+    { name: 'strong -> strong', from: SECRET, to: STRONG2 },
+  ];
+  for (const c of cases) {
+    const { file } = tmpState();
+    const g = fakeGitlab();
+    const before = make(g, file, { secret: c.from });
+    await before.reconcile();
+    const oldId = g.hooks[0].id;
+
+    const after = make(g, file, { secret: c.to });
+    const res = await after.reconcile();
+    assert.equal(res.ok, true, c.name);
+    assert.equal(res.action, 'created', `${c.name}: reported unchanged although the token is void`);
+    assert.equal(g.hooks.length, 2, c.name);
+    const fresh = g.hooks.find((h) => h.id !== oldId);
+    const marker = parseMarker(fresh);
+    const expected = after.managed ? deriveGenerationToken(c.to, after.state.ownerId, marker.genId) : c.to;
+    assert.equal(fresh.__token, expected, c.name);
+    // the receiver accepts what the new hook presents, never what the old one did
+    assert.equal(tokenOf(after, expected), true, c.name);
+    if (c.from && c.from !== c.to) assert.equal(tokenOf(after, c.from), false, c.name);
+    // the old hook is tracked, not lost and not forgotten
+    assert.ok(after.state.stale.some((s) => s.id === oldId), c.name);
+    assert.equal(after.state.current?.id ?? after.state.replacement?.id, fresh.id, c.name);
+
+    // a later run is quiet: no duplicate, no "unexplained hook" failure
+    const again = await make(g, file, { secret: c.to }).reconcile();
+    assert.equal(again.ok, true, `${c.name}: ${again.error}`);
+    assert.equal(g.hooks.length, 2, c.name);
+
+    // deletion only with a strong secret and a proven replacement
+    if (after.managed) {
+      after.noteDelivery(marker.genId);
+      await after.reconcile();
+      assert.deepEqual(g.hooks.map((h) => h.id), [fresh.id], c.name);
+    } else {
+      assert.equal(g.calls.some((x) => x[0] === 'delete'), false, c.name);
+    }
+  }
+});
+
+test('an unchanged secret is never treated as a transition, in any mode', async () => {
+  for (const secret of [null, 'short', SECRET]) {
+    const { file } = tmpState();
+    const g = fakeGitlab();
+    await make(g, file, { secret }).reconcile();
+    const r = make(g, file, { secret });
+    const res = await r.reconcile();
+    assert.equal(res.action, 'unchanged');
+    assert.equal(g.hooks.length, 1);
+    assert.equal(r.state.secretFp !== null, true);
+  }
+});
+
+test('an adopted legacy hook is not superseded just because the fingerprint is recorded for the first time', async () => {
+  const { file } = tmpState();
+  const legacy = { id: 9, url: URL_A, description: '', merge_requests_events: true, pipeline_events: true, enable_ssl_verification: true };
+  const g = fakeGitlab([legacy]);
+  const r = make(g, file, { adoptHooks: [{ id: 9, url: URL_A }] });
+  const res = await r.reconcile();
+  assert.equal(res.action, 'unchanged');
+  assert.equal(r.state.current.id, 9);
+  assert.equal(r.state.current.legacy, true);
+  assert.equal(r.state.stale.length, 0);
+  assert.equal(g.hooks.length, 1);
+});
+
+test('without a strong secret an unmarked hook on the configured URL blocks creation instead of duplicating', async () => {
+  for (const secret of [null, 'short']) {
+    const { file } = tmpState();
+    const foreign = { id: 7, url: URL_A, description: 'hand made', merge_requests_events: true, pipeline_events: true, enable_ssl_verification: true };
+    const g = fakeGitlab([foreign]);
+    const r = make(g, file, { secret });
+    const res = await r.reconcile();
+    assert.equal(res.ok, false);
+    assert.equal(res.action, 'error');
+    assert.match(res.error, /adopt_hooks/);
+    assert.equal(g.calls.some((c) => c[0] === 'post'), false);
+    assert.deepEqual(g.hooks, [foreign]);
+    // the refusal repeats, nothing piles up; adopting resolves it
+    assert.equal((await make(g, file, { secret }).reconcile()).ok, false);
+    const adopted = await make(g, file, { secret, adoptHooks: [{ id: 7, url: URL_A }] }).reconcile();
+    assert.equal(adopted.ok, true);
+    assert.equal(g.hooks.length, 1);
+  }
+});
+
+test('state recorded before the fingerprint covered every mode: a raw-secret hook is replaced once the secret is strong', async () => {
+  const { file } = tmpState();
+  const g = fakeGitlab();
+  const weak = make(g, file, { secret: 'short' });
+  await weak.reconcile();
+  const oldId = g.hooks[0].id;
+  // forget the fingerprint, as the earlier state format did
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  raw.secretFp = null;
+  fs.writeFileSync(file, JSON.stringify(raw));
+  const r = make(g, file);
+  const res = await r.reconcile();
+  assert.equal(res.action, 'created');
+  assert.ok(r.state.stale.some((s) => s.id === oldId));
+  assert.equal(tokenOf(r, 'short'), false);
 });

@@ -863,3 +863,31 @@ test('a revoked approval of the same head is noticed: the memory is re-checked, 
     await ctx.server.stop();
   }
 });
+
+test('after a restart with a full store of open links nothing is evicted and the warning is rate limited', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'approve-test-'));
+  const file = path.join(dir, 'links.json');
+  try {
+    let now = 5_000_000;
+    const first = new ApprovalStore({ file, max: 5, now: () => now });
+    const tokens = [];
+    for (let i = 1; i <= 5; i++) tokens.push(first.linkFor({ project: PROJECT, iid: i, sha: SHA }).token);
+
+    const logs = [];
+    const restarted = new ApprovalStore({ file, max: 5, now: () => now, logger: (m) => logs.push(m) });
+    restarted.load();
+    assert.equal(restarted.records.size, 5);
+    // the restart lost the raw tokens: new MRs get no link, nobody is evicted
+    for (let i = 6; i < 40; i++) assert.equal(restarted.linkFor({ project: PROJECT, iid: i, sha: SHA }), null);
+    for (const t of tokens) assert.equal(restarted.byToken(t)?.status, 'open', 'advertised links stay valid');
+    assert.equal(restarted.records.size, 5);
+    assert.equal(logs.length, 1, 'one warning for 34 refusals');
+    assert.equal(logs.join('').includes(tokens[0]), false);
+
+    now += 11 * 60 * 1000;
+    assert.equal(restarted.linkFor({ project: PROJECT, iid: 99, sha: SHA }), null);
+    assert.equal(logs.length, 2, 'warns again after the interval');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
