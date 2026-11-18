@@ -466,6 +466,6 @@ test('a merge request card keeps the approval pill and shows the bot picture nex
   assert.ok(text.includes(photoOf(2000)), 'the bot picture is shown');
   assert.ok(text.includes(photoOf(1500)), 'the author photo is shown');
   // A picture too big for the card budget must not be what decides: keep the cap documented here.
-  const oversized = buildMergeRequestCard({ ...mr, avatars: { 'Alice Example': photoOf(1500), 'Example Bot': photoOf(6000) } });
-  assert.ok(!JSON.stringify(oversized).includes(photoOf(6000)), 'over the budget it is not embedded');
+  const oversized = buildMergeRequestCard({ ...mr, avatars: { 'Alice Example': photoOf(1500), 'Example Bot': photoOf(10000) } });
+  assert.ok(!JSON.stringify(oversized).includes(photoOf(10000)), 'over the budget it is not embedded');
 });
