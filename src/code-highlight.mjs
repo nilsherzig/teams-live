@@ -326,13 +326,14 @@ export function restrictTokens(tokens, types) {
 
 /**
  * One RichTextBlock per code row: a subtle line number followed by the tokens
- * as monospace runs (`row` is `{ number }`, `tokens` come from tokenizeLines
+ * as monospace runs (`row` is `{ number, requested }`, `tokens` come from tokenizeLines
  * of the tab-expanded line, `numberWidth` pads the numbers).
  */
 export function highlightedRow(row, tokens, numberWidth) {
   const run = (text, extra = {}) => ({ type: 'TextRun', text, fontType: 'Monospace', size: 'Small', ...extra });
   const prefix = `${String(row.number).padStart(numberWidth, ' ')}  `.replace(/ /g, NBSP);
-  const inlines = [run(prefix, { isSubtle: true })];
+  // The line numbers of the requested lines are bold instead of subtle.
+  const inlines = [run(prefix, row.requested ? { weight: 'Bolder' } : { isSubtle: true })];
   for (const token of tokens) inlines.push(run(preserveInner(token.text), TOKEN_STYLES[token.type] ?? {}));
   if (inlines.length === 1) inlines.push(run(NBSP));
   return { type: 'RichTextBlock', spacing: 'None', inlines };

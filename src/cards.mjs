@@ -882,6 +882,19 @@ export function buildConfluencePageCard(page) {
   });
 }
 
+/**
+ * The text rows of a preview: padded line numbers and a `>` gutter on the
+ * requested lines (always, with or without context lines around them), so they
+ * stand out even where no colour is shown (markdown, plain card).
+ */
+function previewRows(preview) {
+  const lines = preview.lines;
+  const width = String(lines.at(-1)?.n ?? preview.endLine).length;
+  const marked = lines.some((l) => l.requested === true);
+  const rows = lines.map((l) => `${marked ? (l.requested === true ? '> ' : '  ') : ''}${String(l.n).padStart(width, ' ')}  ${l.text}`);
+  return { rows, width, marked };
+}
+
 /** Markdown of a code preview (the regular message and the card's fallback): header, link, fenced lines. */
 export function formatCodePreviewMarkdown(preview) {
   const esc = (t) =>
@@ -893,13 +906,12 @@ export function formatCodePreviewMarkdown(preview) {
       .replace(/'/g, '&#39;');
   const range =
     preview.startLine === preview.endLine ? `L${preview.startLine}` : `L${preview.startLine}-${preview.endLine}`;
-  const width = String(preview.endLine).length;
-  const rows = preview.lines.map((l) => `${String(l.n).padStart(width, ' ')}  ${l.text}`);
+  const { rows } = previewRows(preview);
   // The fence is longer than any backtick run in the code, so the code cannot close it.
   const longestRun = Math.max(0, ...(rows.join('\n').match(/`+/g) || []).map((r) => r.length));
   const fence = '`'.repeat(Math.max(3, longestRun + 1));
   const note = preview.truncated
-    ? `\n\n_Showing ${preview.lines.length} of ${preview.requestedEndLine - preview.startLine + 1} lines_`
+    ? `\n\n_Showing ${preview.endLine - preview.startLine + 1} of ${preview.requestedEndLine - preview.startLine + 1} lines_`
     : '';
   return (
     `💻 **${esc(preview.path)}** (${range}) • ${esc(preview.project)} @ ${esc(preview.ref)}\n\n` +
@@ -915,12 +927,11 @@ export function formatCodePreviewMarkdown(preview) {
 export function buildCodePreviewCard(preview) {
   const range =
     preview.startLine === preview.endLine ? `L${preview.startLine}` : `L${preview.startLine}-${preview.endLine}`;
-  const width = String(preview.endLine).length;
-  const rows = preview.lines.map((l) => `${String(l.n).padStart(width, ' ')}  ${l.text}`);
-  const items = [highlightedCodeBlock(preview, width) ?? codeBlock(rows)];
+  const { rows, width, marked } = previewRows(preview);
+  const items = [highlightedCodeBlock(preview, width, marked) ?? codeBlock(rows, marked ? preview.lines.map((l) => l.requested === true) : null)];
   if (preview.truncated) {
     items.push(
-      textBlock(`Showing ${preview.lines.length} of ${preview.requestedEndLine - preview.startLine + 1} lines`, {
+      textBlock(`Showing ${preview.endLine - preview.startLine + 1} of ${preview.requestedEndLine - preview.startLine + 1} lines`, {
         isSubtle: true,
         size: 'Small',
       })
@@ -1047,11 +1058,9 @@ function verbatimText(line) {
  * A fenced code block: one monospace line per row, so the layout (indentation,
  * grids, command output) survives; cards do not render markdown fences.
  */
-function codeBlock(codeLines) {
-  return {
-    type: 'Container',
-    spacing: 'Small',
-    items: codeLines.map((line) => ({
+function codeBlock(codeLines, highlighted = null) {
+  return codeContainer(
+    codeLines.map((line) => ({
       type: 'TextBlock',
       text: verbatimText(line),
       wrap: true,
@@ -1059,6 +1068,29 @@ function codeBlock(codeLines) {
       size: 'Small',
       spacing: 'None',
     })),
+    highlighted
+  );
+}
+
+/**
+ * Teams only knows its palette container styles (no custom background), so the
+ * lines a link points at sit in one `warning` container (the orange-ish tint,
+ * the closest to GitLab's line highlight), also when they are all there is;
+ * `highlighted` flags the rows that belong in it (a contiguous run), null or
+ * all false for none.
+ */
+function codeContainer(rows, highlighted) {
+  const first = highlighted ? highlighted.indexOf(true) : -1;
+  if (first < 0) return { type: 'Container', spacing: 'Small', items: rows };
+  const last = highlighted.lastIndexOf(true);
+  return {
+    type: 'Container',
+    spacing: 'Small',
+    items: [
+      ...rows.slice(0, first),
+      { type: 'Container', style: 'warning', spacing: 'None', items: rows.slice(first, last + 1) },
+      ...rows.slice(last + 1),
+    ],
   };
 }
 
@@ -1076,16 +1108,17 @@ export const MAX_HIGHLIGHTED_CODE_BYTES = 14000;
  * line whose runs carry the token colours. Null (plain block) when the file
  * type is not recognized or even the lightest highlighting is too large.
  */
-function highlightedCodeBlock(preview, numberWidth) {
+function highlightedCodeBlock(preview, numberWidth, marked = false) {
   const language = languageForPath(preview.path);
   const tokenized = language ? tokenizeLines(preview.lines.map((l) => expandTabs(l.text)), language) : null;
   if (!tokenized) return null;
   for (const types of HIGHLIGHT_LEVELS) {
-    const block = {
-      type: 'Container',
-      spacing: 'Small',
-      items: preview.lines.map((l, idx) => highlightedRow({ number: l.n }, restrictTokens(tokenized[idx], types), numberWidth)),
-    };
+    const block = codeContainer(
+      preview.lines.map((l, idx) =>
+        highlightedRow({ number: l.n, requested: marked && l.requested === true }, restrictTokens(tokenized[idx], types), numberWidth)
+      ),
+      marked ? preview.lines.map((l) => l.requested === true) : null
+    );
     if (Buffer.byteLength(JSON.stringify(block)) <= MAX_HIGHLIGHTED_CODE_BYTES) return block;
   }
   return null;

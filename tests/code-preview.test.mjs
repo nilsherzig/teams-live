@@ -153,27 +153,30 @@ const linkOf = (client, refPath, anchor) => client.findBlobLinks(blobUrl(refPath
 test('getBlobPreview: single line and range', async () => {
   const client = stubbedClient({ 'main:src/a.txt': file(SAMPLE) });
   const single = await client.getBlobPreview(linkOf(client, 'main/src/a.txt', '#L7'));
-  assert.deepEqual(single.lines, [{ n: 7, text: 'line 7' }]);
+  assert.deepEqual(single.lines.filter((l) => l.requested), [{ n: 7, text: 'line 7', requested: true }]);
   assert.equal(single.truncated, false);
   assert.equal(single.ref, 'main');
   assert.equal(single.path, 'src/a.txt');
 
   const range = await client.getBlobPreview(linkOf(client, 'main/src/a.txt', '#L3-5'));
-  assert.deepEqual(range.lines.map((l) => l.n), [3, 4, 5]);
-  assert.equal(range.lines[2].text, 'line 5');
+  assert.deepEqual(range.lines.filter((l) => l.requested).map((l) => l.n), [3, 4, 5]);
+  assert.equal(range.lines.find((l) => l.n === 5).text, 'line 5');
   assert.equal(client.requested[0], `projects/group%2Fapp/repository/files/src%2Fa.txt?ref=main`);
 });
 
 test('getBlobPreview: long ranges are capped, ranges past the end are clamped', async () => {
   const client = stubbedClient({ 'main:a.txt': file(SAMPLE) });
   const capped = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L1-40'), { maxLines: 10 });
-  assert.equal(capped.lines.length, 10);
+  assert.equal(capped.lines.length, 10, 'no context is added to a range that fills max_lines');
+  assert.ok(capped.lines.every((l) => l.requested));
   assert.equal(capped.endLine, 10);
   assert.equal(capped.requestedEndLine, 40);
   assert.equal(capped.truncated, true);
 
   const clamped = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L48-99'));
-  assert.deepEqual(clamped.lines.map((l) => l.n), [48, 49, 50]);
+  assert.deepEqual(clamped.lines.filter((l) => l.requested).map((l) => l.n), [48, 49, 50]);
+  assert.deepEqual(clamped.lines.map((l) => l.n), [46, 47, 48, 49, 50], 'the missing context after the range shifts to before it');
+  assert.equal(clamped.endLine, 50);
   assert.equal(clamped.truncated, false);
 
   assert.equal(await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L51')), null);
@@ -182,7 +185,11 @@ test('getBlobPreview: long ranges are capped, ranges past the end are clamped', 
 test('getBlobPreview: CRLF files and a missing trailing newline', async () => {
   const client = stubbedClient({ 'main:w.txt': file('one\r\ntwo\r\nthree') });
   const preview = await client.getBlobPreview(linkOf(client, 'main/w.txt', '#L2-3'));
-  assert.deepEqual(preview.lines, [{ n: 2, text: 'two' }, { n: 3, text: 'three' }]);
+  assert.deepEqual(preview.lines, [
+    { n: 1, text: 'one', requested: false },
+    { n: 2, text: 'two', requested: true },
+    { n: 3, text: 'three', requested: true },
+  ]);
 });
 
 test('getBlobPreview: a ref with slashes is found by trying the next split on 404', async () => {
@@ -242,7 +249,8 @@ test('getBlobPreview: the original link is kept without a usable commit_id', asy
     assert.equal(preview.url, link.url, JSON.stringify(extra));
     assert.equal(preview.originalUrl, link.url);
     assert.equal(preview.commitId, null);
-    assert.deepEqual(preview.lines.map((l) => l.n), [2, 3, 4]);
+    assert.deepEqual(preview.lines.filter((l) => l.requested).map((l) => l.n), [2, 3, 4]);
+    assert.equal(preview.lines.length, 5);
   }
 });
 
@@ -269,7 +277,7 @@ test('getBlobPreview: a project in another group is previewed by default (the gr
   const other = client.findBlobLinks(`https://${HOST}/other/app.git//blob/main/a.txt#L2`)[0];
   const preview = await client.getBlobPreview(other);
   assert.equal(preview.project, 'other/app');
-  assert.equal(preview.lines[0].text, 'line 2');
+  assert.equal(preview.lines.find((l) => l.requested).text, 'line 2');
   assert.deepEqual(client.requested, ['projects/other%2Fapp/repository/files/a.txt?ref=main']);
 });
 
@@ -375,6 +383,224 @@ test('formatCodePreviewMarkdown escapes the header and cannot be broken out of b
 });
 
 // ---------------------------------------------------------------------------
+// Context lines and highlighting of the requested lines
+
+const shown = (preview) => preview.lines.map((l) => l.n);
+const requestedOf = (preview) => preview.lines.filter((l) => l.requested).map((l) => l.n);
+
+test('getBlobPreview: a single line gets two lines of context on each side', async () => {
+  const client = stubbedClient({ 'main:a.txt': file(SAMPLE) });
+  const preview = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L20'));
+  assert.deepEqual(shown(preview), [18, 19, 20, 21, 22]);
+  assert.deepEqual(requestedOf(preview), [20]);
+  assert.equal([preview.contextBefore, preview.contextAfter].join(), '2,2');
+  // The header range stays the requested one.
+  assert.equal([preview.startLine, preview.endLine, preview.requestedEndLine].join(), '20,20,20');
+});
+
+test('getBlobPreview: an even number of missing lines is split evenly, an odd one gives the extra line to the end', async () => {
+  const client = stubbedClient({ 'main:a.txt': file(SAMPLE) });
+  const two = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L20-21'));
+  assert.deepEqual(shown(two), [19, 20, 21, 22, 23]);
+  const three = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L20-22'));
+  assert.deepEqual(shown(three), [19, 20, 21, 22, 23]);
+  const four = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L20-23'));
+  assert.deepEqual(shown(four), [20, 21, 22, 23, 24]);
+  const five = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L20-24'));
+  assert.deepEqual(shown(five), [20, 21, 22, 23, 24], 'five requested lines need no context');
+  assert.ok(five.lines.every((l) => l.requested));
+});
+
+test('getBlobPreview: context shifts at the start and the end of the file', async () => {
+  const client = stubbedClient({ 'main:a.txt': file(SAMPLE) });
+  const first = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L1'));
+  assert.deepEqual(shown(first), [1, 2, 3, 4, 5]);
+  assert.deepEqual(requestedOf(first), [1]);
+  const second = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L2'));
+  assert.deepEqual(shown(second), [1, 2, 3, 4, 5]);
+  const last = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L50'));
+  assert.deepEqual(shown(last), [46, 47, 48, 49, 50]);
+  const nextToLast = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L49'));
+  assert.deepEqual(shown(nextToLast), [46, 47, 48, 49, 50]);
+  const edgeRange = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L1-2'));
+  assert.deepEqual(shown(edgeRange), [1, 2, 3, 4, 5]);
+  const clampedEnd = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L50-99'));
+  assert.deepEqual(shown(clampedEnd), [46, 47, 48, 49, 50]);
+  assert.deepEqual(requestedOf(clampedEnd), [50]);
+});
+
+test('getBlobPreview: files shorter than five lines show everything they have', async () => {
+  const client = stubbedClient({ 'main:s.txt': file('a\nb\nc\n'), 'main:one.txt': file('only\n') });
+  const three = await client.getBlobPreview(linkOf(client, 'main/s.txt', '#L2'));
+  assert.deepEqual(shown(three), [1, 2, 3]);
+  assert.deepEqual(requestedOf(three), [2]);
+  const one = await client.getBlobPreview(linkOf(client, 'main/one.txt', '#L1'));
+  assert.deepEqual(shown(one), [1]);
+  assert.deepEqual(requestedOf(one), [1]);
+  const exact = stubbedClient({ 'main:f.txt': file('1\n2\n3\n4\n5\n') });
+  assert.deepEqual(shown(await exact.getBlobPreview(linkOf(exact, 'main/f.txt', '#L5'))), [1, 2, 3, 4, 5]);
+});
+
+test('getBlobPreview: max_lines stays a ceiling for the whole preview', async () => {
+  const client = stubbedClient({ 'main:a.txt': file(SAMPLE) });
+  // Context never pushes the preview past max_lines ...
+  const small = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L20'), { maxLines: 3 });
+  assert.deepEqual(shown(small), [19, 20, 21]);
+  const one = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L20'), { maxLines: 1 });
+  assert.deepEqual(shown(one), [20]);
+  // ... a long range is cut to max_lines requested lines and gets no context ...
+  const capped = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L10-40'), { maxLines: 4 });
+  assert.deepEqual(shown(capped), [10, 11, 12, 13]);
+  assert.equal(capped.truncated, true);
+  assert.equal(capped.requestedEndLine, 40);
+  // ... and a range just under the minimum is topped up with context.
+  const topped = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L10-40'), { maxLines: 2 });
+  assert.deepEqual(shown(topped), [10, 11]);
+  const roomy = await client.getBlobPreview(linkOf(client, 'main/a.txt', '#L20-21'), { maxLines: 30 });
+  assert.equal(roomy.lines.length, 5);
+});
+
+test('getBlobPreview: the permalink keeps the originally requested range, not the context', async () => {
+  const client = stubbedClient({ 'main:src/a.txt': file(SAMPLE, { commit_id: COMMIT }) });
+  const single = await client.getBlobPreview(linkOf(client, 'main/src/a.txt', '#L20'));
+  assert.equal(shown(single).length, 5);
+  assert.equal(single.url, permalink('src/a.txt', '#L20'));
+  const range = await client.getBlobPreview(linkOf(client, 'main/src/a.txt', '#L20-21'));
+  assert.equal(range.url, permalink('src/a.txt', '#L20-21'));
+  const header = JSON.stringify(buildCodePreviewCard(single));
+  assert.match(header, /src\/a\.txt \(L20\)/);
+  assert.ok(header.includes(permalink('src/a.txt', '#L20')));
+});
+
+const walk = (node, pred, out = []) => {
+  if (Array.isArray(node)) node.forEach((n) => walk(n, pred, out));
+  else if (node && typeof node === 'object') {
+    if (pred(node)) out.push(node);
+    Object.values(node).forEach((n) => walk(n, pred, out));
+  }
+  return out;
+};
+
+test('cards: the requested lines sit in one warning container, context rows stay outside', async () => {
+  const client = stubbedClient({ 'main:src/a.mjs': file(Array.from({ length: 20 }, (_, i) => `const v${i + 1} = "x";`).join('\n')) });
+  const preview = await client.getBlobPreview(linkOf(client, 'main/src/a.mjs', '#L10-11'));
+  assert.deepEqual(shown(preview), [9, 10, 11, 12, 13]);
+  const card = buildCodePreviewCard(preview);
+  const bands = walk(card, (n) => n.type === 'Container' && n.style === 'warning');
+  assert.equal(bands.length, 1);
+  const rowsOf = (node) => walk(node, (n) => n.type === 'RichTextBlock');
+  assert.equal(rowsOf(bands[0]).length, 2);
+  assert.equal(rowsOf(card).length, 5);
+  // Syntax colours survive inside and outside the band, numbers of requested lines are bold.
+  const colored = (node) => walk(node, (n) => n.type === 'TextRun' && n.color === 'Accent');
+  assert.ok(colored(bands[0]).length >= 2);
+  assert.ok(colored(card).length >= 5);
+  const numberRuns = (node) => walk(node, (n) => n.type === 'RichTextBlock').map((r) => r.inlines[0]);
+  assert.ok(numberRuns(bands[0]).every((r) => r.weight === 'Bolder' && !r.isSubtle));
+  assert.equal(numberRuns(card).filter((r) => r.isSubtle).length, 3);
+  // The band sits between the context rows.
+  const block = walk(card, (n) => n.type === 'Container' && n.items?.includes(bands[0]))[0];
+  assert.deepEqual(block.items.map((i) => i.type), ['RichTextBlock', 'Container', 'RichTextBlock', 'RichTextBlock']);
+});
+
+test('cards: the requested lines are highlighted even when there is no context to show', async () => {
+  const band = (card) => walk(card, (n) => n.type === 'Container' && n.style === 'warning');
+  const bandRows = (card) => walk(band(card)[0], (n) => n.type === 'RichTextBlock' || (n.type === 'TextBlock' && n.fontType === 'Monospace'));
+  const marks = (md) => md.split('\n').filter((l) => /^>/.test(l)).length;
+  const code = Array.from({ length: 50 }, (_, i) => `const v${i + 1} = 1;`).join('\n') + '\n';
+  const client = stubbedClient({
+    'main:src/a.mjs': file(code, { commit_id: COMMIT }),
+    'main:src/s.mjs': file('const a = 1;\nconst b = 2;\n'),
+    'main:notes.txt': file(SAMPLE),
+  });
+  const check = async (refPath, anchor, options, expected) => {
+    const preview = await client.getBlobPreview(linkOf(client, refPath, anchor), options);
+    assert.deepEqual(requestedOf(preview), expected, `${refPath}${anchor}`);
+    const card = buildCodePreviewCard(preview);
+    assert.equal(band(card).length, 1, `${refPath}${anchor} has one band`);
+    assert.equal(bandRows(card).length, expected.length, `${refPath}${anchor} band holds exactly the requested rows`);
+    assert.equal(marks(formatCodePreviewMarkdown(preview)), expected.length, `${refPath}${anchor} marks in the text`);
+    return { preview, card };
+  };
+
+  // A range of five lines or more: no context, everything is selected.
+  const five = await check('main/src/a.mjs', '#L10-14', {}, [10, 11, 12, 13, 14]);
+  assert.equal(five.preview.lines.length, 5);
+  await check('main/src/a.mjs', '#L10-40', {}, Array.from({ length: 30 }, (_, i) => 10 + i)); // the default 30-line cap
+  // A file shorter than five lines that the range covers completely.
+  const whole = await check('main/src/s.mjs', '#L1-2', {}, [1, 2]);
+  assert.equal(whole.preview.lines.length, 2);
+  await check('main/src/s.mjs', '#L2', {}, [2]);
+  // The max_lines cap: the capped lines are the highlighted ones, no context.
+  const capped = await check('main/src/a.mjs', '#L10-40', { maxLines: 4 }, [10, 11, 12, 13]);
+  assert.equal(capped.preview.truncated, true);
+  assert.equal(capped.preview.lines.length, 4);
+  await check('main/src/a.mjs', '#L20', { maxLines: 1 }, [20]);
+  // A plain-text file (no syntax highlighting) as well.
+  await check('main/notes.txt', '#L3-8', {}, [3, 4, 5, 6, 7, 8]);
+  // Syntax colours still show inside the band.
+  assert.ok(walk(band(five.card)[0], (n) => n.type === 'TextRun' && n.color === 'Accent').length >= 5);
+  assert.ok(walk(band(five.card)[0], (n) => n.type === 'RichTextBlock').every((r) => r.inlines[0].weight === 'Bolder'));
+  // The permalink is the requested range.
+  assert.ok(JSON.stringify(five.card).includes(permalink('src/a.mjs', '#L10-14')));
+});
+
+test('cards: a preview with no flagged lines (legacy shape) has no band and no gutter', () => {
+  const legacy = previewOf();
+  assert.equal(walk(buildCodePreviewCard(legacy), (n) => n.style === 'warning').length, 0);
+  assert.doesNotMatch(formatCodePreviewMarkdown(legacy), /^>/m);
+});
+
+test('cards: the highlighted band survives the fallbacks (plain block, too large for the wire)', () => {
+  const all = Array.from({ length: 30 }, (_, i) => ({
+    n: 10 + i,
+    text: `f(${Array.from({ length: 20 }, () => '"s"').join(', ')}); // c`,
+    requested: true,
+  }));
+  const card = buildCodePreviewCard({ ...previewOf(), path: 'x.js', startLine: 10, endLine: 39, requestedEndLine: 39, lines: all });
+  assert.equal(walk(card, (n) => n.type === 'RichTextBlock').length, 0, 'plain fallback');
+  const bands = walk(card, (n) => n.type === 'Container' && n.style === 'warning');
+  assert.equal(bands.length, 1);
+  assert.equal(walk(bands[0], (n) => n.type === 'TextBlock' && n.fontType === 'Monospace').length, 30);
+});
+
+test('cards: unrecognized files and the markdown fallback mark the requested lines', async () => {
+  const client = stubbedClient({ 'main:notes.txt': file(SAMPLE) });
+  const preview = await client.getBlobPreview(linkOf(client, 'main/notes.txt', '#L9'));
+  const card = buildCodePreviewCard(preview);
+  const bands = walk(card, (n) => n.type === 'Container' && n.style === 'warning');
+  assert.equal(bands.length, 1, 'the plain monospace block is highlighted too');
+  const plainRows = walk(bands[0], (n) => n.type === 'TextBlock' && n.fontType === 'Monospace');
+  assert.equal(plainRows.length, 1);
+  assert.match(plainRows[0].text, /^>/);
+  assert.match(plainRows[0].text, /line 9$/);
+  assert.equal(walk(card, (n) => n.type === 'TextBlock' && n.fontType === 'Monospace').length, 5);
+
+  const md = formatCodePreviewMarkdown(preview);
+  assert.ok(md.includes('\n   7  line 7\n   8  line 8\n>  9  line 9\n  10  line 10\n  11  line 11\n'), md);
+});
+
+test('cards: a highlighted block too big for the wire limit falls back to the plain band', () => {
+  const lines = Array.from({ length: 30 }, (_, i) => ({
+    n: 10 + i,
+    text: `f(${Array.from({ length: 20 }, () => '"s"').join(', ')}); // c`,
+    requested: i === 14,
+  }));
+  const card = buildCodePreviewCard({ ...previewOf(), path: 'x.js', startLine: 24, endLine: 24, requestedEndLine: 24, lines });
+  assert.equal(walk(card, (n) => n.type === 'RichTextBlock').length, 0);
+  const bands = walk(card, (n) => n.type === 'Container' && n.style === 'warning');
+  assert.equal(bands.length, 1);
+  assert.equal(walk(bands[0], (n) => n.type === 'TextBlock' && n.fontType === 'Monospace').length, 1);
+});
+
+test('cards: the truncation note counts requested lines, not context', () => {
+  const lines = [{ n: 1, text: 'a', requested: true }, { n: 2, text: 'b', requested: true }, { n: 3, text: 'c', requested: false }];
+  const preview = { ...previewOf(), startLine: 1, endLine: 2, requestedEndLine: 40, truncated: true, lines };
+  assert.match(JSON.stringify(buildCodePreviewCard(preview)), /Showing 2 of 40 lines/);
+  assert.match(formatCodePreviewMarkdown(preview), /Showing 2 of 40 lines/);
+});
+
+// ---------------------------------------------------------------------------
 // Configuration
 
 test('loadConfig: gitlab.code_preview defaults and overrides', () => {
@@ -443,7 +669,10 @@ test('watcher: a line-range link gets exactly one reply with the lines', async (
     const html = calls.sent[0].html;
     assert.match(html, /line 3/);
     assert.match(html, /line 5/);
-    assert.doesNotMatch(html, /line 6/);
+    assert.match(html, /&gt; 3  line 3/, 'requested lines are marked in the text fallback');
+    assert.match(html, /line 2/, 'one line of context on each side of a three-line range');
+    assert.match(html, /line 6/);
+    assert.doesNotMatch(html, /line 7/);
     assert.match(html, /src\/a\.txt/);
 
     // Everything is done: the entry is unwatched, and a second check posts nothing.
@@ -468,7 +697,9 @@ test('watcher: the `<project>.git//blob/<ref>/<path>#L970` form in another group
     await settle(watcher, key);
     assert.equal(calls.sent.length, 1);
     assert.match(calls.sent[0].html, /row 970/);
-    assert.doesNotMatch(calls.sent[0].html, /row 971/);
+    assert.match(calls.sent[0].html, /row 968/);
+    assert.match(calls.sent[0].html, /row 972/);
+    assert.doesNotMatch(calls.sent[0].html, /row 973/);
     assert.deepEqual(client.requested, ['projects/other-group%2Fproject/repository/files/src%2Fapp.py?ref=main']);
   } finally {
     fs.rmSync(watcher.testStateDir, { recursive: true, force: true });

@@ -14,6 +14,8 @@ export function approvalCountsOf(approvals, approverCount = 0) {
 
 /** Most path segments tried as the ref of a blob link (branch names may contain slashes). */
 const BLOB_MAX_REF_SEGMENTS = 6;
+/** A code preview shows at least this many lines when the file (and max_lines) allow it. */
+export const MIN_PREVIEW_LINES = 5;
 
 /** Paths whose content is likely a credential: never previewed. */
 const SENSITIVE_PATH_RE =
@@ -334,6 +336,10 @@ export class GitLabClient {
    * group (off by default: the group scopes MR monitoring, and the token's own
    * permissions decide what can be read), the path looks like it holds credentials, the file or ref does not exist, or the file is binary or
    * too large. Other failures (network, auth) are thrown, so the caller may retry.
+   *
+   * `startLine`/`endLine` of the result are the requested lines that are shown
+   * (capped by `maxLines`, clamped to the file); `lines` also holds the context
+   * around them (see MIN_PREVIEW_LINES), each line flagged `requested`.
    */
   async getBlobPreview(link, { maxLines = 30, maxFileBytes = 1_000_000, restrictToGroup = false, onUnavailable = () => {} } = {}) {
     const unavailable = (reason) => {
@@ -389,8 +395,22 @@ export class GitLabClient {
     const startLine = link.startLine;
     const requestedEnd = Math.min(link.endLine, totalLines);
     const endLine = Math.min(requestedEnd, startLine + cap - 1);
+
+    // A short range gets surrounding context up to MIN_PREVIEW_LINES (never more
+    // than max_lines or the file has), split evenly before and after; a side
+    // that hits the start or end of the file hands its share to the other one.
+    const target = Math.min(MIN_PREVIEW_LINES, cap, totalLines);
+    const extra = Math.max(0, target - (endLine - startLine + 1));
+    const availBefore = startLine - 1;
+    const availAfter = totalLines - endLine;
+    let before = Math.min(Math.floor(extra / 2), availBefore);
+    const after = Math.min(extra - before, availAfter);
+    before = Math.min(extra - after, availBefore);
+
     const lines = [];
-    for (let n = startLine; n <= endLine; n++) lines.push({ n, text: allLines[n - 1] });
+    for (let n = startLine - before; n <= endLine + after; n++) {
+      lines.push({ n, text: allLines[n - 1], requested: n >= startLine && n <= endLine });
+    }
 
     // The link of the preview is pinned to the commit the content was read from, so
     // it keeps showing these lines when the branch moves. Without a usable commit id
@@ -406,6 +426,8 @@ export class GitLabClient {
       requestedEndLine: requestedEnd,
       totalLines,
       truncated: endLine < requestedEnd,
+      contextBefore: before,
+      contextAfter: after,
       lines,
       url: permalink ?? link.url,
       originalUrl: link.url,
