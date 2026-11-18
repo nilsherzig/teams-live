@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { setRichMessages } from '../src/teams.mjs';
 import { AvatarService } from '../src/avatars.mjs';
 import { PLACEHOLDER_AVATAR } from '../src/placeholder-avatar.mjs';
-import { AVATAR_PX, MAX_AVATARS_PER_ROW, userRow } from '../src/card-user-row.mjs';
+import { AVATAR_PX, userRow } from '../src/card-user-row.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 
 // The neutral placeholder of people without a profile picture. All people and images are generic fakes.
@@ -115,11 +115,10 @@ test('userRow: placeholders only take what real photos leave, and count against 
   ];
   const row = userRow('Approvers', people);
   const urls = imagesOf(row).map((i) => [i.altText, i.url === PLACEHOLDER_AVATAR ? 'placeholder' : 'photo']);
-  assert.equal(urls.length, MAX_AVATARS_PER_ROW, 'the per-row cap applies to placeholders too');
-  assert.deepEqual(urls.map(([, kind]) => kind), ['photo', 'photo', 'photo'], 'photos first');
+  assert.deepEqual(urls.map(([, kind]) => kind), ['placeholder', 'placeholder', 'photo', 'photo', 'photo']);
 
   const tight = userRow('Approvers', people, { charBudget: PHOTO.length + PLACEHOLDER_AVATAR.length });
-  assert.deepEqual(imagesOf(tight).map((i) => i.altText).sort(), ['Alice Example', 'Nobody One']);
+  assert.deepEqual(imagesOf(tight).map((i) => i.altText).sort(), ['Alice Example', 'Bob Example']);
   assert.equal(userRow('Approvers', people, { charBudget: 10 }), null, 'over budget: names only, the caller keeps the plain fact');
 });
 

@@ -48,8 +48,7 @@ const DEFAULTS = {
   requestTimeoutMs: 5000,
   maxBytes: 12 * 1024, // per image
   // Fallback and configured pictures are held to a stricter cap. A card shares one picture budget
-  // (card-user-row.mjs, 6500 characters of data URI): a row whose picture does not fit loses all
-  // its pictures and its pill, so these must stay small enough to sit beside the author's photo.
+  // (card-user-row.mjs), so these must stay small enough to sit beside other photos.
   fallbackMaxBytes: 2400,
   maxDimension: 128, // px, either side
   breakerThreshold: 5, // consecutive failures

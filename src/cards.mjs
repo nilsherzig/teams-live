@@ -24,7 +24,7 @@ import { MR_BADGES } from './mr-badges.mjs';
 import { approvalBadge, approvalBadgeText } from './approval-badges.mjs';
 import { CI_STATUS_ICONS } from './ci-icons.mjs';
 import { GITLAB_ICONS_SMALL } from './gitlab-icons-small.mjs';
-import { MAX_AVATAR_CHARS_PER_CARD, avatarColumn, isImageDataUri, pillImage, userRow } from './card-user-row.mjs';
+import { planCardAvatars, avatarColumn, isImageDataUri, pillImage, userRow } from './card-user-row.mjs';
 
 export const ADAPTIVE_CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json';
 export const ADAPTIVE_CARD_VERSION = '1.4';
@@ -135,14 +135,15 @@ function factBlocks(facts) {
   if (!facts.some((f) => f?.[2]?.people || f?.[2]?.logo || f?.[2]?.badge)) return [factSet(facts)];
   const shown = facts.filter((f) => str(f[0]) && str(f[1]));
   const width = labelWidth(shown.map((f) => str(f[0])));
-  let budget = MAX_AVATAR_CHARS_PER_CARD;
+  const avatarPlan = planCardAvatars(shown.flatMap((fact) =>
+    (fact[2]?.people || []).map((person) => ({ ...person, compact: fact[2].compact }))
+  ));
   return shown.map((fact) => {
     const extra = fact[2];
     const built = extra?.people
-      ? userRow(str(fact[0]), extra.people, { headline: extra.headline, pill: extra.pill, compact: extra.compact, charBudget: budget, labelWidth: width })
+      ? userRow(str(fact[0]), extra.people, { headline: extra.headline, pill: extra.pill, compact: extra.compact, avatarPlan, labelWidth: width })
       : null;
     if (built) {
-      budget -= built.usedChars;
       return built.row;
     }
     return extra?.badge

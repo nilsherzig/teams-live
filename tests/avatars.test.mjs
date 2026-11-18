@@ -729,7 +729,7 @@ test('pictures per row and per card are capped and the rest falls back to names'
   const capped = buildMergeRequestCard({ ...MR, avatars: { 'Alice Example': huge, 'Bob Example': huge, 'Carol Example': huge } });
   const used = (JSON.stringify(capped).match(/data:image\/jpeg;base64,A+/g) || []).reduce((n, s) => n + s.length, 0);
   assert.ok(used <= MAX_AVATAR_CHARS_PER_CARD, `pictures use ${used} chars`);
-  assert.equal((JSON.stringify(capped).match(/data:image\/jpeg;base64,A+/g) || []).length, 1, 'the second 5000-char picture would exceed the card budget');
+  assert.equal((JSON.stringify(capped).match(/data:image\/jpeg;base64,A+/g) || []).length, 2, 'two 5000-char pictures fit the shared budget');
   assert.ok(images(capped) > 1, 'the people whose picture did not fit get the neutral placeholder, not a bare name');
 });
 
@@ -792,7 +792,7 @@ test('merge request author, first in fact order, takes the shared picture budget
   const text = JSON.stringify(card);
   assert.ok(text.includes('Dave Example'), 'the name is never dropped');
   // Only one picture of this size fits the shared budget; the author, first in fact order, gets it.
-  assert.equal(images(card), 1);
+  assert.equal(images(card), 3);
   assert.ok(linesOf(factOf(card, 'Author'))[0].columns.some((c) => c.items[0].type === 'Image'));
 });
 
@@ -913,4 +913,22 @@ test('generated initials avatars encode the first and last initials in a distinc
   assert.equal(initialsAvatar('李 明'), null);
   const row = userRow('Approval', [{ name: '李 明' }, { name: 'Alice Example' }], { compact: true }).row;
   assert.ok(JSON.stringify(row).includes('李明'), 'unsupported glyphs remain readable');
+});
+
+
+test('one person uses the same photo in the author and approver rows', () => {
+  const photo = bigUri(4000);
+  const card = buildMergeRequestCard({ ...MR, author: 'Alice Example', avatars: { 'Alice Example': photo, 'Bob Example': URI } });
+  const personImages = JSON.stringify(card).match(new RegExp(photo, 'g')) || [];
+  assert.equal(personImages.length, 2, 'the author and approver both use the photo');
+  assert.ok(richMessageWireBytes(makeRichMessage('example', card)) <= MAX_CARD_BYTES);
+});
+
+test('a photo that cannot fit twice is replaced consistently in both rows', () => {
+  const photo = bigUri(7000);
+  const card = buildMergeRequestCard({ ...MR, author: 'Alice Example', avatars: { 'Alice Example': photo } });
+  const author = linesOf(factOf(card, 'Author'))[0].columns[0].items[0];
+  const approver = linesOf(factOf(card, 'Approval'))[0].columns[0].items[0];
+  assert.notEqual(author.url, photo);
+  assert.equal(author.url, approver.url);
 });

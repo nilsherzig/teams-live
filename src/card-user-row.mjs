@@ -14,10 +14,9 @@ import { initialsAvatar, nameInitials } from './initials-avatar.mjs';
 export const AVATAR_PX = 18;
 // Total size of the embedded pictures per card (characters of the data URIs).
 // Cards are limited on the wire (MAX_CARD_BYTES), so extra pictures are dropped
-// in favour of names before the card could outgrow it: a full MR card is already
-// about 17 KB without photos and a real 32px photo costs about 3 KB.
-export const MAX_AVATAR_CHARS_PER_CARD = 6500;
-export const MAX_AVATARS_PER_ROW = 3;
+// before the card could outgrow it. Actual wire size is checked after rendering,
+// and oversized cards are rebuilt.
+export const MAX_AVATAR_CHARS_PER_CARD = 12000;
 
 /** Cards only ever embed a plain base64 JPEG/PNG data URI, never a remote URL. */
 export function isImageDataUri(value) {
@@ -85,6 +84,31 @@ export function pillImage(pill) {
 const usablePill = (pill) =>
   pill && isImageDataUri(pill.url) && Number.isFinite(pill.width) && pill.width > 0 && Number.isFinite(pill.height) && pill.height > 0;
 
+/** Select one image per person for every occurrence on a card, accounting for each copy on the wire. */
+export function planCardAvatars(people, budget = MAX_AVATAR_CHARS_PER_CARD) {
+  const groups = new Map();
+  for (const person of people) {
+    const name = text(person.name);
+    if (!name) continue;
+    const key = name.toLocaleLowerCase().replace(/\s+/gu, ' ');
+    const group = groups.get(key) || { name, count: 0, photo: null, compact: false, placeholder: false };
+    group.count++;
+    group.compact ||= Boolean(person.compact);
+    group.placeholder ||= person.avatar === PLACEHOLDER_AVATAR;
+    if (isImageDataUri(person.avatar) && person.avatar !== PLACEHOLDER_AVATAR) group.photo ||= person.avatar;
+    groups.set(key, group);
+  }
+  const selected = new Map();
+  for (const [key, group] of [...groups].sort((a, b) => Number(Boolean(b[1].photo)) - Number(Boolean(a[1].photo)))) {
+    const fallback = group.compact ? (initialsAvatar(group.name) || PLACEHOLDER_AVATAR) : (group.photo || group.placeholder ? PLACEHOLDER_AVATAR : null);
+    const candidates = [group.photo, fallback].filter(Boolean);
+    const image = candidates.find((candidate) => candidate.length * group.count <= budget) || null;
+    if (image) budget -= image.length * group.count;
+    selected.set(key, image);
+  }
+  return (name) => selected.get(text(name).toLocaleLowerCase().replace(/\s+/gu, ' ')) ?? null;
+}
+
 /**
  * @param {string} label  row label (bold)
  * @param {Array<{name: string, avatar?: string}>} people
@@ -107,46 +131,12 @@ const usablePill = (pill) =>
  * compact line, the lead being part of the name's own text ("👍 By Alice Example").
  * There is no fixed text column beside the names: it would eat the width they need.
  */
-export function userRow(label, people, { headline = '', pill = null, compact = false, charBudget = MAX_AVATAR_CHARS_PER_CARD, maxAvatars = MAX_AVATARS_PER_ROW, labelWidth = 'auto' } = {}) {
-  let remaining = charBudget;
-  let shown = 0;
-  let used = 0;
-  const entries = [];
-  for (const person of people || []) {
-    const name = text(person?.name);
-    if (!name) continue;
-    const photo = isImageDataUri(person.avatar) && person.avatar !== PLACEHOLDER_AVATAR ? person.avatar : null;
-    entries.push({ name, avatar: null, candidate: photo || (compact ? (initialsAvatar(name) || PLACEHOLDER_AVATAR) : (isImageDataUri(person.avatar) ? person.avatar : null)), generated: compact && !photo });
-  }
-  // Real pictures take the room first (row order); the neutral placeholder
-  // (a few hundred characters) only takes what is left of the caps.
-  for (const real of [true, false]) {
-    for (const entry of entries) {
-      if (!entry.candidate || entry.avatar || (entry.candidate !== PLACEHOLDER_AVATAR && !entry.generated) !== real) continue;
-      if ((shown < maxAvatars || (compact && !real)) && entry.candidate.length <= remaining) {
-        remaining -= entry.candidate.length;
-        used += entry.candidate.length;
-        shown += 1;
-        entry.avatar = entry.candidate;
-      }
-    }
-  }
-  // A person whose real picture did not fit the budget gets the neutral
-  // placeholder instead (a few hundred characters), so the people of a row that
-  // shows pictures are never a mix of pictures and bare names.
-  if (shown > 0) {
-    for (const entry of entries) {
-      if (!entry.candidate || entry.avatar) continue;
-      const fallback = compact ? (initialsAvatar(entry.name) || PLACEHOLDER_AVATAR) : PLACEHOLDER_AVATAR;
-      if ((shown < maxAvatars || compact) && fallback.length <= remaining) {
-        remaining -= fallback.length;
-        used += fallback.length;
-        shown += 1;
-        entry.avatar = fallback;
-      }
-    }
-  }
-  if (shown === 0 && !compact) return null;
+export function userRow(label, people, { headline = '', pill = null, compact = false, charBudget = MAX_AVATAR_CHARS_PER_CARD, labelWidth = 'auto', avatarPlan = null } = {}) {
+  const validPeople = (people || []).filter((person) => text(person?.name));
+  const selectAvatar = avatarPlan || planCardAvatars(validPeople.map((person) => ({ ...person, compact })), charBudget);
+  const entries = validPeople.map((person) => ({ name: text(person.name), avatar: selectAvatar(person.name) }));
+  const used = entries.reduce((total, entry) => total + (entry.avatar?.length || 0), 0);
+  if (!entries.some((entry) => entry.avatar) && !compact) return null;
   const lead = text(headline);
   const hasPill = usablePill(pill);
   const labelColumn = textColumn(text(label), { weight: 'Bolder' }, labelWidth);
