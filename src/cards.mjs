@@ -1060,38 +1060,42 @@ function verbatimText(line) {
  */
 function codeBlock(codeLines, highlighted = null) {
   return codeContainer(
-    codeLines.map((line) => ({
+    codeLines.map((line, index) => highlighted?.[index] ? {
+      type: 'RichTextBlock',
+      spacing: 'None',
+      inlines: [{ type: 'TextRun', text: preserveWhitespace(line), fontType: 'Monospace', size: 'Small' }],
+    } : {
       type: 'TextBlock',
       text: verbatimText(line),
       wrap: true,
       fontType: 'Monospace',
       size: 'Small',
       spacing: 'None',
-    })),
+    }),
     highlighted
   );
 }
 
 /**
- * Teams only knows its palette container styles (no custom background), so the
- * lines a link points at sit in one `warning` container (the orange-ish tint,
- * the closest to GitLab's line highlight), also when they are all there is;
- * `highlighted` flags the rows that belong in it (a contiguous run), null or
- * all false for none.
+ * Teams controls highlight colors; the shared background avoids per-section
+ * container padding while inline highlights mark the requested rows.
  */
 function codeContainer(rows, highlighted) {
-  const first = highlighted ? highlighted.indexOf(true) : -1;
-  if (first < 0) return { type: 'Container', spacing: 'Small', items: rows };
-  const last = highlighted.lastIndexOf(true);
-  const context = (items) => items.length ? [{ type: 'Container', style: 'default', spacing: 'None', items }] : [];
   return {
     type: 'Container',
+    style: 'default',
     spacing: 'Small',
-    items: [
-      ...context(rows.slice(0, first)),
-      { type: 'Container', style: 'warning', spacing: 'None', items: rows.slice(first, last + 1) },
-      ...context(rows.slice(last + 1)),
-    ],
+    items: rows.map((row, index) => {
+      if (!highlighted?.[index]) return row;
+      if (row.type === 'RichTextBlock') {
+        return { ...row, inlines: row.inlines.map((run) => ({ ...run, highlight: true })) };
+      }
+      return {
+        type: 'RichTextBlock',
+        spacing: 'None',
+        inlines: [{ type: 'TextRun', text: row.text, fontType: 'Monospace', size: 'Small', highlight: true }],
+      };
+    }),
   };
 }
 

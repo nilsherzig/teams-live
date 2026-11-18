@@ -481,32 +481,22 @@ const walk = (node, pred, out = []) => {
   return out;
 };
 
-test('cards: the requested lines sit in one warning container, context rows stay outside', async () => {
+test('cards: requested lines are highlighted within one compact block', async () => {
   const client = stubbedClient({ 'main:src/a.mjs': file(Array.from({ length: 20 }, (_, i) => `const v${i + 1} = "x";`).join('\n')) });
   const preview = await client.getBlobPreview(linkOf(client, 'main/src/a.mjs', '#L10-11'));
   assert.deepEqual(shown(preview), [9, 10, 11, 12, 13]);
   const card = buildCodePreviewCard(preview);
-  const bands = walk(card, (n) => n.type === 'Container' && n.style === 'warning');
-  assert.equal(bands.length, 1);
-  const rowsOf = (node) => walk(node, (n) => n.type === 'RichTextBlock');
-  assert.equal(rowsOf(bands[0]).length, 2);
-  assert.equal(rowsOf(card).length, 5);
-  // Syntax colours survive inside and outside the band, numbers of requested lines are bold.
-  const colored = (node) => walk(node, (n) => n.type === 'TextRun' && n.color === 'Accent');
-  assert.ok(colored(bands[0]).length >= 2);
-  assert.ok(colored(card).length >= 5);
-  const numberRuns = (node) => walk(node, (n) => n.type === 'RichTextBlock').map((r) => r.inlines[0]);
-  assert.ok(numberRuns(bands[0]).every((r) => r.weight === 'Bolder' && !r.isSubtle));
-  assert.equal(numberRuns(card).filter((r) => r.isSubtle).length, 3);
-  // Each section has a styled container so Teams applies the same horizontal padding.
-  const block = walk(card, (n) => n.type === 'Container' && n.items?.includes(bands[0]))[0];
-  assert.deepEqual(block.items.map((i) => i.style), ['default', 'warning', 'default']);
-  assert.deepEqual(block.items.map((i) => rowsOf(i).length), [1, 2, 2]);
+  const rows = walk(card, (n) => n.type === 'RichTextBlock');
+  assert.equal(rows.length, 5);
+  assert.deepEqual(rows.map((r) => r.inlines.every((run) => run.highlight === true)), [false, true, true, false, false]);
+  assert.ok(rows.slice(1, 3).every((r) => r.inlines[0].weight === 'Bolder'));
+  assert.ok(walk(card, (n) => n.type === 'TextRun' && n.color === 'Accent').length >= 5);
+  const block = walk(card, (n) => n.type === 'Container' && n.style === 'default' && n.items?.includes(rows[0]))[0];
+  assert.deepEqual(block.items, rows);
 });
 
 test('cards: the requested lines are highlighted even when there is no context to show', async () => {
-  const band = (card) => walk(card, (n) => n.type === 'Container' && n.style === 'warning');
-  const bandRows = (card) => walk(band(card)[0], (n) => n.type === 'RichTextBlock' || (n.type === 'TextBlock' && n.fontType === 'Monospace'));
+  const selectedRows = (card) => walk(card, (n) => n.type === 'RichTextBlock' && n.inlines?.length > 0 && n.inlines.every((run) => run.highlight === true));
   const marks = (md) => md.split('\n').filter((l) => /^>/.test(l)).length;
   const code = Array.from({ length: 50 }, (_, i) => `const v${i + 1} = 1;`).join('\n') + '\n';
   const client = stubbedClient({
@@ -518,8 +508,7 @@ test('cards: the requested lines are highlighted even when there is no context t
     const preview = await client.getBlobPreview(linkOf(client, refPath, anchor), options);
     assert.deepEqual(requestedOf(preview), expected, `${refPath}${anchor}`);
     const card = buildCodePreviewCard(preview);
-    assert.equal(band(card).length, 1, `${refPath}${anchor} has one band`);
-    assert.equal(bandRows(card).length, expected.length, `${refPath}${anchor} band holds exactly the requested rows`);
+    assert.equal(selectedRows(card).length, expected.length, `${refPath}${anchor} highlights exactly the requested rows`);
     assert.equal(marks(formatCodePreviewMarkdown(preview)), expected.length, `${refPath}${anchor} marks in the text`);
     return { preview, card };
   };
@@ -540,8 +529,8 @@ test('cards: the requested lines are highlighted even when there is no context t
   // A plain-text file (no syntax highlighting) as well.
   await check('main/notes.txt', '#L3-8', {}, [3, 4, 5, 6, 7, 8]);
   // Syntax colours still show inside the band.
-  assert.ok(walk(band(five.card)[0], (n) => n.type === 'TextRun' && n.color === 'Accent').length >= 5);
-  assert.ok(walk(band(five.card)[0], (n) => n.type === 'RichTextBlock').every((r) => r.inlines[0].weight === 'Bolder'));
+  assert.ok(walk(five.card, (n) => n.type === 'TextRun' && n.color === 'Accent' && n.highlight === true).length >= 5);
+  assert.ok(selectedRows(five.card).every((r) => r.inlines[0].weight === 'Bolder'));
   // The permalink is the requested range.
   assert.ok(JSON.stringify(five.card).includes(permalink('src/a.mjs', '#L10-14')));
 });
@@ -559,23 +548,20 @@ test('cards: the highlighted band survives the fallbacks (plain block, too large
     requested: true,
   }));
   const card = buildCodePreviewCard({ ...previewOf(), path: 'x.js', startLine: 10, endLine: 39, requestedEndLine: 39, lines: all });
-  assert.equal(walk(card, (n) => n.type === 'RichTextBlock').length, 0, 'plain fallback');
-  const bands = walk(card, (n) => n.type === 'Container' && n.style === 'warning');
-  assert.equal(bands.length, 1);
-  assert.equal(walk(bands[0], (n) => n.type === 'TextBlock' && n.fontType === 'Monospace').length, 30);
+  const selected = walk(card, (n) => n.type === 'RichTextBlock' && n.inlines?.every((run) => run.highlight === true));
+  assert.equal(selected.length, 30);
+  assert.ok(selected.every((row) => row.inlines.length === 1));
 });
 
 test('cards: unrecognized files and the markdown fallback mark the requested lines', async () => {
   const client = stubbedClient({ 'main:notes.txt': file(SAMPLE) });
   const preview = await client.getBlobPreview(linkOf(client, 'main/notes.txt', '#L9'));
   const card = buildCodePreviewCard(preview);
-  const bands = walk(card, (n) => n.type === 'Container' && n.style === 'warning');
-  assert.equal(bands.length, 1, 'the plain monospace block is highlighted too');
-  const plainRows = walk(bands[0], (n) => n.type === 'TextBlock' && n.fontType === 'Monospace');
-  assert.equal(plainRows.length, 1);
-  assert.match(plainRows[0].text, /^>/);
-  assert.match(plainRows[0].text, /line 9$/);
-  assert.equal(walk(card, (n) => n.type === 'TextBlock' && n.fontType === 'Monospace').length, 5);
+  const selected = walk(card, (n) => n.type === 'RichTextBlock' && n.inlines?.every((run) => run.highlight === true));
+  assert.equal(selected.length, 1);
+  assert.match(selected[0].inlines[0].text, /^>/);
+  assert.match(selected[0].inlines[0].text, /line 9$/);
+  assert.equal(walk(card, (n) => n.type === 'TextBlock' && n.fontType === 'Monospace').length, 4);
 
   const md = formatCodePreviewMarkdown(preview);
   assert.ok(md.includes('\n   7  line 7\n   8  line 8\n>  9  line 9\n  10  line 10\n  11  line 11\n'), md);
@@ -588,10 +574,9 @@ test('cards: a highlighted block too big for the wire limit falls back to the pl
     requested: i === 14,
   }));
   const card = buildCodePreviewCard({ ...previewOf(), path: 'x.js', startLine: 24, endLine: 24, requestedEndLine: 24, lines });
-  assert.equal(walk(card, (n) => n.type === 'RichTextBlock').length, 0);
-  const bands = walk(card, (n) => n.type === 'Container' && n.style === 'warning');
-  assert.equal(bands.length, 1);
-  assert.equal(walk(bands[0], (n) => n.type === 'TextBlock' && n.fontType === 'Monospace').length, 1);
+  const selected = walk(card, (n) => n.type === 'RichTextBlock' && n.inlines?.every((run) => run.highlight === true));
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].inlines.length, 1);
 });
 
 test('cards: the truncation note counts requested lines, not context', () => {
