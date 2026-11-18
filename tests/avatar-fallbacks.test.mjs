@@ -8,6 +8,7 @@ import {
 } from '../src/avatar-sources.mjs';
 import { normalizeAvatarsConfig } from '../src/config.mjs';
 import { PLACEHOLDER_AVATAR } from '../src/placeholder-avatar.mjs';
+import { buildMergeRequestCard } from '../src/cards.mjs';
 
 // All people, hosts, ids and pictures below are generic fixtures.
 const ALICE = '8:orgid:00000000-0000-4000-8000-00000000000a';
@@ -60,7 +61,7 @@ const jiraUser = (over = {}) => ({
   displayName: 'Alice Example',
   emailAddress: 'alice@example.com',
   active: true,
-  avatarUrls: { '48x48': avatarUrl(10500) },
+  avatarUrls: { '32x32': avatarUrl(10500), '48x48': avatarUrl(10501) },
   ...over,
 });
 
@@ -250,7 +251,7 @@ test('normalizeAvatarsConfig defaults to Jira then Confluence and keeps valid ov
 
 // ── Jira source ─────────────────────────────────────────────────────────────
 
-function jiraFetch(users, image = response(200, { bytes: fakePng(48, 48), type: 'image/png' })) {
+function jiraFetch(users, image = response(200, { bytes: fakePng(32, 32), type: 'image/png' })) {
   return router([
     ['/rest/api/2/user/search', response(200, { json: users })],
     ['/secure/useravatar', image],
@@ -262,17 +263,17 @@ test('Jira: an exact, unique, active user with an uploaded picture gets it, with
   const { fetch } = createJiraAvatarSource({ jira: jiraClient, fetchFn });
   const result = await fetch({ name: 'Alice  Example' });
   assert.equal(result.kind, 'photo');
-  assert.deepEqual([...result.bytes], [...fakePng(48, 48)]);
+  assert.deepEqual([...result.bytes], [...fakePng(32, 32)]);
   const [search, image] = fetchFn.calls;
   assert.ok(search.url.startsWith(`${JIRA}/rest/api/2/user/search?username=alice%20example&`));
   assert.equal(search.init.headers.Authorization, `Bearer ${TOKEN}`);
   assert.equal(image.init.headers.Authorization, `Bearer ${TOKEN}`);
   assert.equal(image.init.redirect, 'error');
-  assert.equal(image.url, avatarUrl(10500));
+  assert.equal(image.url, avatarUrl(10500), 'the 32 px variant');
 });
 
 test('Jira: the instance default avatar (no ownerId) is not a picture', async () => {
-  const fetchFn = jiraFetch([jiraUser({ avatarUrls: { '48x48': avatarUrl(10122, false) } })]);
+  const fetchFn = jiraFetch([jiraUser({ avatarUrls: { '32x32': avatarUrl(10122, false), '48x48': avatarUrl(10122, false) } })]);
   const { fetch } = createJiraAvatarSource({ jira: jiraClient, fetchFn });
   assert.deepEqual(await fetch({ name: 'Alice Example' }), { kind: 'none' });
   assert.equal(fetchFn.calls.length, 1, 'no image request');
@@ -302,7 +303,7 @@ test('Jira: an exact e-mail address is matched too', async () => {
 });
 
 test('Jira: a picture is only fetched from the Jira origin', async () => {
-  const fetchFn = jiraFetch([jiraUser({ avatarUrls: { '48x48': 'https://evil.example.net/a?ownerId=x&avatarId=1' } })]);
+  const fetchFn = jiraFetch([jiraUser({ avatarUrls: { '32x32': 'https://evil.example.net/a?ownerId=x&avatarId=1' } })]);
   const { fetch } = createJiraAvatarSource({ jira: jiraClient, fetchFn });
   assert.deepEqual(await fetch({ name: 'Alice Example' }), { kind: 'none' });
   assert.equal(fetchFn.calls.length, 1);
@@ -312,7 +313,7 @@ test('Jira: a picture is only fetched from the Jira origin', async () => {
 test('Jira: wrong content types and oversized pictures are not embedded', async () => {
   for (const image of [
     response(200, { bytes: fakePng(), type: 'text/html' }),
-    response(200, { bytes: fakePng(48, 48, 20_000), type: 'image/png' }),
+    response(200, { bytes: fakePng(32, 32, 20_000), type: 'image/png' }),
     response(404),
   ]) {
     const { fetch } = createJiraAvatarSource({ jira: jiraClient, fetchFn: jiraFetch([jiraUser()], image) });
@@ -349,7 +350,7 @@ test('Jira: nothing is requested without a configured client', async () => {
 function wikiFetch({ isDefault = false, path = '/download/attachments/1/user-avatar', image } = {}) {
   return router([
     ['/rest/api/user?username=alice', response(200, { json: { type: 'known', profilePicture: { path, isDefault } } })],
-    ['/download/attachments/', image || response(200, { bytes: fakePng(48, 48), type: 'image/png' })],
+    ['/download/attachments/', image || response(200, { bytes: fakePng(32, 32), type: 'image/png' })],
   ]);
 }
 
@@ -386,7 +387,7 @@ test('Confluence: the default picture, a missing flag, no Jira match or a foreig
 });
 
 test('Confluence: a picture over the byte cap is skipped, not resized', async () => {
-  const fn = wikiFetch({ image: response(200, { bytes: fakePng(48, 48, 20_000), type: 'image/png' }) });
+  const fn = wikiFetch({ image: response(200, { bytes: fakePng(32, 32, 20_000), type: 'image/png' }) });
   const fetch = createConfluenceAvatarSource({ confluence: wikiClient, resolveUser: async () => jiraUser(), fetchFn: fn });
   assert.deepEqual(await fetch({ name: 'Alice Example' }), { kind: 'none' });
 });
@@ -395,7 +396,7 @@ test('Confluence: a picture over the byte cap is skipped, not resized', async ()
 
 test('createAvatarFallbacks builds Jira then Confluence and shares one Jira lookup', async () => {
   const jiraFn = router([
-    ['/rest/api/2/user/search', response(200, { json: [jiraUser({ avatarUrls: { '48x48': avatarUrl(10122, false) } })] })],
+    ['/rest/api/2/user/search', response(200, { json: [jiraUser({ avatarUrls: { '32x32': avatarUrl(10122, false), '48x48': avatarUrl(10122, false) } })] })],
   ]);
   const wikiFn = wikiFetch();
   // One fetch function per service would be cleaner; here one router serves both origins.
@@ -405,7 +406,7 @@ test('createAvatarFallbacks builds Jira then Confluence and shares one Jira look
   const svc = service({ fallbacks: list });
   await svc.avatarsFor([{ name: 'Alice Example' }]);
   // Jira has only the default avatar, Confluence has the uploaded one.
-  assert.equal(svc.peek({ name: 'Alice Example' }), dataUriOf(fakePng(48, 48)));
+  assert.equal(svc.peek({ name: 'Alice Example' }), dataUriOf(fakePng(32, 32)));
   assert.equal(jiraFn.calls.length, 1, 'one Jira search for both sources');
 });
 
@@ -417,4 +418,54 @@ test('createAvatarFallbacks leaves out what is off or not configured', () => {
   assert.equal(createAvatarFallbacks({ jira: jiraClient, confluence: wikiClient, sources: [] }).length, 0);
   assert.equal(createAvatarFallbacks({ jira: jiraClient, confluence: wikiClient, sources: ['confluence'] }).length, 1);
   assert.equal(createAvatarFallbacks({ jira: jiraClient, confluence: wikiClient, sources: ['jira'] }).length, 1);
+});
+
+test('fallback and configured pictures are held to the small byte cap that keeps a card row intact', async () => {
+  // Over the cap (2400 bytes) but within the Teams cap: not embedded, so it cannot push the pill out of a row.
+  const svc = service({ fallbacks: [async () => photo(fakePng(32, 32, 3000))] });
+  await svc.avatarsFor([{ name: 'Alice Example' }]);
+  assert.equal(svc.peek({ name: 'Alice Example' }), null);
+  const small = service({ fallbacks: [async () => photo(fakePng(32, 32, 1500))] });
+  await small.avatarsFor([{ name: 'Alice Example' }]);
+  assert.ok(small.peek({ name: 'Alice Example' }));
+  const out = loadAvatarOverrides([{ name: 'Big', file: '/big.png' }, { name: 'Ok', file: '/ok.png' }], {
+    readFile: (f) => Buffer.from(f === '/big.png' ? fakePng(32, 32, 3000) : fakePng(32, 32, 1500)),
+  });
+  assert.deepEqual(out.map((o) => o.name), ['Ok']);
+});
+
+test('Jira: falls back to the 24 px picture when the 32 px one is too big, and takes neither if both are', async () => {
+  const sized = (big32, big24) =>
+    router([
+      ['/rest/api/2/user/search', response(200, { json: [jiraUser({ avatarUrls: { '32x32': avatarUrl(1), '24x24': avatarUrl(2) } })] })],
+      ['avatarId=1', response(200, { bytes: fakePng(32, 32, big32 ? 5000 : 0), type: 'image/png' })],
+      ['avatarId=2', response(200, { bytes: fakePng(24, 24, big24 ? 5000 : 0), type: 'image/png' })],
+    ]);
+  let r = await createJiraAvatarSource({ jira: jiraClient, fetchFn: sized(true, false) }).fetch({ name: 'Alice Example' });
+  assert.deepEqual([...r.bytes], [...fakePng(24, 24)]);
+  r = await createJiraAvatarSource({ jira: jiraClient, fetchFn: sized(true, true) }).fetch({ name: 'Alice Example' });
+  assert.deepEqual(r, { kind: 'none' });
+});
+
+test('a merge request card keeps the approval pill and shows the bot picture next to the author photo', () => {
+  const photoOf = (extra) => dataUriOf(fakePng(32, 32, extra));
+  const mr = {
+    iid: 1,
+    title: 'Example',
+    project: 'group/app',
+    url: 'https://gitlab.example.com/group/app/-/merge_requests/1',
+    state: 'open',
+    approved: true,
+    author: 'Alice Example',
+    approvedBy: ['Example Bot'],
+  };
+  // The sizes of a Teams photo and of the shipped bot logo (a 32 px PNG of about 2 KB).
+  const card = buildMergeRequestCard({ ...mr, avatars: { 'Alice Example': photoOf(1500), 'Example Bot': photoOf(2000) } });
+  const text = JSON.stringify(card);
+  assert.ok(!text.includes('👍 By'), 'the pill is kept, so the plain-text lead is not needed');
+  assert.ok(text.includes(photoOf(2000)), 'the bot picture is shown');
+  assert.ok(text.includes(photoOf(1500)), 'the author photo is shown');
+  // A picture too big for the card budget must not be what decides: keep the cap documented here.
+  const oversized = buildMergeRequestCard({ ...mr, avatars: { 'Alice Example': photoOf(1500), 'Example Bot': photoOf(6000) } });
+  assert.ok(!JSON.stringify(oversized).includes(photoOf(6000)), 'over the budget it is not embedded');
 });

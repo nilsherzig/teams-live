@@ -20,7 +20,7 @@
  *    only when the profile picture is not the default one.
  */
 
-import { readCapped } from './avatars.mjs';
+import { FALLBACK_MAX_BYTES, readCapped } from './avatars.mjs';
 
 const norm = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 const SEARCH_LIMIT = 10;
@@ -96,7 +96,7 @@ export function createJiraAvatarSource({
   jira,
   fetchFn = (...args) => globalThis.fetch(...args),
   timeoutMs = 5000,
-  maxBytes = 12 * 1024,
+  maxBytes = FALLBACK_MAX_BYTES,
 } = {}) {
   const base = String(jira?.baseUrl || '').replace(/\/+$/, '');
   const configured = () => Boolean(base && jira?.token);
@@ -144,10 +144,15 @@ export function createJiraAvatarSource({
   async function fetchPhoto(person) {
     const user = await resolveUser(person);
     if (!user) return { kind: 'none' };
-    const url = user.avatarUrls?.['48x48'] || user.avatarUrls?.['32x32'];
-    // Only a picture the person uploaded: the shared default avatar has no `ownerId`.
-    if (typeof url !== 'string' || !/[?&]ownerId=/.test(url)) return { kind: 'none' };
-    return fetchImage({ base, url, token: jira.token, fetchFn, timeoutMs, maxBytes });
+    // The small variants first: a card has room for little picture data (see FALLBACK_MAX_BYTES).
+    for (const size of ['32x32', '24x24']) {
+      const url = user.avatarUrls?.[size];
+      // Only a picture the person uploaded: the shared default avatar has no `ownerId`.
+      if (typeof url !== 'string' || !/[?&]ownerId=/.test(url)) continue;
+      const result = await fetchImage({ base, url, token: jira.token, fetchFn, timeoutMs, maxBytes });
+      if (result.kind === 'photo') return result;
+    }
+    return { kind: 'none' };
   }
 
   return { fetch: fetchPhoto, resolveUser };
@@ -164,7 +169,7 @@ export function createConfluenceAvatarSource({
   resolveUser,
   fetchFn = (...args) => globalThis.fetch(...args),
   timeoutMs = 5000,
-  maxBytes = 12 * 1024,
+  maxBytes = FALLBACK_MAX_BYTES,
 } = {}) {
   const base = String(confluence?.baseUrl || '').replace(/\/+$/, '');
   return async function fetchPhoto(person) {

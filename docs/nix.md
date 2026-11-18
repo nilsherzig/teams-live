@@ -364,14 +364,21 @@ order:
    active user with that full display name (or e-mail address). Users who never
    uploaded one share the instance's default avatar, which is not used.
 3. **Confluence**: the uploaded picture of the Jira user with the same username,
-   unless it is the default one. Pictures over 12 KB or 128 px are skipped, not
-   resized.
+   unless it is the default one. Jira's 32 px (then 24 px) variant is used;
+   anything over 2400 bytes or 128 px is skipped, not resized (see the note below).
 4. **`avatars.overrides`**: a configured picture for a display name, for accounts
    that exist in no directory (for example the service account that approves
    merge requests). The match is on the exact full name, ignoring case and extra
-   spaces; the file must be a PNG or JPEG of at most 12 KB and 128 px. It is read
+   spaces; the file must be a PNG or JPEG of at most 2400 bytes and 128 px (a 32 px PNG is
+   about 2 KB). It is read
    once at start; an unreadable or oversized file is skipped with a warning.
 5. **Placeholder**: a neutral silhouette.
+
+Fallback and configured pictures are held to 2400 bytes because a card has one
+shared budget for picture data (6500 characters): a row whose picture does not fit
+loses its pictures and its approval pill, so they must stay small enough to sit
+next to the author's photo. In practice that means Jira (small variants) and
+overrides; Confluence photos are usually too big.
 
 Matching is strict at every step: one word (a first name or a username), several
 people with the same name, a partial match or an inactive Jira user end in "no

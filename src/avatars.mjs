@@ -47,12 +47,18 @@ const DEFAULTS = {
   deadlineMs: 1500, // never hold a card back longer than this
   requestTimeoutMs: 5000,
   maxBytes: 12 * 1024, // per image
+  // Fallback and configured pictures are held to a stricter cap. A card shares one picture budget
+  // (card-user-row.mjs, 6500 characters of data URI): a row whose picture does not fit loses all
+  // its pictures and its pill, so these must stay small enough to sit beside the author's photo.
+  fallbackMaxBytes: 2400,
   maxDimension: 128, // px, either side
   breakerThreshold: 5, // consecutive failures
   breakerMs: 5 * 60 * 1000,
   size: 'HR32x32', // server-side resize, an 18px badge stays sharp
   searchLimit: 10, // directory hits asked for; a full page cannot prove a name is unique
 };
+
+export const FALLBACK_MAX_BYTES = DEFAULTS.fallbackMaxBytes;
 
 const norm = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 
@@ -436,7 +442,10 @@ export class AvatarService {
       for (const source of this.fallbacks) {
         try {
           const result = await source(typeof person === 'string' ? { name: person } : person, size);
-          const image = result?.kind === 'photo' ? inspectImage(result.bytes, this.opts) : null;
+          const image =
+            result?.kind === 'photo'
+              ? inspectImage(result.bytes, { ...this.opts, maxBytes: this.opts.fallbackMaxBytes })
+              : null;
           if (image) {
             value = toDataUri(result.bytes, image.mime);
             break;
@@ -495,11 +504,12 @@ export class AvatarService {
 
 /**
  * Reads the configured per-name pictures: `[{ name, file }]` to
- * `[{ name, dataUri }]`. A file that is missing, too big or not a PNG or JPEG
- * within the pixel limit is skipped with a warning (no path, no name logged),
+ * `[{ name, dataUri }]`. A file that is missing, over the fallback byte cap
+ * (2400) or not a PNG or JPEG within the pixel limit is skipped with a warning (no path, no name logged),
  * so one bad entry never keeps the daemon from starting.
  */
 export function loadAvatarOverrides(entries, { readFile = fs.readFileSync, ...limits } = {}) {
+  const maxBytes = limits.maxBytes ?? DEFAULTS.fallbackMaxBytes;
   const out = [];
   for (const entry of Array.isArray(entries) ? entries : []) {
     const name = String(entry?.name ?? '').trim();
@@ -507,8 +517,8 @@ export function loadAvatarOverrides(entries, { readFile = fs.readFileSync, ...li
     if (!name || !file) continue;
     try {
       const bytes = new Uint8Array(readFile(file));
-      const image = inspectImage(bytes, limits);
-      if (!image) throw new Error('not a small PNG or JPEG');
+      const image = inspectImage(bytes, { ...limits, maxBytes });
+      if (!image) throw new Error(`not a PNG or JPEG of at most ${maxBytes} bytes and ${DEFAULTS.maxDimension} px`);
       out.push({ name, dataUri: toDataUri(bytes, image.mime) });
     } catch (err) {
       log(`Ignoring a configured profile picture: ${err.message}`);
