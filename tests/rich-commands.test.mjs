@@ -435,3 +435,44 @@ test('/status card: "none" when the MR has no pipeline, "unknown" when the looku
     null
   );
 });
+
+test('failed MR card update does not post a duplicate or downgrade the card', async () => {
+  const watcher = newWatcher({ rich_messages: true });
+  const original = { ...transport };
+  const calls = [];
+  transport.editMessage = async (...args) => {
+    calls.push({ kind: 'edit', args });
+    return { ok: false, error: new Error('edit rejected') };
+  };
+  transport.sendMessage = async (...args) => {
+    calls.push({ kind: 'send', args });
+    return { ok: true, value: { timestamp: '1700000000010' } };
+  };
+  try {
+    await assert.rejects(watcher.handleCiStatusComment(entry(), mrRef({ ciMessageServerId: '1700000000005' }),
+      { id: 7, status: 'success' }, openDetails()), /edit rejected/);
+    assert.deepEqual(calls.map((call) => call.kind), ['edit']);
+    assert.ok(cardOf(calls[0].args[4]));
+  } finally {
+    Object.assign(transport, original);
+  }
+});
+
+test('overlapping checks for one message run in order', async () => {
+  const watcher = newWatcher();
+  const events = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  watcher.checkWatchedKeyOnce = async () => {
+    events.push('start');
+    if (events.length === 1) await gate;
+    events.push('end');
+  };
+  const first = watcher.checkWatchedKey('message');
+  const second = watcher.checkWatchedKey('message');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ['start']);
+  release();
+  await Promise.all([first, second]);
+  assert.deepEqual(events, ['start', 'end', 'start', 'end']);
+});

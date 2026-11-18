@@ -2759,28 +2759,29 @@ export class MergeRequestWatcher {
         this.saveState();
         return;
       }
+      if (entry.editedOriginal) throw new Error(`updating original message failed: ${editResult.error?.message}`);
       log(`editing original message failed (${editResult.error?.message}), falling back to reply`);
     }
 
     if (mr.ciMessageServerId) {
       log(`updating status comment (CI: ${pipeline?.status}, approved: ${isApproved}) for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
-      const updateResult = await updateReply(entry.conversationId, mr.ciMessageServerId, entry, msg);
+      const updateResult = await updateReply(entry.conversationId, mr.ciMessageServerId, entry, msg, { preserveCard: true });
       if (updateResult.ok) {
         mr.lastReportedClosed = false;
         this.saveState();
         return;
       }
-      log(`updating status comment failed (${updateResult.error?.message}), falling back to new reply`);
+      throw new Error(`updating status comment failed: ${updateResult.error?.message}`);
     }
 
     log(`posting new status comment (CI: ${pipeline?.status}, approved: ${isApproved}) for ${mr.project}!${mr.iid}`);
     const result = await sendReply(entry.conversationId, entry, msg);
-    if (result.ok && result.value?.timestamp) {
-      mr.ciMessageServerId = String(result.value.timestamp);
+    if (result.ok && (result.value?.timestamp || result.value?.messageId)) {
+      mr.ciMessageServerId = String(result.value.timestamp || result.value.messageId);
       mr.lastReportedClosed = false;
       this.saveState();
-    } else if (!result.ok) {
-      log(`CI status reply failed: ${result.error?.message}`);
+    } else {
+      throw new Error(`CI status reply failed or returned no message ID: ${result.error?.message || 'missing ID'}`);
     }
   }
 
@@ -2941,13 +2942,13 @@ export class MergeRequestWatcher {
 
     if (mr.ciMessageServerId) {
       log(`updating CI status comment to merged for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
-      const updateResult = await updateReply(entry.conversationId, mr.ciMessageServerId, entry, msg);
+      const updateResult = await updateReply(entry.conversationId, mr.ciMessageServerId, entry, msg, { preserveCard: true });
       if (updateResult.ok) {
         mr.lastReportedClosed = false;
         this.saveState();
         return;
       }
-      log(`updating CI comment to merged failed (${updateResult.error?.message}), falling back to other comment or reply`);
+      throw new Error(`updating merged card failed: ${updateResult.error?.message}`);
     }
 
     if (mr.rebaseMessageServerId) {
@@ -2963,8 +2964,8 @@ export class MergeRequestWatcher {
 
     log(`posting merged comment for ${mr.project}!${mr.iid}`);
     const result = await sendReply(entry.conversationId, entry, msg);
-    if (result.ok && result.value?.timestamp) {
-      mr.ciMessageServerId = String(result.value.timestamp);
+    if (result.ok && (result.value?.timestamp || result.value?.messageId)) {
+      mr.ciMessageServerId = String(result.value.timestamp || result.value.messageId);
       mr.lastReportedClosed = false;
       this.saveState();
     }
@@ -3050,13 +3051,13 @@ export class MergeRequestWatcher {
 
     if (mr.ciMessageServerId) {
       log(`updating CI status comment to closed for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
-      const updateResult = await updateReply(entry.conversationId, mr.ciMessageServerId, entry, msg);
+      const updateResult = await updateReply(entry.conversationId, mr.ciMessageServerId, entry, msg, { preserveCard: true });
       if (updateResult.ok) {
         mr.lastReportedClosed = true;
         this.saveState();
         return;
       }
-      log(`updating CI comment to closed failed (${updateResult.error?.message}), falling back to other comment or reply`);
+      throw new Error(`updating closed card failed: ${updateResult.error?.message}`);
     }
 
     if (mr.rebaseMessageServerId) {
@@ -3072,8 +3073,8 @@ export class MergeRequestWatcher {
 
     log(`posting closed comment for ${mr.project}!${mr.iid}`);
     const result = await sendReply(entry.conversationId, entry, msg);
-    if (result.ok && result.value?.timestamp) {
-      mr.ciMessageServerId = String(result.value.timestamp);
+    if (result.ok && (result.value?.timestamp || result.value?.messageId)) {
+      mr.ciMessageServerId = String(result.value.timestamp || result.value.messageId);
       mr.lastReportedClosed = true;
       this.saveState();
     }
@@ -3530,6 +3531,20 @@ export class MergeRequestWatcher {
   }
 
   async checkWatchedKey(key) {
+    // Webhooks, polling and the initial check can overlap for the same message.
+    // Queue each check so it sees the message ID and state saved by the previous one.
+    this.watchedChecks ??= new Map();
+    const previous = this.watchedChecks.get(key) || Promise.resolve();
+    const current = previous.catch(() => {}).then(() => this.checkWatchedKeyOnce(key));
+    this.watchedChecks.set(key, current);
+    try {
+      return await current;
+    } finally {
+      if (this.watchedChecks.get(key) === current) this.watchedChecks.delete(key);
+    }
+  }
+
+  async checkWatchedKeyOnce(key) {
     const entry = this.watched.get(key);
     if (!entry) return;
 

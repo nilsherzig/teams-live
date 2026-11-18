@@ -792,11 +792,10 @@ async function supersedeSurplus(conversationId, originalMessage, entries, keep) 
  * the text shrinks, the tracked messages it no longer needs are edited to a "superseded" note
  * (once, and retried if the edit failed) instead of being deleted or left showing stale content.
  */
-export async function updateReply(conversationId, serverMessageId, originalMessage, replyMarkdown) {
+export async function updateReply(conversationId, serverMessageId, originalMessage, replyMarkdown, { preserveCard = false } = {}) {
   const [head, ...rest] = prepareRichMessages(replyMarkdown);
-  const result = await withCardFallback(head, (message) =>
-    updateReplyOnce(conversationId, serverMessageId, originalMessage, message)
-  );
+  const update = (message) => updateReplyOnce(conversationId, serverMessageId, originalMessage, message);
+  const result = preserveCard ? await update(head) : await withCardFallback(head, update);
   if (!result.ok) return result;
 
   const key = `${conversationId}\n${serverMessageId}`;
