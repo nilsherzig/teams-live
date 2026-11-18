@@ -274,8 +274,26 @@ function header(service, kind, glyph = null, ref = null, stats = null) {
 }
 
 /**
+ * The card's main line. By default the title is a Markdown hyperlink (which the
+ * client underlines). `asAction` keeps the text plain and makes the whole line
+ * a click target (`selectAction`) instead, so it opens the same URL without
+ * the underline. Without a usable http(s) URL it is plain text either way.
+ */
+function titleBlock(text, url, { size, asAction }) {
+  const label = str(text);
+  const target = safeHttpUrl(url);
+  if (!asAction || !label || !target) return textBlock(mdLink(label, url), { weight: 'Bolder', size });
+  return {
+    type: 'Container',
+    selectAction: { type: 'Action.OpenUrl', url: target },
+    items: [textBlock(escapeMarkdownText(label), { weight: 'Bolder', size })],
+  };
+}
+
+/**
  * Wraps the entity body in a coloured container and assembles the card.
- * `titleUrl` turns the title into a hyperlink to the entity; `titleSize` is its
+ * `titleUrl` turns the title into a hyperlink to the entity (`titleAsAction`: a
+ * click target without the underline, see `titleBlock`); `titleSize` is its
  * Adaptive Card text size (default Medium). `ref` is the
  * entity's identifier (`{ text, url }`) shown large at the right of the header,
  * so the title and subtitle do not repeat it.
@@ -292,6 +310,7 @@ export function assembleCard({
   title,
   titleUrl,
   titleSize = 'Medium',
+  titleAsAction = false,
   ref = null,
   subtitle,
   badges = [],
@@ -304,7 +323,7 @@ export function assembleCard({
   const items = [
     header(service, kind, glyph, ref, stats),
     // `title: null` is a card whose header already names it (no second heading).
-    title === null ? null : textBlock(mdLink(title || subtitle || 'Update', titleUrl), { weight: 'Bolder', size: titleSize }),
+    title === null ? null : titleBlock(title || subtitle || 'Update', titleUrl, { size: titleSize, asAction: titleAsAction }),
     subtitle && title ? textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }) : null,
     badgeRow(badges),
     ...factBlocks(facts),
@@ -609,8 +628,10 @@ export function buildMergeRequestCard(mr) {
     style: 'emphasis',
     title: mr.title || 'Merge request',
     titleUrl: mr.url,
-    // The merge request title is the card's main line: one step above the others.
+    // The merge request title is the card's main line: one step above the others,
+    // and a click target rather than an underlined link.
     titleSize: 'Large',
+    titleAsAction: true,
     ref: numericReference('!', mr.iid, mr.url),
     subtitle: mr.project,
     stats: mr.diffStats,

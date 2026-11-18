@@ -55,7 +55,13 @@ const headerRef = (card) => {
 };
 const headerRefBlock = (card) => header(card).columns.find((c) => c.items[0].horizontalAlignment === 'Right')?.items[0];
 const headerIcon = (card) => header(card).columns[0].items[0];
-const rawTitle = (card) => items(card)[1].text;
+// The title is a Markdown link, or (merge requests) a plain text line inside a clickable container.
+const titleNode = (card) => items(card)[1];
+const rawTitle = (card) => {
+  const node = titleNode(card);
+  if (node.type !== 'Container') return node.text;
+  return `[${node.items[0].text}](${node.selectAction.url})`;
+};
 const mainTitle = (card) => plain(rawTitle(card));
 const subtitle = (card) => items(card).find((i) => i.type === 'TextBlock' && i.isSubtle && i !== header(card))?.text;
 
@@ -408,7 +414,9 @@ test('cards have no navigation buttons: links are inline, logos stay in the head
   for (const card of cards) {
     assertValidCard(card);
     assert.equal(card.actions, undefined);
-    assert.ok(!JSON.stringify(card).includes('Action.'));
+    // No buttons of any kind. The only action is a title's `selectAction` (a click target, no visible control).
+    assert.ok(!JSON.stringify(card).includes('ActionSet'));
+    assert.ok(!JSON.stringify(card).replaceAll('"selectAction":{"type":"Action.OpenUrl"', '').includes('Action.'));
     assert.ok(headerIcon(card).url.startsWith('data:image/png;base64,'));
   }
   // The header logo is the service the card is about.
@@ -965,4 +973,25 @@ test('service logos are small palette PNGs: every card header carries one and a 
     assert.equal(png[25], 3, `${service} is a palette PNG (colour type 3)`);
     assert.ok(url.length < 1000, `${service} logo is ${url.length} characters`);
   }
+});
+
+test('merge request titles are click targets, not underlined Markdown links', () => {
+  const card = buildMergeRequestCard(baseMr);
+  assertValidCard(card);
+  const node = titleNode(card);
+  assert.equal(node.type, 'Container');
+  assert.deepEqual(node.selectAction, { type: 'Action.OpenUrl', url: baseMr.url });
+  assert.equal(node.items.length, 1);
+  assert.equal(node.items[0].type, 'TextBlock');
+  // Plain text: no Markdown link for the client to underline, special characters escaped.
+  assert.equal(node.items[0].text, 'Add example feature');
+  assert.equal(node.items[0].weight, 'Bolder');
+  assert.equal(node.items[0].size, 'Large');
+  const tricky = titleNode(buildMergeRequestCard({ ...baseMr, title: 'Fix [WIP] *a* thing' }));
+  assert.equal(tricky.items[0].text, 'Fix \\[WIP\\] \\*a\\* thing');
+  // Without a usable URL it stays a plain text block, as before.
+  const plain = titleNode(buildMergeRequestCard({ ...baseMr, url: 'javascript:alert(1)' }));
+  assert.equal(plain.type, 'TextBlock');
+  // The other cards keep their Markdown link titles.
+  assert.equal(titleNode(buildJiraIssueCard({ key: 'EX-1', summary: 'Broken', url: 'https://jira.example.com/browse/EX-1' })).type, 'TextBlock');
 });

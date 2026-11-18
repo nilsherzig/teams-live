@@ -97,6 +97,10 @@ async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, no
   return { server, gitlab, token, record, base, entry, bootstrap, cookieOf, open, page, csrfFrom, post, confirm };
 }
 
+// The merge request title is a click target (`selectAction`); these tests are about the buttons only.
+const withoutTitleAction = (value) =>
+  String(typeof value === 'string' ? value : JSON.stringify(value)).replaceAll('"selectAction":{"type":"Action.OpenUrl"', '');
+
 test('constructor fails closed on a missing, insecure or non-loopback configuration', () => {
   const ok = { gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve` };
   assert.doesNotThrow(() => new ApproveServer(ok));
@@ -717,8 +721,8 @@ test('the merge request card has the Approve button only when a link is present'
   assert.match(text, /"type":"Action.OpenUrl"/);
   assert.equal(withLink.actions[0].title, '👍 Approve', 'the button reads exactly the thumbs-up and Approve');
   assert.doesNotMatch(text, /Approve…|Approve\.\.\.|\bApprove -|- Approve/);
-  assert.doesNotMatch(JSON.stringify(card({})), /Action\.OpenUrl/);
-  assert.doesNotMatch(JSON.stringify(card({ approveUrl: 'javascript:alert(1)' })), /Action\.OpenUrl/);
+  assert.doesNotMatch(withoutTitleAction(card({})), /Action\.OpenUrl/);
+  assert.doesNotMatch(withoutTitleAction(card({ approveUrl: 'javascript:alert(1)' })), /Action\.OpenUrl/);
 });
 
 function watcherWith(teams, flow) {
@@ -1396,13 +1400,13 @@ test('the card has the Reopen button only for a closed merge request with a link
   assert.match(closed, /"title":"🔄 Reopen"/);
   assert.ok(closed.includes(reopenUrl));
   assert.doesNotMatch(closed, /Approve/);
-  assert.doesNotMatch(card({ state: 'closed' }), /Action\.OpenUrl/);
-  assert.doesNotMatch(card({ state: 'closed', reopenUrl: 'javascript:alert(1)' }), /Action\.OpenUrl/);
+  assert.doesNotMatch(withoutTitleAction(card({ state: 'closed' })), /Action\.OpenUrl/);
+  assert.doesNotMatch(withoutTitleAction(card({ state: 'closed', reopenUrl: 'javascript:alert(1)' })), /Action\.OpenUrl/);
   for (const state of ['merged', 'open', 'rebase', 'rebased']) {
     assert.doesNotMatch(card({ state, reopenUrl }), /Reopen/, state);
   }
   // An approve link never shows on a closed card.
-  assert.doesNotMatch(card({ state: 'closed', approveUrl: reopenUrl }), /Action\.OpenUrl/);
+  assert.doesNotMatch(withoutTitleAction(card({ state: 'closed', approveUrl: reopenUrl })), /Action\.OpenUrl/);
 });
 
 test('the watcher offers Reopen only on closed cards with the flow enabled in rich mode', () => {

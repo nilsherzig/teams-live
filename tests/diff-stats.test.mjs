@@ -40,7 +40,8 @@ test('the card shows coloured +/- line totals with textual signs', () => {
   assert.deepEqual(standalone(buildMergeRequestCard({ ...base, diffStats: { additions: 1, deletions: 1 } })), [], 'no separate line below the project');
   assert.ok(!JSON.stringify(buildMergeRequestCard({ ...base, diffStats: { additions: 1, deletions: 1 } })).includes(' lines'));
   assert.ok(!block.inlines.some((r) => r.type !== 'TextRun'));
-  assert.ok(!JSON.stringify(buildMergeRequestCard({ ...base, diffStats: { additions: 1, deletions: 1 } })).includes('Action.'));
+  // No buttons: the title's `selectAction` is a click target, not a control.
+  assert.ok(!JSON.stringify(buildMergeRequestCard({ ...base, diffStats: { additions: 1, deletions: 1 } })).replaceAll('"selectAction":{"type":"Action.OpenUrl"', '').includes('Action.'));
 });
 
 test('zero totals are shown, unknown or malformed totals are omitted', () => {
@@ -139,13 +140,17 @@ test('an in-place refresh keeps the last known totals of the same head commit wh
   assert.equal(statsBlock(watcher.buildMrCard(mr, { ...details, sha: 'd'.repeat(40), diffStats: null })), undefined);
 });
 
-test('the merge request title is one size larger than other cards and stays a wrapping link', () => {
+test('the merge request title is one size larger than other cards and is a wrapping click target', () => {
   const card = buildMergeRequestCard({ ...base, diffStats: { additions: 42, deletions: 7 } });
-  const [head, title, subtitle] = card.body[0].items;
+  const [head, titleBox, subtitle] = card.body[0].items;
+  // Plain text in a clickable container: no Markdown link, so no underline.
+  assert.equal(titleBox.type, 'Container');
+  assert.deepEqual(titleBox.selectAction, { type: 'Action.OpenUrl', url: 'https://gitlab.example.com/x' });
+  const [title] = titleBox.items;
   assert.equal(title.size, 'Large');
   assert.equal(title.weight, 'Bolder');
   assert.equal(title.wrap, true);
-  assert.match(title.text, /^\[Example\]\(https:\/\/gitlab\.example\.com\/x\)$/);
+  assert.equal(title.text, 'Example');
   assert.equal(subtitle.text, 'group/app');
   assert.equal(subtitle.size, 'Small', 'the project subtitle keeps its hierarchy');
   assert.equal(head.type, 'ColumnSet', 'the header, with its counts, is untouched');
