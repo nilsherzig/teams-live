@@ -12,6 +12,17 @@ export function approvalCountsOf(approvals, approverCount = 0) {
   return { approvalsGiven: given, approvalsRequired: required };
 }
 
+/** Most path segments tried as the ref of a blob link (branch names may contain slashes). */
+const BLOB_MAX_REF_SEGMENTS = 6;
+
+/** Paths whose content is likely a credential: never previewed. */
+const SENSITIVE_PATH_RE =
+  /(^|\/)(\.env(\..*)?|\.netrc|\.npmrc|\.pypirc|id_(rsa|dsa|ecdsa|ed25519)|kubeconfig|[^/]*\.(pem|key|p12|pfx|jks|kdbx|gpg|asc|tfstate)|[^/]*(secret|credential|password|passwd|private[-_.]?key)[^/]*)$/i;
+
+export function isSensitivePath(filePath) {
+  return SENSITIVE_PATH_RE.test(String(filePath || ''));
+}
+
 export class GitLabClient {
   constructor({ host = 'git.wiit.one', token = null, group = '', onAuthError = null, onSuccess = null } = {}) {
     this.host = (host || 'git.wiit.one').replace(/^https?:\/\//, '').replace(/\/+$/, '');
@@ -146,7 +157,9 @@ export class GitLabClient {
           }
         }
       }
-      throw new Error(errStr);
+      const error = new Error(errStr);
+      error.status = res.status;
+      throw error;
     }
     this.onSuccess?.('GitLab');
     if (res.status === 204) {
@@ -271,6 +284,120 @@ export class GitLabClient {
       }
     }
     return results;
+  }
+
+  /**
+   * Finds links to a line or a line range of a file (`.../-/blob/<ref>/<path>#L10`,
+   * `#L10-20`, `#L10-L20`; also `<project>.git//blob/<ref>/<path>#L10`) on the configured GitLab host. A link without a line
+   * anchor is not a code reference and is left out. The ref and the path cannot
+   * be told apart from the URL alone (a branch name may contain slashes), so the
+   * link carries them together as `refPath`; see getBlobPreview.
+   */
+  findBlobLinks(text, { allowQuotes = false } = {}) {
+    const results = [];
+    if (!text) return results;
+
+    const textToSearch = allowQuotes
+      ? text
+      : text
+          .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '')
+          .replace(/<div[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[\s\S]*?<\/div>/gi, '');
+
+    const seen = new Set();
+    const regex = new RegExp(
+      `https?:\\/\\/${this.escapedHost}\\/([\\w.\\/-]+?)(?:\\/-)?\\/{1,2}blob\\/([^\\s"'<>#?]+)(?:\\?[^\\s"'<>#]*)?#L(\\d+)(?:-L?(\\d+))?(?!\\d)`,
+      'g'
+    );
+    for (const match of textToSearch.matchAll(regex)) {
+      const first = Number(match[3]);
+      const last = match[4] === undefined ? first : Number(match[4]);
+      if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || first < 1 || last < 1) continue;
+      const startLine = Math.min(first, last);
+      const endLine = Math.max(first, last);
+      // `<project>.git//blob/...` (a trailing `.git` and a doubled slash) is accepted
+      // next to the canonical `<project>/-/blob/...`; the API wants the bare project path.
+      const project = match[1].replace(/\/+$/, '').replace(/\.git$/i, '');
+      const refPath = match[2];
+      if (!project) continue;
+      const key = `${project}:${refPath}#L${startLine}-${endLine}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      results.push({ project, refPath, startLine, endLine, key, url: match[0] });
+    }
+    return results;
+  }
+
+  /**
+   * Reads a line range of a repository file through the configured GitLab API
+   * (never by fetching the link itself). Returns null when there is nothing to
+   * show: `restrictToGroup` is set and the project is outside the configured
+   * group (off by default: the group scopes MR monitoring, and the token's own
+   * permissions decide what can be read), the path looks like it holds credentials, the file or ref does not exist, or the file is binary or
+   * too large. Other failures (network, auth) are thrown, so the caller may retry.
+   */
+  async getBlobPreview(link, { maxLines = 30, maxFileBytes = 1_000_000, restrictToGroup = false } = {}) {
+    if (!link?.project || !link?.refPath) return null;
+    if (restrictToGroup && this.group) {
+      const prefix = `${this.group.replace(/^\/+|\/+$/g, '')}/`.toLowerCase();
+      if (!link.project.toLowerCase().startsWith(prefix)) return null;
+    }
+
+    let segments;
+    try {
+      segments = link.refPath.split('/').map((s) => decodeURIComponent(s));
+    } catch {
+      return null;
+    }
+    if (segments.some((s) => !s || s === '.' || s === '..' || s.includes('\0'))) return null;
+
+    // The ref is the first segment, or the first few when the branch name has slashes.
+    let file = null;
+    let refName = null;
+    let filePath = null;
+    for (let i = 1; i < segments.length && i <= BLOB_MAX_REF_SEGMENTS; i++) {
+      refName = segments.slice(0, i).join('/');
+      filePath = segments.slice(i).join('/');
+      if (isSensitivePath(filePath)) return null;
+      try {
+        file = await this.request(
+          `projects/${encodeURIComponent(link.project)}/repository/files/${encodeURIComponent(filePath)}?ref=${encodeURIComponent(refName)}`,
+          { timeoutMs: 15_000 }
+        );
+        break;
+      } catch (err) {
+        if (err.status !== 404) throw err;
+      }
+    }
+    if (!file || typeof file.content !== 'string') return null;
+    if (file.encoding && file.encoding !== 'base64') return null;
+    if (Number(file.size) > maxFileBytes) return null;
+
+    const buffer = Buffer.from(file.content, 'base64');
+    if (buffer.length > maxFileBytes || buffer.includes(0)) return null;
+    const allLines = buffer.toString('utf8').replace(/\r\n?/g, '\n').split('\n');
+    if (allLines.length > 0 && allLines.at(-1) === '') allLines.pop();
+
+    const totalLines = allLines.length;
+    if (link.startLine > totalLines) return null;
+    const cap = Math.max(1, Math.floor(maxLines));
+    const startLine = link.startLine;
+    const requestedEnd = Math.min(link.endLine, totalLines);
+    const endLine = Math.min(requestedEnd, startLine + cap - 1);
+    const lines = [];
+    for (let n = startLine; n <= endLine; n++) lines.push({ n, text: allLines[n - 1] });
+
+    return {
+      project: link.project,
+      ref: refName,
+      path: filePath,
+      startLine,
+      endLine,
+      requestedEndLine: requestedEnd,
+      totalLines,
+      truncated: endLine < requestedEnd,
+      lines,
+      url: link.url,
+    };
   }
 
   mrLink(project, iid) {

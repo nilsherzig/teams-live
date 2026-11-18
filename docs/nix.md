@@ -142,6 +142,7 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `gitlab.poll_interval_seconds` | MR status poll (60). |
 | `gitlab.history_limit`, `.history_max_age_minutes` | Messages scanned at startup. |
 | `gitlab.max_watch_duration_seconds` | How long an MR is watched (7200). |
+| `gitlab.code_preview.{enable,max_lines,restrict_to_group,allow_other_senders}` | Reply to a GitLab file link with a line anchor (`.../-/blob/<ref>/<path>#L10` or `#L10-20`, also `.../<project>.git//blob/<ref>/<path>#L10`) with those lines (on, 30 lines at most). Works for any project on the configured host, since `gitlab.group` only scopes MR monitoring; the token's own permissions decide what is readable. Only links in the authenticated user's own messages trigger a preview, so other participants cannot make the token read repository files into the chat; `allow_other_senders` (off) lifts that. Set `restrict_to_group` (off) to limit it to projects below `gitlab.group`. Read through the GitLab API with the configured token, never by fetching the link. Paths that look like credentials (`.env`, keys, `*secret*`, ...), binary and files over 1 MB are skipped. A link without a line anchor is ignored. |
 | `gitlab.notify.ci.{enable,on_failure,on_success}` | CI result messages. |
 | `gitlab.notify.{rebase,approval_lost,merged,closed}` | Other MR messages. |
 | `gitlab.webhook.{enable,port,host,path,url,secret_file,auto_setup}` | Receiver for GitLab events and the group hook that feeds it. See [GitLab webhook](#gitlab-webhook). |

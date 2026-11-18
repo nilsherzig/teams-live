@@ -9,7 +9,9 @@
 // Usage:
 //   node src/smoke-rich.mjs <conversationId> [--mode regular|rich|both] [--kind <kind>[,<kind>...]|all] [--dry-run]
 //
-// Kinds: mr, mr-merged, mr-rebase, job, pipeline, jira, opsgenie, confluence, startup, shutdown.
+// Kinds: mr, mr-merged, mr-rebase, job, pipeline, jira, opsgenie, confluence, code, startup, shutdown.
+// `code` runs a sample blob link through the real GitLabClient.findBlobLinks / getBlobPreview
+// (the file comes from an in-process stub, no GitLab is contacted) and the code preview card.
 // --dry-run prints the payloads instead of sending them (no Teams session needed).
 // It needs the same auth state as the daemon (HOME, XDG_STATE_HOME, ...).
 import {
@@ -20,13 +22,16 @@ import {
   transport,
 } from './teams.mjs';
 import {
+  buildCodePreviewCard,
   buildConfluencePageCard,
   buildJiraIssueCard,
   buildJobCard,
   buildMergeRequestCard,
   buildOpsGenieAlertCard,
   buildPipelineCard,
+  formatCodePreviewMarkdown,
 } from './cards.mjs';
+import { GitLabClient } from './gitlab.mjs';
 import { buildLifecycleCard, lifecycleMarkdown } from './lifecycle-card.mjs';
 
 const BASE = 'https://example.com';
@@ -40,6 +45,33 @@ const mrBase = {
   jira: { key: 'EX-1', url: `${BASE}/jira/browse/EX-1` },
   pipeline: { id: 7, status: 'success', url: `${BASE}/gitlab/example-group/example-project/-/pipelines/7` },
 };
+
+// A sample file served by an in-process stub of the GitLab file API; the link
+// below goes through the same code the watcher uses.
+const SAMPLE_FILE = [
+  'import { greet } from "./greet.js";',
+  '',
+  'export function main(name) {',
+  '  const message = greet(name);',
+  '  console.log(message);',
+  '  return message.length;',
+  '}',
+  '',
+].join('\n');
+
+async function codePreviewFixture() {
+  const client = new GitLabClient({ host: 'gitlab.example.com', group: 'example-group' });
+  client.request = async () => ({
+    encoding: 'base64',
+    size: SAMPLE_FILE.length,
+    content: Buffer.from(SAMPLE_FILE).toString('base64'),
+  });
+  const [link] = client.findBlobLinks(
+    'https://gitlab.example.com/example-group/example-project/-/blob/main/src/main.js#L3-6'
+  );
+  const preview = await client.getBlobPreview(link, { maxLines: 30 });
+  return { markdown: formatCodePreviewMarkdown(preview), card: buildCodePreviewCard(preview) };
+}
 
 const lifecycle = (spec) => ({ markdown: lifecycleMarkdown(spec), card: buildLifecycleCard(spec) });
 const LIFECYCLE_HOST_FACTS = [
@@ -122,6 +154,7 @@ const FIXTURES = {
       url: `${BASE}/confluence/pages/1`,
     }),
   }),
+  code: codePreviewFixture,
   startup: () =>
     lifecycle({
       kind: 'startup',
@@ -206,7 +239,7 @@ async function main() {
   let lastSent = null;
   for (const kind of opts.kinds) {
     for (const mode of modes) {
-      const { markdown, card } = FIXTURES[kind]();
+      const { markdown, card } = await FIXTURES[kind]();
       const label = `[smoke-rich ${mode}/${kind}]`;
       const result = await sendDirectMessage(opts.conversationId, asMessage(mode, `${label} ${markdown}`, card));
       const id = result.ok ? serverId(result) : null;
@@ -222,7 +255,7 @@ async function main() {
 
   // Quote reply and in-place update of that reply, once per requested mode.
   // In rich mode the reply is finally updated back to regular text, which must clear the card.
-  const { markdown, card } = FIXTURES[opts.kinds[opts.kinds.length - 1]]();
+  const { markdown, card } = await FIXTURES[opts.kinds[opts.kinds.length - 1]]();
   const original = { messageId: lastSent.messageId, from: 'Smoke Test', fromMri: '', previewText: lastSent.label };
   for (const mode of modes) {
     const label = `[smoke-rich ${mode} reply]`;

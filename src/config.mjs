@@ -147,6 +147,35 @@ export function loadConfig(configPath) {
     ),
   };
 
+  // Preview of the lines a GitLab blob link with a line anchor points at.
+  const rawCodePreview = fileConfig.gitlab?.code_preview ?? {};
+  const codePreviewEnv = process.env.TEAMS_GITLAB_CODE_PREVIEW;
+  const codePreviewMaxLines = Math.floor(
+    Number(rawCodePreview.max_lines ?? process.env.TEAMS_GITLAB_CODE_PREVIEW_MAX_LINES ?? 30)
+  );
+  gitlab.code_preview = {
+    enable: Boolean(
+      rawCodePreview.enable ?? (codePreviewEnv ? codePreviewEnv === 'true' || codePreviewEnv === '1' : true)
+    ),
+    max_lines: Number.isFinite(codePreviewMaxLines) && codePreviewMaxLines > 0 ? codePreviewMaxLines : 30,
+    // gitlab.group scopes MR monitoring; links to other projects on the host are
+    // previewed too (with the token's permissions) unless this is switched on.
+    // Only the authenticated user's own messages trigger a preview, so other chat
+    // participants cannot make the token read repository files into the chat.
+    allow_other_senders: Boolean(
+      rawCodePreview.allow_other_senders ??
+        (process.env.TEAMS_GITLAB_CODE_PREVIEW_ALLOW_OTHER_SENDERS
+          ? ['true', '1'].includes(process.env.TEAMS_GITLAB_CODE_PREVIEW_ALLOW_OTHER_SENDERS)
+          : false)
+    ),
+    restrict_to_group: Boolean(
+      rawCodePreview.restrict_to_group ??
+        (process.env.TEAMS_GITLAB_CODE_PREVIEW_RESTRICT_TO_GROUP
+          ? ['true', '1'].includes(process.env.TEAMS_GITLAB_CODE_PREVIEW_RESTRICT_TO_GROUP)
+          : false)
+    ),
+  };
+
   const rawWebhook = fileConfig.gitlab?.webhook ?? {};
   const webhook = {
     enable: Boolean(

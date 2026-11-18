@@ -38,6 +38,8 @@ import {
   buildJiraIssueCard,
   buildOpsGenieAlertCard,
   buildConfluencePageCard,
+  buildCodePreviewCard,
+  formatCodePreviewMarkdown,
   buildMarkdownCard,
   buildMrListCard,
   mrListState,
@@ -1361,6 +1363,16 @@ export class MergeRequestWatcher {
             spaceName: c.spaceName,
             messageServerId: c.messageServerId,
           })),
+          codeLinks: (v.codeLinks || []).map((c) => ({
+            key: c.key,
+            project: c.project,
+            refPath: c.refPath,
+            startLine: c.startLine,
+            endLine: c.endLine,
+            url: c.url,
+            messageServerId: c.messageServerId,
+            unavailable: Boolean(c.unavailable),
+          })),
         };
       }
       const completedArray = Array.from(this.completedMessages);
@@ -2079,7 +2091,18 @@ export class MergeRequestWatcher {
     if (this.jira?.findIssueLinks && this.jira.findIssueLinks(url).length > 0) return true;
     if (this.confluence?.findPageLinks && this.confluence.findPageLinks(url).length > 0) return true;
     if (this.opsgenie?.findAlertLinks && this.opsgenie.findAlertLinks(url).length > 0) return true;
+    if (this.codePreviewEnabled() && this.gitlab?.findBlobLinks && this.gitlab.findBlobLinks(url).length > 0) return true;
     return false;
+  }
+
+  /** Whether a message from this sender may trigger a code preview (own messages only by default). */
+  codePreviewAllowedFor(isSelf) {
+    return Boolean(isSelf) || this.config?.gitlab?.code_preview?.allow_other_senders === true;
+  }
+
+  /** Whether GitLab blob links with a line anchor get a code preview (gitlab.code_preview.enable). */
+  codePreviewEnabled() {
+    return this.config?.gitlab?.code_preview?.enable !== false;
   }
 
   findUnrecognizedLinks(text, rawHtml = '', links = []) {
@@ -2213,13 +2236,22 @@ export class MergeRequestWatcher {
     const jiraLinks = this.jira?.findIssueLinks ? this.jira.findIssueLinks(text) : [];
     const opsgenieLinks = this.opsgenie?.findAlertLinks ? this.opsgenie.findAlertLinks(text) : [];
     const confluenceLinks = this.confluence?.findPageLinks ? this.confluence.findPageLinks(text) : [];
+    // A code preview reads a repository file with the bot's token and posts it into
+    // the chat, so only the authenticated user's own links trigger it (unless
+    // gitlab.code_preview.allow_other_senders is set). Unknown identity counts as "not self".
+    const isSelf = this.isSenderSelf({ from, fromMri });
+    const codeLinks =
+      this.codePreviewEnabled() && this.gitlab.findBlobLinks && this.codePreviewAllowedFor(isSelf)
+        ? this.gitlab.findBlobLinks(text)
+        : [];
     if (
       mrLinks.length === 0 &&
       jobLinks.length === 0 &&
       pipelineLinks.length === 0 &&
       jiraLinks.length === 0 &&
       opsgenieLinks.length === 0 &&
-      confluenceLinks.length === 0
+      confluenceLinks.length === 0 &&
+      codeLinks.length === 0
     ) {
       return;
     }
@@ -2230,7 +2262,6 @@ export class MergeRequestWatcher {
     const candidateUrls = extractCandidateUrls(content || text, rawHtml);
     const isOnlyUrl = isMessageOnlyUrl(content || text, rawHtml);
     const targetUrl = isOnlyUrl && candidateUrls.length === 1 ? candidateUrls[0] : null;
-    const isSelf = this.isSenderSelf({ from, fromMri });
 
     const mrsMap = new Map();
     const initialMrStatus = initialStatus === 'approved' ? 'approved' : null;
@@ -2345,6 +2376,23 @@ export class MergeRequestWatcher {
       }
     }
 
+    const codeMap = new Map();
+    for (const c of codeLinks) {
+      if (codeMap.has(c.key)) continue;
+      const savedCode = saved?.codeLinks?.find((sc) => sc.key === c.key);
+      codeMap.set(c.key, {
+        key: c.key,
+        project: c.project,
+        refPath: c.refPath,
+        startLine: c.startLine,
+        endLine: c.endLine,
+        url: c.url,
+        messageServerId: savedCode?.messageServerId ?? null,
+        unavailable: savedCode?.unavailable ?? false,
+        attempts: 0,
+      });
+    }
+
     this.watched.set(key, {
       conversationId,
       messageId,
@@ -2361,6 +2409,7 @@ export class MergeRequestWatcher {
       jiraIssues: [...jiraMap.values()],
       opsgenieAlerts: [...opsgenieMap.values()],
       confluencePages: [...confluenceMap.values()],
+      codeLinks: [...codeMap.values()],
       status: saved?.status ?? initialStatus,
       isHistory,
       createdAt: saved?.createdAt ?? Date.now(),
@@ -2373,6 +2422,7 @@ export class MergeRequestWatcher {
     if (jiraMap.size > 0) watchedDesc.push(`Jira: ${[...jiraMap.keys()].join(', ')}`);
     if (opsgenieMap.size > 0) watchedDesc.push(`OpsGenie: ${[...opsgenieMap.keys()].join(', ')}`);
     if (confluenceMap.size > 0) watchedDesc.push(`Confluence: ${[...confluenceMap.keys()].join(', ')}`);
+    if (codeMap.size > 0) watchedDesc.push(`Code: ${[...codeMap.keys()].join(', ')}`);
     log(`watching in ${conversationId}/${messageId}: ${watchedDesc.join('; ')}`);
     this.checkWatchedKey(key).catch((err) => log(`initial check failed for ${key}: ${err.message}`));
   }
@@ -3530,6 +3580,43 @@ export class MergeRequestWatcher {
     }
   }
 
+  formatCodePreviewMessage(preview) {
+    return formatCodePreviewMarkdown(preview);
+  }
+
+  async handleCodePreviewComment(entry, link, preview) {
+    const msg = this.richMessage(this.formatCodePreviewMessage(preview), () => buildCodePreviewCard(preview));
+
+    if (this.shouldEditOriginalMessage(entry, link.url)) {
+      log(`editing original message with code preview for ${link.key}`);
+      const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, link.url, msg);
+      if (editResult.ok) {
+        entry.editedOriginal = true;
+        link.messageServerId = link.messageServerId || 'edited';
+        await this.dropPendingReaction(entry);
+        this.saveState();
+        return;
+      }
+      log(`editing original message failed (${editResult.error?.message}), falling back to reply`);
+    }
+
+    if (link.messageServerId && link.messageServerId !== 'edited') {
+      log(`updating code preview comment for ${link.key} (msg ${link.messageServerId})`);
+      const updateResult = await updateReply(entry.conversationId, link.messageServerId, entry, msg);
+      if (updateResult.ok) return;
+      log(`updating code preview comment failed (${updateResult.error?.message}), falling back to new reply`);
+    }
+
+    log(`posting code preview comment for ${link.key}`);
+    const result = await sendReply(entry.conversationId, entry, msg);
+    if (result.ok && result.value?.timestamp) {
+      link.messageServerId = String(result.value.timestamp);
+      this.saveState();
+    } else if (!result.ok) {
+      log(`code preview reply failed: ${result.error?.message}`);
+    }
+  }
+
   async checkWatchedKey(key) {
     // Webhooks, polling and the initial check can overlap for the same message.
     // Queue each check so it sees the message ID and state saved by the previous one.
@@ -3874,6 +3961,35 @@ export class MergeRequestWatcher {
         }
       }
 
+      // Check GitLab code links: one preview per link, posted once. The file is not
+      // watched afterwards (a permalink is what people share); a link that has
+      // nothing to show (outside the group, secrets, binary, missing) is dropped.
+      for (const link of (entry.codeLinks || [])) {
+        if (link.messageServerId || link.unavailable) continue;
+        // Defense in depth for restored state: never read a file for someone else's message.
+        if (!this.codePreviewAllowedFor(entry.isSelf)) {
+          link.unavailable = true;
+          continue;
+        }
+        link.attempts = (link.attempts || 0) + 1;
+        try {
+          const preview = await this.gitlab.getBlobPreview(link, {
+            maxLines: this.config?.gitlab?.code_preview?.max_lines ?? 30,
+            restrictToGroup: this.config?.gitlab?.code_preview?.restrict_to_group === true,
+          });
+          if (!preview) {
+            link.unavailable = true;
+            log(`no code preview for ${link.key}`);
+            continue;
+          }
+          await this.handleCodePreviewComment(entry, link, preview);
+        } catch (codeErr) {
+          log(`Error building code preview ${link.key} for ${key}: ${codeErr.message}`);
+          // A persistent failure must not keep the entry (and the retries) alive forever.
+          if (link.attempts >= 3) link.unavailable = true;
+        }
+      }
+
       entry.isHistory = false;
 
       // Overall status:
@@ -3931,8 +4047,10 @@ export class MergeRequestWatcher {
         (entry.confluencePages || []).length === 0 ||
         (entry.confluencePages || []).every((c) => c.messageServerId && c.title);
 
-      if (mrsDone && jobsDone && pipesDone && jiraDone && opsgenieDone && confluenceDone) {
-        log(`All watched items (MRs, jobs, pipelines, Jira, OpsGenie, Confluence) completed for ${key}, unwatching`);
+      const codeDone = (entry.codeLinks || []).every((c) => c.messageServerId || c.unavailable);
+
+      if (mrsDone && jobsDone && pipesDone && jiraDone && opsgenieDone && confluenceDone && codeDone) {
+        log(`All watched items (MRs, jobs, pipelines, Jira, OpsGenie, Confluence, code) completed for ${key}, unwatching`);
         this.completedMessages.add(String(entry.messageId));
         this.watched.delete(key);
         this.saveState();

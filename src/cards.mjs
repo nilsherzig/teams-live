@@ -873,6 +873,62 @@ export function buildConfluencePageCard(page) {
   });
 }
 
+/** Markdown of a code preview (the regular message and the card's fallback): header, link, fenced lines. */
+export function formatCodePreviewMarkdown(preview) {
+  const esc = (t) =>
+    String(t ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  const range =
+    preview.startLine === preview.endLine ? `L${preview.startLine}` : `L${preview.startLine}-${preview.endLine}`;
+  const width = String(preview.endLine).length;
+  const rows = preview.lines.map((l) => `${String(l.n).padStart(width, ' ')}  ${l.text}`);
+  // The fence is longer than any backtick run in the code, so the code cannot close it.
+  const longestRun = Math.max(0, ...(rows.join('\n').match(/`+/g) || []).map((r) => r.length));
+  const fence = '`'.repeat(Math.max(3, longestRun + 1));
+  const note = preview.truncated
+    ? `\n\n_Showing ${preview.lines.length} of ${preview.requestedEndLine - preview.startLine + 1} lines_`
+    : '';
+  return (
+    `💻 **${esc(preview.path)}** (${range}) • ${esc(preview.project)} @ ${esc(preview.ref)}\n\n` +
+    `🔗 [${esc(preview.path)}#${range}](${preview.url})\n\n` +
+    `${fence}\n${rows.join('\n')}\n${fence}${note}`
+  );
+}
+
+/**
+ * GitLab code reference: the lines of a file a link points at. `preview` is the
+ * result of GitLabClient.getBlobPreview; the lines keep their numbers.
+ */
+export function buildCodePreviewCard(preview) {
+  const range =
+    preview.startLine === preview.endLine ? `L${preview.startLine}` : `L${preview.startLine}-${preview.endLine}`;
+  const width = String(preview.endLine).length;
+  const rows = preview.lines.map((l) => `${String(l.n).padStart(width, ' ')}  ${l.text}`);
+  const items = [codeBlock(rows)];
+  if (preview.truncated) {
+    items.push(
+      textBlock(`Showing ${preview.lines.length} of ${preview.requestedEndLine - preview.startLine + 1} lines`, {
+        isSubtle: true,
+        size: 'Small',
+      })
+    );
+  }
+  return assembleCard({
+    service: 'gitlab',
+    kind: 'Code',
+    style: 'emphasis',
+    title: `${preview.path} (${range})`,
+    titleUrl: preview.url,
+    subtitle: `${preview.project} @ ${preview.ref}`,
+    extraItems: items,
+    fallbackText: preview.fallbackText,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Command reply cards
 //
