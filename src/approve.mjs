@@ -15,7 +15,10 @@
 //   page cannot burn the link.
 // - Approving needs an explicit confirmation POST from the page served to that
 //   session: session cookie, CSRF token bound to the session and the link,
-//   and an Origin that matches the configured base_url.
+//   and an Origin that matches the configured base_url. The GitLab account and
+//   credential the page showed are carried in the form and bound into the CSRF
+//   token; the POST re-reads them and sends nothing when they differ, or when
+//   the account cannot be told.
 // - The server stores only the SHA-256 of the token with the project, merge
 //   request, exact head commit, expiry (24 h by default, hard bounded) and
 //   status. A link is single-use once an approval is CONFIRMED, and is
@@ -419,8 +422,9 @@ export class ApprovalStore {
 }
 
 /**
- * CSRF tokens: HMAC over the session, the link record and an expiry with a
- * random per-process key. A restart invalidates open pages (reload the page).
+ * CSRF tokens: HMAC over the session, the link record, an optional `bind`
+ * string (the acting identity the page showed) and an expiry with a random
+ * per-process key. A restart invalidates open pages (reload the page).
  */
 export class CsrfTokens {
   constructor({ key = crypto.randomBytes(32), ttlMs = CSRF_TTL_MS, now = Date.now } = {}) {
@@ -429,24 +433,41 @@ export class CsrfTokens {
     this.now = now;
   }
 
-  mac(session, id, exp) {
-    return crypto.createHmac('sha256', this.key).update(`csrf\n${session}\n${id}\n${exp}`).digest('base64url');
+  mac(session, id, exp, bind = '') {
+    // The bind string goes last and is length-prefixed, so it cannot be shifted into another field.
+    return crypto.createHmac('sha256', this.key).update(`csrf\n${session}\n${id}\n${exp}\n${String(bind).length}:${bind}`).digest('base64url');
   }
 
-  issue(session, id) {
+  issue(session, id, bind = '') {
     const exp = this.now() + this.ttlMs;
-    return `${exp}.${this.mac(session, id, exp)}`;
+    return `${exp}.${this.mac(session, id, exp, bind)}`;
   }
 
-  verify(token, session, id) {
+  verify(token, session, id, bind = '') {
     if (typeof token !== 'string') return false;
     const [expRaw, mac, ...rest] = token.split('.');
     if (rest.length > 0 || !/^\d{1,16}$/.test(expRaw || '') || !mac) return false;
     const exp = Number(expRaw);
     if (exp <= this.now()) return false;
-    return safeEqual(mac, this.mac(session, id, exp));
+    return safeEqual(mac, this.mac(session, id, exp, bind));
   }
 }
+
+/**
+ * The acting identity a confirmation page shows: the GitLab account id and the
+ * credential index behind it. Null when the account cannot be told, in which
+ * case nothing may be offered or sent.
+ */
+function actorOf(result) {
+  const id = result?.user?.id;
+  if (id === undefined || id === null || id === '') return null;
+  const cred = result.tokenIndex === undefined || result.tokenIndex === null ? '' : String(result.tokenIndex);
+  return { user: String(id), cred };
+}
+
+const actorBind = (actor) => `user=${actor.user};cred=${actor.cred}`;
+
+const UNVERIFIED_ACCOUNT = 'The GitLab account that would act could not be verified. Nothing was sent. Reload the page to try again.';
 
 const kindOf = (record) => (ACTIONS.includes(record?.action) ? record.action : 'approve');
 
@@ -1087,8 +1108,13 @@ export class ApproveServer {
     if (result.status === 'already') {
       return this.send(res, 200, this.page(...this.alreadyPage(record, result), { tone: 'ok', kind }));
     }
-    const token = this.csrf.issue(sid, record.id);
-    const form = `<form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><p>${copy.question}</p>${kind === 'merge' ? `<p class="note">Merges exactly the head commit above. Source-branch removal and squash follow the merge request's own settings. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}<button class="btn" type="submit">${copy.button}</button></form>`;
+    const actor = actorOf(result);
+    if (!actor) {
+      return this.send(res, 409, this.page(copy.blocked, `${this.summary(record, result.mr, null)}<p>${escapeHtml(UNVERIFIED_ACCOUNT)}</p>`, { tone: 'warn', kind }));
+    }
+    // The shown account and credential travel with the form and are bound into the CSRF token.
+    const token = this.csrf.issue(sid, record.id, actorBind(actor));
+    const form = `<form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><input type="hidden" name="user" value="${escapeHtml(actor.user)}"><input type="hidden" name="cred" value="${escapeHtml(actor.cred)}"><p>${copy.question}</p>${kind === 'merge' ? `<p class="note">Merges exactly the head commit above. Source-branch removal and squash follow the merge request's own settings. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}<button class="btn" type="submit">${copy.button}</button></form>`;
     return this.send(res, 200, this.page(copy.title, `${this.summary(record, result.mr, result.user)}${form}`, { tone: 'neutral', kind }));
   }
 
@@ -1134,7 +1160,8 @@ export class ApproveServer {
       this.send(res, parsed.status, this.page('Not allowed', `<p>${msg} ${nothing}</p>`, { tone: 'warn', kind }));
       return;
     }
-    if (!this.csrf.verify(parsed.form.get('csrf'), sid, record.id)) {
+    const shown = { user: parsed.form.get('user') ?? '', cred: parsed.form.get('cred') ?? '' };
+    if (!this.csrf.verify(parsed.form.get('csrf'), sid, record.id, actorBind(shown))) {
       this.send(res, 403, this.page('Page expired', `<p>This page expired. Open the link again and confirm. ${nothing}</p>`, { tone: 'warn', kind }));
       return;
     }
@@ -1154,6 +1181,14 @@ export class ApproveServer {
         else this.store.markApproved(current.project, current.iid, current.sha);
         const [title, body] = this.alreadyPage(current, result, true);
         return { code: 200, title, body };
+      }
+      // Only the account and credential the page showed may act.
+      const actor = actorOf(result);
+      if (!actor) {
+        return { code: 409, title: COPY[kind].blocked, body: `${this.summary(current, result.mr, null)}<p>${escapeHtml(UNVERIFIED_ACCOUNT)}</p>` };
+      }
+      if (actor.user !== shown.user || actor.cred !== shown.cred) {
+        return this.identityChanged(this.summary(current, result.mr, result.user), { reopen: 'reopened', merge: 'merged', approve: 'approved' }[kind]);
       }
       if (kind === 'reopen') return this.sendReopen(current, result);
       return kind === 'merge' ? this.sendMerge(current, result) : this.sendApproval(current, result);

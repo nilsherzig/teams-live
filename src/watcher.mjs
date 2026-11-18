@@ -81,6 +81,7 @@ import { PLACEHOLDER_AVATAR } from './placeholder-avatar.mjs';
 import { collectCardPeople, isImageDataUri } from './card-user-row.mjs';
 import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
+import { fallbackTokenPendingPath, persistFallbackToken, persistGitLabToken } from './config.mjs';
 import { formatTokenExpiry } from './gitlab.mjs';
 import { ServiceAlertTracker, formatServiceAlert, serviceAlertOptionsFromConfig } from './service-alerts.mjs';
 import { createLogger } from './logger.mjs';
@@ -1129,6 +1130,12 @@ export class MergeRequestWatcher {
     this.typoMessageToSuggestion = new Map();
     this.thumbnailEditedMessageIds = new Set();
     this.pendingTokenRenewalMessageIds = new Set();
+    // Rotated fallback tokens (index -> rotation response) that could not be saved yet. The old
+    // token is already revoked, so these only live in memory until a retry reaches the disk.
+    this.unsavedFallbackTokens = new Map();
+    // Same for the primary token: the rotation response, held until it is saved.
+    this.unsavedPrimaryToken = null;
+    this.primaryRenewalInFlight = null;
     this.lastGitLabExpiryWarningAt = 0;
     this.tokenExpiryCheckTimer = null;
     this.webhookSetupStatus = null;
@@ -6171,34 +6178,67 @@ export class MergeRequestWatcher {
   async renewGitLabFallbackToken(index, { expiresAt = null } = {}) {
     const source = this.config.gitlab?.fallback_token_sources?.[index - 1];
     if (!source) throw new Error(`No configured GitLab fallback token at position ${index}`);
-    fs.mkdirSync(path.dirname(source.override), { recursive: true, mode: 0o700 });
-    const temporary = `${source.override}.${process.pid}.pending`;
-    const fd = fs.openSync(temporary, 'wx', 0o600);
-    try {
-      const rotated = await this.gitlab.rotateToken({ tokenIndex: index, expiresAt });
+    // A token rotated earlier but never saved is saved first: rotating again would revoke it.
+    let rotated = this.unsavedFallbackTokens.get(index);
+    if (!rotated) {
+      rotated = await this.gitlab.rotateToken({ tokenIndex: index, expiresAt });
       if (!rotated?.token) throw new Error('GitLab token rotation response did not include a new token');
-      fs.writeFileSync(fd, rotated.token, 'utf8');
-      fs.fsyncSync(fd);
-      fs.closeSync(fd);
-      fs.renameSync(temporary, source.override);
+      // The old token no longer works: use the new one right away, whatever happens to the disk.
       this.config.gitlab.fallback_tokens[index - 1] = rotated.token;
-      return { rotated, savedPath: source.override, isReadOnlySecret: true };
-    } catch (error) {
-      try { fs.closeSync(fd); } catch { /* already closed */ }
-      try { fs.unlinkSync(temporary); } catch { /* no temporary file */ }
-      throw error;
+      this.unsavedFallbackTokens.set(index, rotated);
     }
+    try {
+      persistFallbackToken(source.override, rotated.token);
+    } catch (error) {
+      if (error.pendingPath) {
+        // Durable in the pending file; the next start loads it.
+        this.unsavedFallbackTokens.delete(index);
+        log.warn(`GitLab fallback token ${index} saved to ${error.pendingPath} only: ${error.message}`);
+        return { rotated, savedPath: error.pendingPath, isReadOnlySecret: true };
+      }
+      const failure = new Error(
+        `GitLab fallback token ${index} was rotated but could not be saved (${error.message}); ` +
+        'the new token is only kept in memory and saving is retried'
+      );
+      failure.rotatedUnsaved = true;
+      throw failure;
+    }
+    this.unsavedFallbackTokens.delete(index);
+    return { rotated, savedPath: source.override, isReadOnlySecret: true };
   }
 
-  async renewGitLabToken({ reason = 'manual', expiresAt = null } = {}) {
+  /**
+   * Rotates the primary GitLab token and saves it. Concurrent calls share one rotation: a
+   * second rotation would revoke the token the first one just issued.
+   */
+  async renewGitLabToken(options = {}) {
+    if (!this.primaryRenewalInFlight) {
+      this.primaryRenewalInFlight = this.performGitLabTokenRenewal(options).finally(() => {
+        this.primaryRenewalInFlight = null;
+      });
+    }
+    return this.primaryRenewalInFlight;
+  }
+
+  async performGitLabTokenRenewal({ reason = 'manual', expiresAt = null } = {}) {
     if (!this.gitlab?.rotateToken) {
       throw new Error('GitLab client is not configured or does not support token rotation');
     }
 
-    log(`Rotating GitLab personal access token (reason: ${reason})...`);
-    const rotated = await this.gitlab.rotateToken({ expiresAt });
-    if (!rotated?.token) {
-      throw new Error('GitLab token rotation response did not include a new token');
+    // A token rotated earlier but never saved is saved first: rotating again would revoke it.
+    let rotated = this.unsavedPrimaryToken;
+    if (rotated) {
+      log(`Saving the previously rotated GitLab personal access token (reason: ${reason})...`);
+    } else {
+      log(`Rotating GitLab personal access token (reason: ${reason})...`);
+      rotated = await this.gitlab.rotateToken({ expiresAt });
+      if (!rotated?.token) {
+        throw new Error('GitLab token rotation response did not include a new token');
+      }
+      // The old token no longer works: use the new one right away, whatever happens to the disk.
+      if (this.config.gitlab) this.config.gitlab.token = rotated.token;
+      this.gitlab.token = rotated.token;
+      this.unsavedPrimaryToken = rotated;
     }
 
     const homeDir = process.env.HOME;
@@ -6207,76 +6247,62 @@ export class MergeRequestWatcher {
       this.config.gitlab?.state_dir ||
       process.env.XDG_STATE_HOME ||
       path.join(process.cwd(), 'state');
-    const overrideDir = path.join(baseDir, 'overrides');
-    const overridePath = path.join(overrideDir, 'gitlab-token');
+    const defaultOverridePath = path.join(baseDir, 'overrides', 'gitlab-token');
     const configuredPath = this.config.gitlab?.token_file;
+    const loadedOverridePath =
+      this.config.gitlab?.is_token_override && this.config.gitlab?.override_token_path
+        ? this.config.gitlab.override_token_path
+        : null;
 
-    let savedPath = null;
-    let isReadOnlySecret = false;
+    // The first target that accepts the token wins; the override file is the last resort.
+    const overridePath = loadedOverridePath || defaultOverridePath;
+    const targets = [];
+    if (!loadedOverridePath && configuredPath) targets.push({ path: configuredPath, inPlace: true });
+    targets.push({ path: overridePath });
 
-    if (this.config.gitlab?.is_token_override && this.config.gitlab?.override_token_path) {
-      const targetPath = this.config.gitlab.override_token_path;
-      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-      fs.writeFileSync(targetPath, rotated.token, { encoding: 'utf8', mode: 0o600 });
-      savedPath = targetPath;
-      isReadOnlySecret = true;
-    } else if (configuredPath) {
-      let canWriteConfigured = false;
-      try {
-        if (fs.existsSync(configuredPath)) {
-          fs.accessSync(configuredPath, fs.constants.W_OK);
-          fs.writeFileSync(configuredPath, rotated.token, { encoding: 'utf8', mode: 0o600 });
-          canWriteConfigured = true;
-          savedPath = configuredPath;
-        } else {
-          fs.accessSync(path.dirname(configuredPath), fs.constants.W_OK);
-          fs.writeFileSync(configuredPath, rotated.token, { encoding: 'utf8', mode: 0o600 });
-          canWriteConfigured = true;
-          savedPath = configuredPath;
-        }
-      } catch (err) {
-        log.warn(`Configured secret file (${configuredPath}) is not writable (${err.code || err.message}). Using override directory.`);
-        isReadOnlySecret = true;
+    let savedPath;
+    try {
+      savedPath = persistGitLabToken(rotated.token, {
+        pendingPath: fallbackTokenPendingPath(overridePath),
+        targets,
+      });
+    } catch (error) {
+      if (!error.pendingPath) {
+        const failure = new Error(
+          `GitLab token was rotated but could not be saved (${error.message}); ` +
+          'the new token is only kept in memory and saving is retried'
+        );
+        failure.rotatedUnsaved = true;
+        throw failure;
       }
-
-      if (!canWriteConfigured) {
-        fs.mkdirSync(overrideDir, { recursive: true });
-        fs.writeFileSync(overridePath, rotated.token, { encoding: 'utf8', mode: 0o600 });
-        savedPath = overridePath;
-        if (this.config.gitlab) {
-          this.config.gitlab.is_token_override = true;
-          this.config.gitlab.override_token_path = overridePath;
-        }
-      }
-    } else {
-      fs.mkdirSync(overrideDir, { recursive: true });
-      fs.writeFileSync(overridePath, rotated.token, { encoding: 'utf8', mode: 0o600 });
-      savedPath = overridePath;
-      if (this.config.gitlab) {
-        this.config.gitlab.is_token_override = true;
-        this.config.gitlab.override_token_path = overridePath;
-      }
-      isReadOnlySecret = true;
+      // Durable in the pending file; the next start loads it.
+      log.warn(`GitLab token saved to ${error.pendingPath} only: ${error.message}`);
+      this.unsavedPrimaryToken = null;
+      this.afterGitLabTokenRotation();
+      return { rotated, savedPath: error.pendingPath, isReadOnlySecret: true };
     }
+    this.unsavedPrimaryToken = null;
 
-    if (this.config.gitlab) {
-      this.config.gitlab.token = rotated.token;
-    }
-    if (this.gitlab) {
-      this.gitlab.token = rotated.token;
+    const isReadOnlySecret = savedPath !== configuredPath;
+    if (isReadOnlySecret && this.config.gitlab) {
+      this.config.gitlab.is_token_override = true;
+      this.config.gitlab.override_token_path = savedPath;
     }
 
     log(`GitLab personal access token successfully rotated and saved to ${savedPath} (isOverride=${isReadOnlySecret}, new expiry=${rotated.expires_at})`);
-
-    this.lastGitLabExpiryWarningAt = 0;
-    this.pendingTokenRenewalMessageIds.clear();
-    this.saveState();
+    this.afterGitLabTokenRotation();
 
     return {
       rotated,
       savedPath,
       isReadOnlySecret,
     };
+  }
+
+  afterGitLabTokenRotation() {
+    this.lastGitLabExpiryWarningAt = 0;
+    this.pendingTokenRenewalMessageIds.clear();
+    this.saveState();
   }
 
   async executeRenewGitLabTokenCommand(event) {
@@ -6340,14 +6366,28 @@ export class MergeRequestWatcher {
     }
   }
 
-  async checkGitLabTokenExpiryAndAutoRenew() {
-    if (!this.gitlab?.token || !this.gitlab?.getTokenInfo) return;
+  /** Whole days until a GitLab token's `expires_at` date ends, or null when it is not a usable date. */
+  gitLabTokenDaysLeft(expiresAt) {
+    const days = Math.ceil((new Date(`${expiresAt}T23:59:59Z`).getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+    return Number.isFinite(days) ? days : null;
+  }
+
+  /** The fallback tokens are checked on their own: a missing or failing primary token never skips them. */
+  async checkGitLabFallbackTokenExpiry() {
     for (let index = 1; index <= (this.config.gitlab?.fallback_token_sources?.length || 0); index++) {
       try {
-        const info = await this.gitlab.getTokenInfo({ tokenIndex: index });
-        if (!info?.expires_at) continue;
-        const days = Math.ceil((new Date(`${info.expires_at}T23:59:59Z`).getTime() - Date.now()) / (24 * 60 * 60 * 1000));
-        if (days <= 3) {
+        const retrying = this.unsavedFallbackTokens.has(index);
+        let days = null;
+        if (!retrying) {
+          const info = await this.gitlab.getTokenInfo({ tokenIndex: index });
+          if (!info?.expires_at) continue;
+          days = this.gitLabTokenDaysLeft(info.expires_at);
+          if (days === null) {
+            log.warn(`GitLab fallback token ${index} has an unusable expiry date`);
+            continue;
+          }
+        }
+        if (retrying || days <= 3) {
           await this.renewGitLabFallbackToken(index);
           const adminConv = this.getAdminConversationId();
           if (adminConv) await sendDirectMessage(adminConv, `🔄 GitLab fallback token ${index} was automatically renewed. Update its configured secret from its override file.`);
@@ -6356,8 +6396,39 @@ export class MergeRequestWatcher {
         }
       } catch (error) {
         log.warn(`GitLab fallback token ${index} expiry check or renewal failed: ${error.message}`);
+        if (error.rotatedUnsaved) {
+          const adminConv = this.getAdminConversationId();
+          if (adminConv) await sendDirectMessage(adminConv, `🚨 ${error.message}`).catch(() => {});
+        }
       }
     }
+  }
+
+  /** Saves a primary token that was rotated but not saved; true when the expiry check can go on. */
+  async saveUnsavedGitLabToken() {
+    if (!this.unsavedPrimaryToken) return true;
+    const adminConv = this.getAdminConversationId();
+    try {
+      const renewal = await this.renewGitLabToken({ reason: 'save_retry' });
+      if (adminConv) {
+        await sendDirectMessage(
+          adminConv,
+          `🔄 The rotated GitLab token is now saved to \`${renewal.savedPath}\`. Update its configured secret from that file.`
+        ).catch(() => {});
+      }
+      return true;
+    } catch (error) {
+      log.warn(`Saving the rotated GitLab token failed again: ${error.message}`);
+      if (adminConv) await sendDirectMessage(adminConv, `🚨 ${error.message}`).catch(() => {});
+      return false;
+    }
+  }
+
+  async checkGitLabTokenExpiryAndAutoRenew() {
+    if (!(await this.saveUnsavedGitLabToken())) return;
+    if (!this.gitlab?.getTokenInfo) return;
+    await this.checkGitLabFallbackTokenExpiry();
+    if (!this.gitlab.token) return;
     try {
       const tokenData = await this.gitlab.getTokenInfo();
       if (!tokenData || !tokenData.expires_at) return;
@@ -6398,7 +6469,9 @@ export class MergeRequestWatcher {
           return;
         } catch (err) {
           log(`GitLab token auto-renewal failed: ${err.message}`);
-          if (adminConv) {
+          if (adminConv && err.rotatedUnsaved) {
+            await sendDirectMessage(adminConv, `🚨 ${err.message}`).catch(() => {});
+          } else if (adminConv) {
             const alertMsg =
               '🚨 **GitLab Token Auto-Renewal Failed!**\n\n' +
               `The GitLab token expires in **${diffDays} day${diffDays === 1 ? '' : 's'}** (${tokenData.expires_at}), but auto-renewal failed:\n` +

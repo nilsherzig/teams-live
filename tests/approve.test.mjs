@@ -84,11 +84,12 @@ async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, no
   const open = async (t = token) => cookieOf(await bootstrap(t));
   const page = (cookie) => fetch(`${base}/approve/confirm`, { headers: cookie ? { Cookie: cookie } : {} });
   const csrfFrom = async (res) => /name="csrf" value="([^"]+)"/.exec(await res.text())?.[1];
+  // The page binds the shown account (id 1 of the stand-in, no credential index) into the form.
   const post = (cookie, fields, headers = {}) =>
     fetch(`${base}/approve/confirm`, {
       method: 'POST',
       headers: { ...FORM, Origin: ORIGIN, ...(cookie ? { Cookie: cookie } : {}), ...headers },
-      body: form(fields),
+      body: form({ user: '1', cred: '', ...fields }),
     });
   const confirm = async (headers = {}) => {
     const cookie = await open();
@@ -458,6 +459,50 @@ test('a CSRF token is bound to the session, the link and its expiry', () => {
   now += 1001;
   assert.equal(csrf.verify(token, 'session-1', 'id-1'), false, 'expired');
 });
+
+test('a CSRF token is bound to the identity it was issued for', () => {
+  const csrf = new CsrfTokens();
+  const token = csrf.issue('session-1', 'id-1', 'user=1;cred=0');
+  assert.equal(csrf.verify(token, 'session-1', 'id-1', 'user=1;cred=0'), true);
+  assert.equal(csrf.verify(token, 'session-1', 'id-1', 'user=2;cred=0'), false);
+  assert.equal(csrf.verify(token, 'session-1', 'id-1', 'user=1;cred=1'), false);
+  assert.equal(csrf.verify(token, 'session-1', 'id-1'), false, 'no identity');
+});
+
+for (const action of ['approve', 'reopen', 'merge']) {
+  test(`${action}: a changed account between page and click is rejected, an unavailable one is never offered`, async () => {
+    const swap = (gitlab, user) => {
+      gitlab.getCurrentUser = async () => user;
+      gitlab.userState = { known: true, user, hasApproved: false, canApprove: true };
+    };
+    const writesOf = (gitlab) => gitlab.calls.approve.length + gitlab.calls.reopen.length + gitlab.calls.merge.length;
+    const gitlab = makeGitlab();
+    if (action === 'reopen') gitlab.mr = { ...gitlab.mr, state: 'closed' };
+    const ctx = await setup({ gitlab, action });
+    try {
+      // The page showed account 1; account 2 would act at click time.
+      const cookie = await ctx.open();
+      const html = await (await ctx.page(cookie)).text();
+      assert.match(html, /name="user" value="1"/);
+      const csrf = /name="csrf" value="([^"]+)"/.exec(html)[1];
+      swap(gitlab, { id: 2, username: 'other' });
+      const res = await ctx.post(cookie, { csrf });
+      assert.equal(res.status, 409);
+      assert.match(await res.text(), /Account changed/);
+      assert.equal(writesOf(gitlab), 0);
+      // The account cannot be told: neither the page nor the click acts.
+      swap(gitlab, null);
+      const blocked = await ctx.page(await ctx.open());
+      assert.equal(blocked.status, 409);
+      assert.doesNotMatch(await blocked.text(), /<form/);
+      const refused = await ctx.post(cookie, { csrf });
+      assert.equal(refused.status, 409);
+      assert.equal(writesOf(gitlab), 0);
+    } finally {
+      await ctx.server.stop?.();
+    }
+  });
+}
 
 test('wrong content type and oversized bodies are rejected', async () => {
   const ctx = await setup();

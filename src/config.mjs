@@ -6,6 +6,113 @@ import { createLogger } from './logger.mjs';
 
 const log = createLogger('config');
 
+/**
+ * Where a rotated fallback token waits until it replaces the override file. A
+ * rotation revokes the old token, so the new one must reach the disk before
+ * anything else can fail; startup picks it up from here.
+ */
+export const fallbackTokenPendingPath = (overridePath) => `${overridePath}.pending`;
+
+/** Writes `token` to `target` via a synced temporary file and an atomic rename (mode 0600). */
+function writeTokenFile(target, token) {
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  const temporary = `${target}.tmp`;
+  const fd = fs.openSync(temporary, 'w', 0o600);
+  try {
+    fs.fchmodSync(fd, 0o600);
+    fs.writeFileSync(fd, token, 'utf8');
+    fs.fsyncSync(fd);
+  } catch (error) {
+    try { fs.closeSync(fd); } catch { /* already closed */ }
+    try { fs.unlinkSync(temporary); } catch { /* no temporary file */ }
+    throw error;
+  }
+  fs.closeSync(fd);
+  fs.renameSync(temporary, target);
+}
+
+/**
+ * Saves a rotated fallback token in two steps: first as the pending file (the
+ * durable copy), then over the override file. If the first step throws, nothing
+ * was saved. If only the second throws, the error carries `pendingPath`: the
+ * token is safe there and the next start loads it.
+ */
+export function persistFallbackToken(overridePath, token) {
+  const pending = fallbackTokenPendingPath(overridePath);
+  writeTokenFile(pending, token);
+  try {
+    fs.renameSync(pending, overridePath);
+  } catch (error) {
+    error.pendingPath = pending;
+    throw error;
+  }
+}
+
+/** Overwrites `target` in place (it may be a mount or symlink that a rename must not replace), synced. */
+function writeTokenFileInPlace(target, token) {
+  const fd = fs.openSync(target, 'w', 0o600);
+  try {
+    fs.writeFileSync(fd, token, 'utf8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Saves a rotated GitLab token (the old one is already revoked). The token first
+ * goes to `pendingPath`, the durable copy. It then replaces the first of `targets`
+ * (`{ path, inPlace }`, tried in order) that accepts it: `inPlace` overwrites the
+ * file, otherwise the pending file is renamed onto it. Returns the target that
+ * got the token. If the pending file cannot be written the error is plain and
+ * nothing was saved; if only the targets failed the error carries `pendingPath`:
+ * the token is safe there and the next start loads it.
+ */
+export function persistGitLabToken(token, { pendingPath, targets }) {
+  writeTokenFile(pendingPath, token);
+  const failures = [];
+  for (const { path: target, inPlace = false } of targets) {
+    try {
+      if (inPlace) {
+        writeTokenFileInPlace(target, token);
+        try { fs.unlinkSync(pendingPath); } catch { /* it only repeats the saved token */ }
+      } else {
+        fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+        fs.renameSync(pendingPath, target);
+      }
+      return target;
+    } catch (error) {
+      failures.push(`${target}: ${error.code || error.message}`);
+    }
+  }
+  const error = new Error(`could not write ${failures.join('; ') || 'any target'}`);
+  error.pendingPath = pendingPath;
+  throw error;
+}
+
+/**
+ * Returns the token of a rotation that only reached `<target>.pending` (newer than
+ * `target`), or '' when there is none or it is unreadable. The file is moved onto
+ * `target`; if that fails the token is still returned and the file stays.
+ */
+export function recoverPendingToken(target) {
+  const pending = fallbackTokenPendingPath(target);
+  if (!fs.existsSync(pending)) return '';
+  let token = '';
+  try {
+    token = fs.readFileSync(pending, 'utf8').trim();
+  } catch (e) {
+    log.warn(`Could not read pending GitLab token ${pending}: ${e.message}`);
+  }
+  if (!token) return '';
+  try {
+    fs.renameSync(pending, target);
+  } catch (e) {
+    log.warn(`Using pending GitLab token ${pending}; could not move it to ${target}: ${e.message}`);
+  }
+  return token;
+}
+
 function stripYamlComments(text) {
   return text
     .split('\n')
@@ -259,7 +366,16 @@ export function loadConfig(configPath) {
   overridePaths.push(path.join(stateDir, 'gitlab-token'));
   let overrideToken = null;
   let overrideTokenPath = null;
+  // A pending file is a rotation that did not reach its override file: it is the newest token.
   for (const p of overridePaths) {
+    const recovered = recoverPendingToken(p);
+    if (recovered) {
+      overrideToken = recovered;
+      overrideTokenPath = p;
+      break;
+    }
+  }
+  for (const p of overrideToken ? [] : overridePaths) {
     if (fs.existsSync(p)) {
       try {
         const content = fs.readFileSync(p, 'utf8').trim();
@@ -303,7 +419,9 @@ export function loadConfig(configPath) {
     const key = createHash('sha256').update(file).digest('hex');
     const override = path.join(tokenOverrideBase, 'overrides', `gitlab-token-${key}`);
     try {
-      const token = fs.readFileSync(fs.existsSync(override) ? override : file, 'utf8').trim();
+      // A pending file is a rotation that did not reach the override: it is newer than both.
+      const recovered = recoverPendingToken(override);
+      const token = recovered || fs.readFileSync(fs.existsSync(override) ? override : file, 'utf8').trim();
       if (token && token !== gitlab.token && !gitlab.fallback_tokens.includes(token)) {
         gitlab.fallback_tokens.push(token);
         gitlab.fallback_token_sources.push({ file, override });

@@ -20,8 +20,11 @@ const json = (status, body = {}) => new Response(JSON.stringify(body), { status 
  * A GitLab with one merge request. `visibleTo` lists the credentials that can
  * see it; `behaviour.approve(token)` may override the approval answer.
  */
-async function withFlow({ visibleTo = ['first', 'second'], approve = () => json(201, {}), mr = {}, action = 'approve', approvals = {} } = {}, fn) {
+async function withFlow({ visibleTo: visible = ['first', 'second'], approve = () => json(201, {}), mr = {}, action = 'approve', approvals = {}, users = {} } = {}, fn) {
+  const savedUsers = { ...USERS };
+  Object.assign(USERS, users);
   const original = globalThis.fetch;
+  const visibleTo = [...visible];
   const log = [];
   const state = { approvedBy: [] };
   globalThis.fetch = async (url, options = {}) => {
@@ -56,15 +59,18 @@ async function withFlow({ visibleTo = ['first', 'second'], approve = () => json(
   const confirmation = await fetch(`${base}/approve/confirm`, { headers: { Cookie: cookie } });
   const confirmationHtml = await confirmation.text();
   const csrf = /name="csrf" value="([^"]+)"/.exec(confirmationHtml)?.[1];
-  const confirm = async () => {
-    const res = await fetch(`${base}/approve/confirm`, { method: 'POST', headers: { ...FORM, Cookie: cookie }, body: new URLSearchParams({ csrf }).toString() });
+  const shown = { user: /name="user" value="([^"]*)"/.exec(confirmationHtml)?.[1], cred: /name="cred" value="([^"]*)"/.exec(confirmationHtml)?.[1] };
+  const confirm = async (fields = { csrf, ...shown }) => {
+    const body = new URLSearchParams(Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined))).toString();
+    const res = await fetch(`${base}/approve/confirm`, { method: 'POST', headers: { ...FORM, Cookie: cookie }, body });
     return { status: res.status, html: await res.text() };
   };
   try {
-    return await fn({ log, state, confirm, confirmationHtml, confirmationStatus: confirmation.status, gitlab, server });
+    return await fn({ log, state, confirm, csrf, shown, visibleTo, users: USERS, confirmationHtml, confirmationStatus: confirmation.status, gitlab, server });
   } finally {
     await server.stop?.();
     globalThis.fetch = original;
+    Object.assign(USERS, savedUsers);
   }
 }
 
@@ -159,5 +165,68 @@ test('the page is not shown, and nothing is written, when no credential can see 
     assert.equal(confirmationStatus, 409);
     assert.match(confirmationHtml, /Nothing was approved/);
     assert.deepEqual(writes(log), []);
+  });
+});
+
+// Identity binding between the page (GET) and the confirmation (POST).
+
+test('the confirmation form carries the shown account and credential, bound into the CSRF token', async () => {
+  await withFlow({ visibleTo: ['second'] }, async ({ shown, confirm, csrf, log }) => {
+    assert.deepEqual(shown, { user: '2', cred: '1' });
+    // Hidden fields cannot be edited: another account, another credential, or none at all.
+    for (const forged of [{ user: '1', cred: '1' }, { user: '2', cred: '0' }, { user: undefined, cred: undefined }, { user: '', cred: '' }]) {
+      const res = await confirm({ csrf, ...forged });
+      assert.equal(res.status, 403, JSON.stringify(forged));
+      assert.match(res.html, /Nothing was approved/);
+    }
+    assert.deepEqual(writes(log), []);
+    assert.equal((await confirm()).status, 200, 'the genuine form still works');
+  });
+});
+
+test('a credential change between the page and the click is rejected and nothing is sent', async () => {
+  // The page was shown for the primary credential; it then stops seeing the merge request, so the fallback would act.
+  await withFlow({}, async ({ confirmationHtml, visibleTo, confirm, log, state }) => {
+    assert.match(confirmationHtml, /<code>primary<\/code>/);
+    visibleTo.splice(0, visibleTo.length, 'second');
+    const res = await confirm();
+    assert.equal(res.status, 409);
+    assert.match(res.html, /Account changed/);
+    assert.match(res.html, /Nothing was approved/);
+    assert.deepEqual(writes(log), []);
+    assert.deepEqual(state.approvedBy, []);
+  });
+});
+
+test('a different account behind the same credential is rejected and nothing is sent', async () => {
+  await withFlow({}, async ({ gitlab, users, confirm, log, state }) => {
+    users.first = { id: 9, username: 'someone-else' };
+    gitlab.userCache.clear();
+    const res = await confirm();
+    assert.equal(res.status, 409);
+    assert.match(res.html, /Account changed/);
+    assert.deepEqual(writes(log), []);
+    assert.deepEqual(state.approvedBy, []);
+  });
+});
+
+test('no confirmation form is offered when the account cannot be told', async () => {
+  await withFlow({ users: { first: { username: 'nobody' } } }, async ({ log, confirmationStatus, confirmationHtml }) => {
+    assert.notEqual(confirmationStatus, 200);
+    assert.doesNotMatch(confirmationHtml, /<form|name="csrf"/);
+    assert.match(confirmationHtml, /Nothing was approved/);
+    assert.deepEqual(writes(log), []);
+  });
+});
+
+test('a click is refused when the account becomes unavailable after the page was shown', async () => {
+  await withFlow({}, async ({ gitlab, users, confirm, log, state }) => {
+    users.first = {};
+    gitlab.userCache.clear();
+    const res = await confirm();
+    assert.notEqual(res.status, 200);
+    assert.match(res.html, /Nothing was approved/);
+    assert.deepEqual(writes(log), []);
+    assert.deepEqual(state.approvedBy, []);
   });
 });
