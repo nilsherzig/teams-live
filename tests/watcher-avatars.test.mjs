@@ -143,7 +143,7 @@ test('MR cards show the pictures of the approvers once they are prefetched', asy
   const watcher = richWatcher(undefined, { fetched });
   const mr = { project: 'group/app', iid: 7, title: 'Example' };
   const details = { title: 'Example', approved: true, approvedBy: ['Alice Example', 'Bob Example'] };
-  assert.equal(personImages(watcher.buildMrCard(mr, details)).length, 0, 'building never fetches');
+  assert.equal(personImages(watcher.buildMrCard(mr, details)).length, 2, 'initials placeholders before prefetch');
   assert.deepEqual(fetched, []);
   await watcher.prefetchAvatars(watcher.mrCardPeopleData(mr, details));
   assert.deepEqual(fetched.sort(), [ALICE, BOB]);

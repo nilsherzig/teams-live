@@ -9,6 +9,7 @@
  */
 
 import { PLACEHOLDER_AVATAR } from './placeholder-avatar.mjs';
+import { initialsAvatar, nameInitials } from './initials-avatar.mjs';
 
 export const AVATAR_PX = 18;
 // Total size of the embedded pictures per card (characters of the data URIs).
@@ -90,6 +91,7 @@ const usablePill = (pill) =>
  * @param {object} [opts]
  * @param {string} [opts.headline]  a short lead such as "👍 By" or "🔀 Enabled by", written in front of the first name (same wrapping text, no line of its own)
  * @param {{url: string, alt?: string, width: number, height: number}} [opts.pill]  a status pill image, the first item of the flowing value
+ * @param {boolean} [opts.compact]  show only pictures, with initials inside generated placeholders
  * @param {number} [opts.charBudget]  remaining picture budget for this card
  * @param {string} [opts.labelWidth]  fixed label column width, so the label lines up with the other fact rows
  * @returns {{row: object, usedChars: number}|null}
@@ -105,7 +107,7 @@ const usablePill = (pill) =>
  * compact line, the lead being part of the name's own text ("👍 By Alice Example").
  * There is no fixed text column beside the names: it would eat the width they need.
  */
-export function userRow(label, people, { headline = '', pill = null, charBudget = MAX_AVATAR_CHARS_PER_CARD, maxAvatars = MAX_AVATARS_PER_ROW, labelWidth = 'auto' } = {}) {
+export function userRow(label, people, { headline = '', pill = null, compact = false, charBudget = MAX_AVATAR_CHARS_PER_CARD, maxAvatars = MAX_AVATARS_PER_ROW, labelWidth = 'auto' } = {}) {
   let remaining = charBudget;
   let shown = 0;
   let used = 0;
@@ -113,14 +115,15 @@ export function userRow(label, people, { headline = '', pill = null, charBudget 
   for (const person of people || []) {
     const name = text(person?.name);
     if (!name) continue;
-    entries.push({ name, avatar: null, candidate: isImageDataUri(person.avatar) ? person.avatar : null });
+    const photo = isImageDataUri(person.avatar) && person.avatar !== PLACEHOLDER_AVATAR ? person.avatar : null;
+    entries.push({ name, avatar: null, candidate: photo || (compact ? (initialsAvatar(name) || PLACEHOLDER_AVATAR) : (isImageDataUri(person.avatar) ? person.avatar : null)), generated: compact && !photo });
   }
   // Real pictures take the room first (row order); the neutral placeholder
   // (a few hundred characters) only takes what is left of the caps.
   for (const real of [true, false]) {
     for (const entry of entries) {
-      if (!entry.candidate || entry.avatar || (entry.candidate !== PLACEHOLDER_AVATAR) !== real) continue;
-      if (shown < maxAvatars && entry.candidate.length <= remaining) {
+      if (!entry.candidate || entry.avatar || (entry.candidate !== PLACEHOLDER_AVATAR && !entry.generated) !== real) continue;
+      if ((shown < maxAvatars || (compact && !real)) && entry.candidate.length <= remaining) {
         remaining -= entry.candidate.length;
         used += entry.candidate.length;
         shown += 1;
@@ -134,15 +137,16 @@ export function userRow(label, people, { headline = '', pill = null, charBudget 
   if (shown > 0) {
     for (const entry of entries) {
       if (!entry.candidate || entry.avatar) continue;
-      if (shown < maxAvatars && PLACEHOLDER_AVATAR.length <= remaining) {
-        remaining -= PLACEHOLDER_AVATAR.length;
-        used += PLACEHOLDER_AVATAR.length;
+      const fallback = compact ? (initialsAvatar(entry.name) || PLACEHOLDER_AVATAR) : PLACEHOLDER_AVATAR;
+      if ((shown < maxAvatars || compact) && fallback.length <= remaining) {
+        remaining -= fallback.length;
+        used += fallback.length;
         shown += 1;
-        entry.avatar = PLACEHOLDER_AVATAR;
+        entry.avatar = fallback;
       }
     }
   }
-  if (shown === 0) return null;
+  if (shown === 0 && !compact) return null;
   const lead = text(headline);
   const hasPill = usablePill(pill);
   const labelColumn = textColumn(text(label), { weight: 'Bolder' }, labelWidth);
@@ -151,11 +155,15 @@ export function userRow(label, people, { headline = '', pill = null, charBudget 
     // Pill and people flow left to right and wrap only when the card is too
     // narrow (Layout.Flow, Adaptive Cards 1.5: Teams honours it; an older
     // renderer ignores it and stacks the same items, which is still readable).
-    // Each person stays together: [picture] [name], the name wraps in its own column.
+    // Each person stays together; compact rows use initials for placeholder pictures.
     const people = entries.map(({ name, avatar }, index) => {
       const columns = [];
       if (avatar) columns.push(avatarColumn(name, avatar, 'auto'));
-      columns.push(textColumn(index === 0 && lead ? `${lead} ${name}` : name, {}, 'auto'));
+      if (!compact) {
+        columns.push(textColumn(index === 0 && lead ? `${lead} ${name}` : name, {}, 'auto'));
+      } else if (!avatar || avatar === PLACEHOLDER_AVATAR) {
+        columns.push(textColumn(nameInitials(name), {}, 'auto'));
+      }
       return { type: 'ColumnSet', columns };
     });
     valueItems = [

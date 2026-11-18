@@ -46,14 +46,15 @@ function factSet(facts) {
  * A fact naming people. With no usable profile picture it is the plain
  * `[title, text]` fact, byte for byte; otherwise it carries the people so
  * `factBlocks` can render a picture row. `avatars` maps a name to a data URI.
+ * Compact rows also render placeholder pictures when no photo is available.
  */
-function personFact(title, text, names, avatars, headline = '', pill = null) {
+function personFact(title, text, names, avatars, headline = '', pill = null, compact = false) {
   const has = (name) => avatars && Object.hasOwn(avatars, name) && avatars[name];
-  if (!names.some(has)) {
+  if (!compact && !names.some(has)) {
     // Nobody has a picture: the pill is still shown, as a badge row with the names as text after it.
     return pill ? [title, text, { badge: pill, trail: names.join(', ') }] : [title, text];
   }
-  return [title, text, { headline, pill, people: names.map((name) => ({ name, avatar: has(name) ? avatars[name] : undefined })) }];
+  return [title, text, { headline, pill, compact, people: names.map((name) => ({ name, avatar: has(name) ? avatars[name] : undefined })) }];
 }
 
 /**
@@ -138,7 +139,7 @@ function factBlocks(facts) {
   return shown.map((fact) => {
     const extra = fact[2];
     const built = extra?.people
-      ? userRow(str(fact[0]), extra.people, { headline: extra.headline, pill: extra.pill, charBudget: budget, labelWidth: width })
+      ? userRow(str(fact[0]), extra.people, { headline: extra.headline, pill: extra.pill, compact: extra.compact, charBudget: budget, labelWidth: width })
       : null;
     if (built) {
       budget -= built.usedChars;
@@ -668,7 +669,7 @@ export function buildMergeRequestCard(mr) {
       author ? personFact('Author', author, [author], mr.avatars) : ['Author', ''],
       approved === true && approvers.length > 0
         ? // With the pill, the "👍 By" lead is not needed: the pill says what the people did.
-          personFact('Approval', approval, approvers.map(str), mr.avatars, approvalPill ? '' : '👍 By', approvalPill)
+          personFact('Approval', approval, approvers.map(str), mr.avatars, approvalPill ? '' : '👍 By', approvalPill, approvers.length > 1)
         : approvalPill
           ? ['Approval', approval, { badge: approvalPill, trail: '' }]
           : ['Approval', approval],

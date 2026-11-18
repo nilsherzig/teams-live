@@ -569,7 +569,7 @@ test('regular output is byte-identical without pictures', () => {
     assert.equal(JSON.stringify(build({ ...data, avatars: undefined })), plain);
     assert.equal(JSON.stringify(build({ ...data, avatars: {} })), plain);
     assert.equal(JSON.stringify(build({ ...data, avatars: { 'Somebody Else': URI } })), plain, 'pictures of other people are ignored');
-    assert.equal(images(build(data)), 0);
+    assert.equal(images(build(data)), build === buildMergeRequestCard ? 2 : 0);
   }
 });
 
@@ -639,8 +639,8 @@ test('merge request approvers and the auto-merge user get pictures, in fact orde
   assert.equal(approval.columns[1].items.some((l) => l.type === 'TextBlock'), false, 'no line of its own for the lead');
   // The approved pill has a line of its own above the names; no "By" lead is needed: the pill says what they did.
   assert.equal(valueOf(approval)[0].altText, 'Approved');
-  assert.deepEqual(approvers.map(lineTexts), [['Alice Example', 'Alice Example'], ['Bob Example', 'Bob Example']]);
-  assert.equal(approvers[0].columns[1].items[0].wrap, true);
+  assert.deepEqual(approvers.map(lineTexts), [['Alice Example'], ['Bob Example']]);
+  assert.equal(approvers[0].columns[0].items[0].type, 'Image');
   assert.equal(autoMerge.columns[0].items[0].text, 'Auto-merge');
   // The Enabled state stays explicit, on the same single line as the picture and name.
   const personLines = linesOf(autoMerge);
@@ -657,9 +657,9 @@ test('a person without a picture next to one with a picture keeps their name', (
   const card = buildMergeRequestCard({ ...MR, avatars: { 'Bob Example': URI } });
   const [approval] = rows(card);
   assert.equal(approval.columns[0].items[0].text, 'Approval');
-  assert.deepEqual(linesOf(approval).map(lineTexts), [['Alice Example'], ['Bob Example', 'Bob Example']]);
+  assert.deepEqual(linesOf(approval).map(lineTexts), [['Alice Example'], ['Bob Example']]);
   assert.equal(valueOf(approval)[0].altText, 'Approved');
-  assert.equal(images(card), 1);
+  assert.equal(images(card), 2);
 });
 
 test('opsgenie owner gets a picture', () => {
@@ -687,8 +687,8 @@ test('person rows wrap only their name: one stretch value column, a picture cell
       // [picture] [name]: the picture never wraps, the name does; no fixed lead column eats the name width.
       assert.ok(line.columns.length <= 2, 'picture (when there is one) and name only');
       const name = line.columns.at(-1);
-      assert.equal(name.items[0].type, 'TextBlock');
-      assert.equal(name.items[0].wrap, true, 'the name wraps');
+      assert.ok(['TextBlock', 'Image'].includes(name.items[0].type));
+      if (name.items[0].type === 'TextBlock') assert.equal(name.items[0].wrap, true);
       for (const c of line.columns.slice(0, -1)) assert.equal(c.items[0].type, 'Image');
     }
   }
@@ -721,9 +721,9 @@ test('pictures per row and per card are capped and the rest falls back to names'
   const approvers = ['Alice Example', 'Bob Example', 'Carol Example', 'Dave Example'];
   const avatars = Object.fromEntries(approvers.map((n) => [n, URI]));
   const card = buildMergeRequestCard({ ...MR, approvedBy: approvers, avatars });
-  assert.equal(images(card), 3 + 1, 'three approvers (row cap) and the auto-merge user');
+  assert.equal(images(card), 4 + 1, 'three photos, one placeholder and the auto-merge user');
   const [approval] = rows(card);
-  assert.ok(linesOf(approval).some((l) => l.columns.some((c) => c.items[0].text === 'Dave Example')), 'fourth approver by name');
+  assert.ok(linesOf(approval).some((l) => l.columns.some((c) => c.items[0].altText === 'Dave Example')), 'fourth approver by initials');
 
   const huge = bigUri(5000);
   const capped = buildMergeRequestCard({ ...MR, avatars: { 'Alice Example': huge, 'Bob Example': huge, 'Carol Example': huge } });
@@ -775,7 +775,7 @@ test('merge request author without a picture is a plain Author fact; no author, 
   // The state badge turns the facts into aligned rows, so a plain Author is a text row.
   assert.deepEqual(factOf(plain, 'Author').columns.map((c) => c.items[0].text), ['Author', 'Dave Example']);
   assert.equal(factOf(plain, 'Author').columns[1].items[0].type, 'TextBlock');
-  assert.equal(images(plain), 0);
+  assert.equal(images(plain), 2);
   for (const author of [undefined, null, '', '  ']) {
     const card = buildMergeRequestCard({ ...MR, author, avatars: { 'Dave Example': URI } });
     assert.ok(!JSON.stringify(card).includes('"Author"'));
@@ -866,14 +866,14 @@ test('approval row: approvers with pictures get the teal Approved pill above the
   assert.equal(texts.some((t) => /\bBy\b/.test(t)), false);
   // Pill and people share one flow, left aligned; each name wraps in its own column.
   assert.equal(approval.columns[1].items[0].layouts[0].horizontalItemsAlignment, 'Left');
-  assert.equal(first.columns.at(-1).items[0].wrap, true);
+  assert.equal(first.columns.at(-1).items[0].type, 'Image');
 });
 
 test('approval row: approvers without any picture still show the pill, then the names as text', () => {
   const card = buildMergeRequestCard({ ...MR });
   const row = factOf(card, 'Approval');
-  assert.equal(pillOf(row).altText, 'Approved');
-  assert.equal(row.columns.at(-1).items[0].text, 'Alice Example, Bob Example');
+  assert.equal(valueOf(row)[0].altText, 'Approved');
+  assert.deepEqual(linesOf(row).map(lineTexts), [['Alice Example'], ['Bob Example']]);
   assert.equal(row.columns.at(-1).width, 'stretch');
 });
 
@@ -895,10 +895,22 @@ test('approval row: long names and the pill stay within the cap and never use a 
   const card = buildMergeRequestCard({ ...MR, approvedBy: names, avatars, approvalsGiven: 3, approvalsRequired: 3 });
   for (const line of linesOf(rows(card)[0])) {
     const textColumns = line.columns.filter((c) => c.items[0].type === 'TextBlock' && c.items[0].text !== ' ');
-    assert.equal(textColumns.length, 1);
-    assert.equal(textColumns[0].width, 'auto');
-    assert.equal(textColumns[0].items[0].wrap, true);
+    assert.equal(textColumns.length, 0, 'real photos need no visible name');
   }
   const message = makeRichMessage('x', card);
   assert.ok(richMessageWireBytes(message) <= MAX_CARD_BYTES, `wire bytes ${richMessageWireBytes(message)}`);
+});
+
+
+test('generated initials avatars encode the first and last initials in a distinct PNG', async () => {
+  const { initialsAvatar, nameInitials } = await import('../src/initials-avatar.mjs');
+  assert.equal(nameInitials(' Alice Middle Example '), 'AE');
+  assert.equal(nameInitials('Alice'), 'A');
+  assert.equal(nameInitials('Élodie Müller'), 'ÉM');
+  assert.ok(isImageDataUri(initialsAvatar('Alice Example')));
+  assert.notEqual(initialsAvatar('Alice Example'), initialsAvatar('Bob Example'));
+  assert.equal(initialsAvatar('Alice Example'), initialsAvatar('Alice Example'));
+  assert.equal(initialsAvatar('李 明'), null);
+  const row = userRow('Approval', [{ name: '李 明' }, { name: 'Alice Example' }], { compact: true }).row;
+  assert.ok(JSON.stringify(row).includes('李明'), 'unsupported glyphs remain readable');
 });
