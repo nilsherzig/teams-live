@@ -1083,13 +1083,14 @@ function codeContainer(rows, highlighted) {
   const first = highlighted ? highlighted.indexOf(true) : -1;
   if (first < 0) return { type: 'Container', spacing: 'Small', items: rows };
   const last = highlighted.lastIndexOf(true);
+  const context = (items) => items.length ? [{ type: 'Container', style: 'default', spacing: 'None', items }] : [];
   return {
     type: 'Container',
     spacing: 'Small',
     items: [
-      ...rows.slice(0, first),
+      ...context(rows.slice(0, first)),
       { type: 'Container', style: 'warning', spacing: 'None', items: rows.slice(first, last + 1) },
-      ...rows.slice(last + 1),
+      ...context(rows.slice(last + 1)),
     ],
   };
 }

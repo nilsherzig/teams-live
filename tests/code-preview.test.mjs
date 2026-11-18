@@ -498,9 +498,10 @@ test('cards: the requested lines sit in one warning container, context rows stay
   const numberRuns = (node) => walk(node, (n) => n.type === 'RichTextBlock').map((r) => r.inlines[0]);
   assert.ok(numberRuns(bands[0]).every((r) => r.weight === 'Bolder' && !r.isSubtle));
   assert.equal(numberRuns(card).filter((r) => r.isSubtle).length, 3);
-  // The band sits between the context rows.
+  // Each section has a styled container so Teams applies the same horizontal padding.
   const block = walk(card, (n) => n.type === 'Container' && n.items?.includes(bands[0]))[0];
-  assert.deepEqual(block.items.map((i) => i.type), ['RichTextBlock', 'Container', 'RichTextBlock', 'RichTextBlock']);
+  assert.deepEqual(block.items.map((i) => i.style), ['default', 'warning', 'default']);
+  assert.deepEqual(block.items.map((i) => rowsOf(i).length), [1, 2, 2]);
 });
 
 test('cards: the requested lines are highlighted even when there is no context to show', async () => {
