@@ -286,14 +286,39 @@ function titleBlock(text, url, { size, asAction }) {
   return {
     type: 'Container',
     selectAction: { type: 'Action.OpenUrl', url: target },
-    items: [textBlock(escapeMarkdownText(label), { weight: 'Bolder', size })],
+    // `Accent` is the closest a card gets to the client's link colour, which cannot be set directly.
+    items: [textBlock(escapeMarkdownText(label), { weight: 'Bolder', size, color: 'Accent' })],
   };
+}
+
+/**
+ * Makes a block a click target (`selectAction`) without changing how it looks:
+ * the block moves unchanged into a container, which takes over its `spacing`.
+ * Without a usable http(s) URL the block is returned as it is.
+ */
+function clickTarget(block, url) {
+  const target = safeHttpUrl(url);
+  if (!target) return block;
+  const { spacing, ...inner } = block;
+  return {
+    type: 'Container',
+    ...(spacing === undefined ? {} : { spacing }),
+    selectAction: { type: 'Action.OpenUrl', url: target },
+    items: [inner],
+  };
+}
+
+/** The project page of a merge request URL (`<project url>/-/merge_requests/<iid>`), or null. */
+function projectUrlOf(mrUrl) {
+  const match = /^(https?:\/\/[^?#]+?)\/-\/merge_requests\/\d+/i.exec(str(mrUrl));
+  return match ? match[1] : null;
 }
 
 /**
  * Wraps the entity body in a coloured container and assembles the card.
  * `titleUrl` turns the title into a hyperlink to the entity (`titleAsAction`: a
- * click target without the underline, see `titleBlock`); `titleSize` is its
+ * click target without the underline, see `titleBlock`); `subtitleUrl` makes the
+ * subtitle a click target as well (`clickTarget`); `titleSize` is its
  * Adaptive Card text size (default Medium). `ref` is the
  * entity's identifier (`{ text, url }`) shown large at the right of the header,
  * so the title and subtitle do not repeat it.
@@ -313,6 +338,7 @@ export function assembleCard({
   titleAsAction = false,
   ref = null,
   subtitle,
+  subtitleUrl = null,
   badges = [],
   stats = null,
   facts = [],
@@ -324,7 +350,8 @@ export function assembleCard({
     header(service, kind, glyph, ref, stats),
     // `title: null` is a card whose header already names it (no second heading).
     title === null ? null : titleBlock(title || subtitle || 'Update', titleUrl, { size: titleSize, asAction: titleAsAction }),
-    subtitle && title ? textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }) : null,
+    // `subtitleUrl` makes the subtitle a click target, with the same look as without.
+    subtitle && title ? clickTarget(textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }), subtitleUrl) : null,
     badgeRow(badges),
     ...factBlocks(facts),
     ...extraItems,
@@ -634,6 +661,7 @@ export function buildMergeRequestCard(mr) {
     titleAsAction: true,
     ref: numericReference('!', mr.iid, mr.url),
     subtitle: mr.project,
+    subtitleUrl: projectUrlOf(mr.url),
     stats: mr.diffStats,
     facts: [
       ['Status', statusLabel, { badge, trail }],

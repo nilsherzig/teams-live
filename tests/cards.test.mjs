@@ -63,7 +63,12 @@ const rawTitle = (card) => {
   return `[${node.items[0].text}](${node.selectAction.url})`;
 };
 const mainTitle = (card) => plain(rawTitle(card));
-const subtitle = (card) => items(card).find((i) => i.type === 'TextBlock' && i.isSubtle && i !== header(card))?.text;
+// The subtitle is a subtle TextBlock, or (merge requests) the same block inside a clickable container.
+const subtitleNode = (card) =>
+  items(card)
+    .map((i) => (i.type === 'Container' && i.selectAction ? i.items[0] : i))
+    .find((i) => i.type === 'TextBlock' && i.isSubtle && i !== header(card));
+const subtitle = (card) => subtitleNode(card)?.text;
 
 // Text a reader sees: link targets removed, every text block and fact value joined.
 function visibleText(nodes) {
@@ -994,4 +999,29 @@ test('merge request titles are click targets, not underlined Markdown links', ()
   assert.equal(plain.type, 'TextBlock');
   // The other cards keep their Markdown link titles.
   assert.equal(titleNode(buildJiraIssueCard({ key: 'EX-1', summary: 'Broken', url: 'https://jira.example.com/browse/EX-1' })).type, 'TextBlock');
+});
+
+test('merge request title is accent coloured and the project name is a click target that looks the same', () => {
+  const mrUrl = 'https://gitlab.example.com/group/project/-/merge_requests/7';
+  const card = buildMergeRequestCard({ ...baseMr, url: mrUrl, project: 'group/project' });
+  assertValidCard(card);
+  const [, title, sub] = items(card);
+  assert.equal(title.items[0].color, 'Accent');
+  assert.equal(title.items[0].weight, 'Bolder');
+  // The project line: a container with the project page, around the unchanged subtle small block.
+  assert.equal(sub.type, 'Container');
+  assert.deepEqual(sub.selectAction, { type: 'Action.OpenUrl', url: 'https://gitlab.example.com/group/project' });
+  assert.equal(sub.spacing, 'None', 'the container takes the spacing');
+  assert.deepEqual(sub.items, [{ type: 'TextBlock', text: 'group/project', wrap: true, isSubtle: true, size: 'Small' }]);
+  // Nested groups and a sub-path instance keep their full project path.
+  const nested = buildMergeRequestCard({ ...baseMr, url: 'https://gitlab.example.com/gitlab/group/sub/app/-/merge_requests/3?x=1#note_2' });
+  assert.equal(items(nested)[2].selectAction.url, 'https://gitlab.example.com/gitlab/group/sub/app');
+  // No project URL can be derived: the subtitle stays the plain block it was.
+  for (const url of [undefined, 'https://gitlab.example.com/x', 'javascript:alert(1)', 'https://gitlab.example.com/group/project/-/issues/1']) {
+    const plain = items(buildMergeRequestCard({ ...baseMr, url, project: 'group/project' }))[2];
+    assert.equal(plain.type, 'TextBlock', String(url));
+    assert.equal(plain.spacing, 'None');
+  }
+  // Other cards keep their plain subtitles.
+  assert.equal(items(buildJobCard({ name: 'j', status: 'failed', project: 'group/project', url: 'https://gitlab.example.com/-/jobs/5' }))[2].type, 'TextBlock');
 });
