@@ -46,6 +46,7 @@ import {
   ciStatusEmoji as getCiStatusEmoji,
 } from './cards.mjs';
 import { buildHelpCard, helpEntries, splitHelpCategories } from './card-help.mjs';
+import { DICE_USAGE, buildDiceCard, formatDiceMarkdown, parseDiceArgs, pickOption, rollDice } from './card-dice.mjs';
 import { LEADERBOARD_MAX_ENTRIES, PODIUM_SIZE, buildLeaderboardCard, rankLeaderboard } from './card-leaderboard.mjs';
 import { buildLifecycleCard, chatList, gitlabHooksUrl, jiraProjectList, lifecycleMarkdown, linkedText } from './lifecycle-card.mjs';
 import {
@@ -514,7 +515,7 @@ export const COMMAND_CATEGORIES = [
       '- `/flip`: Flips a coin (Heads or Tails).',
       '- `/leaderboard`: Shows top users by bot interactions and command usage.',
       '- `/random`: Outputs a random fact.',
-      '- `/roll` (or `/dice`) [expr]: Rolls dice (e.g. `/roll`, `/roll d20`, `/roll 2d6`).',
+      '- `/dice` (or `/roll`) [expr]: Rolls dice or picks one option (e.g. `/dice 2d6+3`, `/dice d20 adv`, `/dice pizza | sushi`).',
       '- `/snake`: Plays a round of snake by editing one message.',
     ],
   },
@@ -7243,42 +7244,25 @@ export class MergeRequestWatcher {
   }
 
   async executeRollCommand(event, args) {
-    const arg = (args[0] || '').trim().toLowerCase();
-    let count = 1;
-    let sides = 6;
-
-    if (arg) {
-      const match = arg.match(/^(\d+)?d?(\d+)$/);
-      if (match) {
-        if (match[1]) count = Math.min(Math.max(parseInt(match[1], 10), 1), 20);
-        sides = Math.min(Math.max(parseInt(match[2], 10), 2), 1000);
-      } else {
-        await sendReply(
-          event.conversationId,
-          event,
-          '🎲 Usage: `/roll` (or `/dice`), `/roll d20`, `/roll 2d6`, or `/roll 100`'
-        );
-        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
-        return;
+    const spec = parseDiceArgs(args);
+    if (!spec) {
+      await sendReply(event.conversationId, event, DICE_USAGE);
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
+      return;
+    }
+    log(`Executing /dice (${spec.mode}) in ${event.conversationId}...`);
+    const result = spec.mode === 'pick' ? pickOption(spec.options) : rollDice(spec);
+    const who = String(event.from ?? '').trim();
+    const markdown = formatDiceMarkdown(result, who);
+    let reply = markdown;
+    if (this.richMessages) {
+      try {
+        reply = makeRichMessage(markdown, buildDiceCard(result, { who, fallbackText: markdown }));
+      } catch (e) {
+        log(`building the dice card failed, using plain text: ${e.message}`);
       }
     }
-
-    const rolls = [];
-    let sum = 0;
-    for (let i = 0; i < count; i++) {
-      const val = Math.floor(Math.random() * sides) + 1;
-      rolls.push(val);
-      sum += val;
-    }
-
-    let text;
-    if (count === 1) {
-      text = `🎲 **Rolled ${sides === 6 ? 'a die' : `d${sides}`}**: **${rolls[0]}**`;
-    } else {
-      text = `🎲 **Rolled ${count}d${sides}**: [${rolls.join(', ')}] = **${sum}**`;
-    }
-
-    await sendReply(event.conversationId, event, text);
+    await sendReply(event.conversationId, event, reply);
     this.setCommandReaction(event.conversationId, event.messageId, 'like').catch(() => {});
   }
 

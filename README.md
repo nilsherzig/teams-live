@@ -49,7 +49,7 @@ Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, C
     - `/flip`: Flips a coin (Heads or Tails).
     - `/leaderboard`: Tracks and ranks chat interactions and command usage.
     - `/random`: Random trivia facts.
-    - `/roll` (or `/dice`) `[expr]`: Rolls dice (e.g. `/roll`, `/roll d20`, `/roll 2d6`).
+    - `/dice` (or `/roll`) `[expr]`: Rolls dice or picks one option (e.g. `/dice 2d6+3`, `/dice d20 adv`, `/dice pizza | sushi`).
     - `/snake`: Plays an interactive round of Snake by editing a message.
   - **General & Admin**:
     - `/about`: Source repository and project information.

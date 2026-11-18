@@ -201,6 +201,7 @@ const EMOJI_BRANDS = {
   // Replies of the bot itself: help, status, errors, acknowledgements, notices.
   bot: { emoji: '🧢', name: 'teams-live' },
   leaderboard: { emoji: '🏆', name: 'Leaderboard' },
+  dice: { emoji: '🎲', name: 'Dice' },
 };
 
 /**

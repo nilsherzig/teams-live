@@ -111,7 +111,7 @@ test('the card shows every command, alias, argument and description of the catal
   assert.match(shown, /GitLab/);
   assert.match(shown, /Fun & Games/);
   assert.match(shown, /admin only/);
-  assert.match(shown, /e\.g\. \/roll/);
+  assert.match(shown, /e\.g\. \/dice/);
   assert.match(shown, /\/help <category>/);
   assert.ok(!shown.includes('**'), 'no raw markdown bold in the card');
   assert.ok(!/`/.test(shown), 'no raw code ticks in the card');
