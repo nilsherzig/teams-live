@@ -193,6 +193,66 @@ test('getBlobPreview: a ref with slashes is found by trying the next split on 40
   assert.equal(client.requested.length, 2);
 });
 
+const COMMIT = '0123456789abcdef0123456789abcdef01234567';
+const LAST_TOUCHED = 'fedcba9876543210fedcba9876543210fedcba98';
+const permalink = (filePath, anchor) => `https://${HOST}/${PROJECT}/-/blob/${COMMIT}/${filePath}${anchor}`;
+
+test('getBlobPreview: the link is pinned to the commit_id of the content that was read, not last_commit_id', async () => {
+  const client = stubbedClient({ 'main:src/a.txt': file(SAMPLE, { commit_id: COMMIT, last_commit_id: LAST_TOUCHED }) });
+  const single = await client.getBlobPreview(linkOf(client, 'main/src/a.txt', '#L7'));
+  assert.equal(single.url, permalink('src/a.txt', '#L7'));
+  assert.equal(single.originalUrl, blobUrl('main/src/a.txt', '#L7'));
+  assert.equal(single.commitId, COMMIT);
+
+  // Both range spellings and reversed ranges become `#L<start>-<end>`.
+  for (const anchor of ['#L3-5', '#L3-L5', '#L5-3']) {
+    const range = await client.getBlobPreview(linkOf(client, 'main/src/a.txt', anchor));
+    assert.equal(range.url, permalink('src/a.txt', '#L3-5'), anchor);
+  }
+
+  // The requested range is kept even when the preview is capped or clamped.
+  const capped = await client.getBlobPreview(linkOf(client, 'main/src/a.txt', '#L1-40'), { maxLines: 10 });
+  assert.equal(capped.endLine, 10);
+  assert.equal(capped.url, permalink('src/a.txt', '#L1-40'));
+  const clamped = await client.getBlobPreview(linkOf(client, 'main/src/a.txt', '#L48-99'));
+  assert.equal(clamped.url, permalink('src/a.txt', '#L48-99'));
+});
+
+test('getBlobPreview: a ref with slashes yields a permalink without the ref, and the path is encoded per segment', async () => {
+  const client = stubbedClient({
+    'feature/x:docs/my file (1)/a#b.txt': file(SAMPLE, { commit_id: COMMIT.toUpperCase() }),
+  });
+  const preview = await client.getBlobPreview(
+    linkOf(client, 'feature/x/docs/my%20file%20(1)/a%23b.txt', '#L2-3')
+  );
+  assert.equal(preview.ref, 'feature/x');
+  assert.equal(preview.path, 'docs/my file (1)/a#b.txt');
+  assert.equal(preview.url, permalink('docs/my%20file%20%281%29/a%23b.txt', '#L2-3'));
+  assert.ok(!preview.url.includes('feature'));
+  // The commit id is normalized to lower case.
+  assert.equal(preview.commitId, COMMIT.toUpperCase());
+  assert.ok(preview.url.includes(`/blob/${COMMIT}/`));
+});
+
+test('getBlobPreview: the original link is kept without a usable commit_id', async () => {
+  for (const extra of [{}, { commit_id: '' }, { commit_id: 'main' }, { commit_id: 'abc123' }, { commit_id: 42 }, { last_commit_id: LAST_TOUCHED }]) {
+    const client = stubbedClient({ 'main:src/a.txt': file(SAMPLE, extra) });
+    const link = linkOf(client, 'main/src/a.txt', '#L2-4');
+    const preview = await client.getBlobPreview(link);
+    assert.equal(preview.url, link.url, JSON.stringify(extra));
+    assert.equal(preview.originalUrl, link.url);
+    assert.equal(preview.commitId, null);
+    assert.deepEqual(preview.lines.map((l) => l.n), [2, 3, 4]);
+  }
+});
+
+test('buildCodePreviewCard and formatCodePreviewMarkdown link to the permalink', async () => {
+  const client = stubbedClient({ 'main:src/a.txt': file(SAMPLE, { commit_id: COMMIT }) });
+  const preview = await client.getBlobPreview(linkOf(client, 'main/src/a.txt', '#L8-10'));
+  assert.ok(JSON.stringify(buildCodePreviewCard(preview)).includes(permalink('src/a.txt', '#L8-10')));
+  assert.ok(formatCodePreviewMarkdown(preview).includes(`(${permalink('src/a.txt', '#L8-10')})`));
+});
+
 test('getBlobPreview: unknown file or ref gives nothing', async () => {
   const client = stubbedClient({});
   assert.equal(await client.getBlobPreview(linkOf(client, 'main/missing.txt', '#L1')), null);

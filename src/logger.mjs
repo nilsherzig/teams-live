@@ -1,7 +1,8 @@
-// Shared logger: every line is `<timestamp> <SEV> [tag] message`, where SEV is
-// one of DBG / INF / WRN / ERR. Output goes to stderr (stdout carries the event
-// stream of `--json` / human mode), through `console.error` looked up at call
-// time so tests can capture it.
+// Shared logger: every line is `<timestamp> [tag] message`. The severity is not
+// spelled out; on a color-enabled stream the `[tag]` is colored by severity
+// (cyan debug, green info, bold yellow warn, bold red error). Output goes to
+// stderr (stdout carries the event stream of `--json` / human mode), through
+// `console.error` looked up at call time so tests can capture it.
 //
 // Colors are applied only to a TTY (or when forced), never to a file, so
 // service logs stay plain text:
@@ -11,9 +12,11 @@
 //
 // When stderr is the systemd journal (JOURNAL_STREAM names the very stream
 // behind fd 2) every line starts with an sd-daemon priority (`<3>` .. `<7>`),
-// so `journalctl -p warning` works and journalctl colors by priority itself.
-// The journal adds its own timestamp, so the line has none, and ANSI escapes
-// are written only when TEAMS_LIVE_LOG_COLOR=always (FORCE_COLOR is ignored).
+// so `journalctl -p warning` works. The journal adds its own timestamp, so the
+// line has none, and no ANSI escapes are written unless
+// TEAMS_LIVE_LOG_COLOR=always (FORCE_COLOR is ignored): journalctl colors
+// warning and error lines by priority itself (info is left uncolored by
+// journalctl, which is why there is no severity text either).
 // Verbosity: TEAMS_LIVE_LOG_LEVEL=debug|info|warn|error (default info, so DBG
 // lines are hidden unless asked for).
 
@@ -21,7 +24,6 @@ import fs from 'node:fs';
 import util from 'node:util';
 
 export const LEVELS = Object.freeze({ debug: 10, info: 20, warn: 30, error: 40 });
-export const LABELS = Object.freeze({ debug: 'DBG', info: 'INF', warn: 'WRN', error: 'ERR' });
 
 // sd-daemon(3) priorities: LOG_ERR, LOG_WARNING, LOG_INFO, LOG_DEBUG.
 export const JOURNAL_PRIORITIES = Object.freeze({ debug: 7, info: 6, warn: 4, error: 3 });
@@ -94,15 +96,12 @@ export function inferLevel(message) {
 }
 
 export function formatPrefix({ level, tag, now = new Date(), color = false, timestamp = true }) {
-  const label = LABELS[level] ?? LABELS.info;
-  const sev = color ? `${STYLES[level] ?? ''}${label}${RESET}` : label;
   const head = [];
   if (timestamp) {
     const stamp = now.toISOString();
     head.push(color ? `${DIM}${stamp}${RESET}` : stamp);
   }
-  head.push(sev);
-  if (tag) head.push(`[${tag}]`);
+  if (tag) head.push(color ? `${STYLES[level] ?? STYLES.info}[${tag}]${RESET}` : `[${tag}]`);
   return head.join(' ');
 }
 
@@ -115,9 +114,10 @@ export function formatJournalLines({ level, tag, args, color = false }) {
   const priority = `<${JOURNAL_PRIORITIES[level] ?? JOURNAL_PRIORITIES.info}>`;
   const prefix = formatPrefix({ level, tag, color, timestamp: false });
   const text = util.format(...args);
+  const lead = prefix ? `${prefix} ` : '';
   return text
     .split(/\r?\n/)
-    .map((line, i) => (i === 0 ? `${priority}${prefix} ${line}` : `${priority}${line}`))
+    .map((line, i) => (i === 0 ? `${priority}${lead}${line}` : `${priority}${line}`))
     .join('\n');
 }
 

@@ -392,6 +392,11 @@ export class GitLabClient {
     const lines = [];
     for (let n = startLine; n <= endLine; n++) lines.push({ n, text: allLines[n - 1] });
 
+    // The link of the preview is pinned to the commit the content was read from, so
+    // it keeps showing these lines when the branch moves. Without a usable commit id
+    // the original link is kept as is.
+    const permalink = this.blobPermalink(link, filePath, file.commit_id);
+
     return {
       project: link.project,
       ref: refName,
@@ -402,8 +407,28 @@ export class GitLabClient {
       totalLines,
       truncated: endLine < requestedEnd,
       lines,
-      url: link.url,
+      url: permalink ?? link.url,
+      originalUrl: link.url,
+      commitId: permalink ? file.commit_id : null,
     };
+  }
+
+  /**
+   * Immutable `<project>/-/blob/<commit>/<path>#L<start>[-<end>]` link, or null when
+   * `commitId` is not a full commit SHA. `commitId` must be the file API's `commit_id`
+   * (the commit the requested ref resolved to when the content was served), not
+   * `last_commit_id` (the last commit that touched the file, which is not the revision
+   * that was read). The requested line range is kept, not the clamped or capped one.
+   */
+  blobPermalink(link, filePath, commitId) {
+    if (typeof commitId !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(commitId)) return null;
+    const encode = (path) =>
+      path
+        .split('/')
+        .map((s) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`))
+        .join('/');
+    const anchor = link.startLine === link.endLine ? `L${link.startLine}` : `L${link.startLine}-${link.endLine}`;
+    return `https://${this.host}/${encode(link.project)}/-/blob/${commitId.toLowerCase()}/${encode(filePath)}#${anchor}`;
   }
 
   mrLink(project, iid) {
