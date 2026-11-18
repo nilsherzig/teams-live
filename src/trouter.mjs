@@ -1,6 +1,7 @@
 import './test-guard.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
+import { extractHrefs, stripQuotedHtml } from './message-links.mjs';
 
 const TROUTER = 'https://go.trouter.teams.microsoft.com';
 const REGISTRAR = 'https://teams.microsoft.com/registrar/prod/V2/registrations';
@@ -79,9 +80,7 @@ function decodeBody(request) {
 }
 
 function stripHtml(html) {
-  return String(html ?? '')
-    .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '')
-    .replace(/<div[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[\s\S]*?<\/div>/gi, '')
+  return stripQuotedHtml(html)
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n')
     .replace(/<\/li>/gi, '\n')
@@ -96,11 +95,7 @@ function stripHtml(html) {
 }
 
 function extractLinks(html) {
-  if (!html) return [];
-  const withoutQuotes = String(html)
-    .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '')
-    .replace(/<div[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[\s\S]*?<\/div>/gi, '');
-  return [...withoutQuotes.matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
+  return extractHrefs(html);
 }
 
 function toEvent(url, body, { verbose = false, all = false } = {}) {

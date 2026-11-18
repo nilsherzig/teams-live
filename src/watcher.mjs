@@ -32,6 +32,12 @@ import {
   transport,
 } from './teams.mjs';
 import {
+  buildMessageSearchText,
+  collectCandidateUrlStrings,
+  isOnlyUrlMessage,
+  stripTruncatedUrlText,
+} from './message-links.mjs';
+import {
   buildMergeRequestCard,
   buildJobCard,
   buildPipelineCard,
@@ -350,33 +356,7 @@ export function teamsReactionToGitLabEmoji(reactionKey) {
 }
 
 export function extractCandidateUrls(text, rawHtml = '', links = []) {
-  const urls = new Set();
-
-  if (Array.isArray(links)) {
-    for (const l of links) {
-      const u = typeof l === 'string' ? l : l?.url;
-      if (u) urls.add(u);
-    }
-  }
-
-  const cleanQuotes = (s) =>
-    String(s || '')
-      .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '')
-      .replace(/<div[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[\s\S]*?<\/div>/gi, '');
-
-  if (rawHtml) {
-    const cleanHtml = cleanQuotes(rawHtml);
-    for (const match of cleanHtml.matchAll(/href="([^"]+)"/g)) {
-      urls.add(match[1]);
-    }
-  }
-
-  const cleanText = cleanQuotes(text);
-  const urlRegex = /https?:\/\/[^\s"'<>\`]+/g;
-  for (const match of cleanText.matchAll(urlRegex)) {
-    const cleaned = match[0].replace(/[.,!?:;)]+$/, '');
-    if (cleaned) urls.add(cleaned);
-  }
+  const urls = collectCandidateUrlStrings(text, rawHtml, links);
 
   const valid = [];
   for (const rawUrl of urls) {
@@ -414,10 +394,6 @@ export function extractCandidateUrls(text, rawHtml = '', links = []) {
   return [...new Set(valid)];
 }
 
-function escapeRegExp(string) {
-  return String(string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 export function isSameUrl(url1, url2) {
   if (!url1 || !url2) return false;
   if (url1 === url2) return true;
@@ -432,28 +408,13 @@ export function isSameUrl(url1, url2) {
   }
 }
 
-export function isMessageOnlyUrl(text, rawHtml = '') {
+export function isMessageOnlyUrl(text, rawHtml = '', links = []) {
   if (!text && !rawHtml) return false;
 
-  const cleanQuotes = (s) =>
-    String(s || '')
-      .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '')
-      .replace(/<div[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[\s\S]*?<\/div>/gi, '');
-
-  const cleanedRaw = cleanQuotes(rawHtml || text);
-  const urls = extractCandidateUrls(text, rawHtml);
+  const urls = extractCandidateUrls(text, rawHtml, links);
   if (urls.length !== 1) return false;
-  const targetUrl = urls[0];
 
-  let stripped = cleanedRaw
-    .replace(new RegExp(`href=["']?${escapeRegExp(targetUrl)}["']?`, 'gi'), '')
-    .replace(new RegExp(escapeRegExp(targetUrl), 'gi'), '')
-    .replace(new RegExp(escapeRegExp(targetUrl.replace(/\/$/, '')), 'gi'), '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&[a-z0-9#]+;/gi, ' ')
-    .trim();
-
-  return stripped.length === 0;
+  return isOnlyUrlMessage(urls[0], { text, rawHtml, links });
 }
 
 export const COMMAND_CATEGORIES = [
@@ -2228,7 +2189,7 @@ export class MergeRequestWatcher {
     conversationId,
     messageId,
     text,
-    { from = '', fromMri = '', content = null, rawHtml = '', initialStatus = null, isHistory = false } = {}
+    { from = '', fromMri = '', content = null, rawHtml = '', links = [], initialStatus = null, isHistory = false } = {}
   ) {
     const mrLinks = this.gitlab.findMrLinks(text);
     const jobLinks = this.gitlab.findJobLinks(text);
@@ -2259,8 +2220,8 @@ export class MergeRequestWatcher {
     const key = `${conversationId}/${messageId}`;
     const saved = this.savedEntries.get(key);
 
-    const candidateUrls = extractCandidateUrls(content || text, rawHtml);
-    const isOnlyUrl = isMessageOnlyUrl(content || text, rawHtml);
+    const candidateUrls = extractCandidateUrls(content || text, rawHtml, links);
+    const isOnlyUrl = isMessageOnlyUrl(content || text, rawHtml, links);
     const targetUrl = isOnlyUrl && candidateUrls.length === 1 ? candidateUrls[0] : null;
 
     const mrsMap = new Map();
@@ -4146,7 +4107,7 @@ export class MergeRequestWatcher {
 
   async findTargetMrsForCommand(event, args) {
     // 1. Direct MR links in the command arguments (e.g. "/approve https://..."):
-    const directText = args.join(' ');
+    const directText = stripTruncatedUrlText(args.join(' '), event);
     const directLinks = deduplicateMrs(this.gitlab.findMrLinks(directText));
     if (directLinks.length > 0) {
       directLinks.source = 'args';
@@ -4155,7 +4116,8 @@ export class MergeRequestWatcher {
     }
 
     // 2. Direct MR links in the command message itself (or HTML quote block):
-    const htmlLinks = deduplicateMrs(this.gitlab.findMrLinks(event.rawHtml || '', { allowQuotes: true }));
+    const quoteSearch = buildMessageSearchText({ rawHtml: event.rawHtml, links: event.links }, { includeQuotes: true });
+    const htmlLinks = deduplicateMrs(this.gitlab.findMrLinks(quoteSearch, { allowQuotes: true }));
     if (htmlLinks.length > 0) {
       htmlLinks.source = 'quote';
       const quoteMatch = (event.rawHtml || '').match(/itemid=["']?(\d+)["']?/i);
@@ -4176,8 +4138,7 @@ export class MergeRequestWatcher {
           const senderMri = msg.sender?.mri?.split('/contacts/').pop();
           if (this.isOwnMessage(senderMri, msg.content, msg.id, msg.clientMessageId, msg.content)) continue;
 
-          const extractedUrls = (msg.links ?? []).map((l) => (typeof l === 'string' ? l : l?.url)).filter(Boolean);
-          const msgText = [msg.content, ...extractedUrls].filter(Boolean).join(' ');
+          const msgText = buildMessageSearchText({ content: msg.content, links: msg.links }, { includeQuotes: true });
           const links = deduplicateMrs(this.gitlab.findMrLinks(msgText, { allowQuotes: true }));
           if (links.length > 0) {
             log(`Found target MR in preceding message ${msg.id}: ${links.map((l) => `${l.project}!${l.iid}`).join(', ')}`);
@@ -4785,8 +4746,9 @@ export class MergeRequestWatcher {
   }
 
   async executeStatusCommand(event, args) {
-    const hasDirectLinks = args.some((a) => this.gitlab.findMrLinks(a).length > 0);
-    const hasQuoteLinks = this.gitlab.findMrLinks(event.rawHtml || '').length > 0;
+    const hasDirectLinks = args.some((a) => this.gitlab.findMrLinks(stripTruncatedUrlText(a, event)).length > 0);
+    const hasQuoteLinks =
+      this.gitlab.findMrLinks(buildMessageSearchText({ rawHtml: event.rawHtml, links: event.links })).length > 0;
 
     if (!hasDirectLinks && !hasQuoteLinks && args.length === 0) {
       log(`Executing bot runtime /status in ${event.conversationId}...`);
@@ -7134,7 +7096,9 @@ export class MergeRequestWatcher {
   }
 
   async executeCiCommand(event, args) {
-    const directSearch = [args.join(' '), event.content, event.rawHtml, ...(event.links ?? []).map((l) => (typeof l === 'string' ? l : l?.url))].filter(Boolean).join(' ');
+    const directSearch = [stripTruncatedUrlText(args.join(' '), event), buildMessageSearchText(event, { includeQuotes: true })]
+      .filter(Boolean)
+      .join(' ');
     const pipeLinks = this.gitlab.findPipelineLinks(directSearch, { allowQuotes: true });
     const jobLinks = this.gitlab.findJobLinks(directSearch, { allowQuotes: true });
 
@@ -7789,7 +7753,7 @@ export class MergeRequestWatcher {
     }
 
     if (targetMrs.length === 0 && msgData.content) {
-      const fullText = [msgData.content, ...(msgData.links || [])].filter(Boolean).join(' ');
+      const fullText = buildMessageSearchText(msgData, { includeQuotes: true });
       targetMrs = this.gitlab.findMrLinks(fullText, { allowQuotes: true });
     }
 
@@ -7949,7 +7913,7 @@ export class MergeRequestWatcher {
     if (!msgData) return;
 
     if (targetMrs.length === 0 && msgData.content) {
-      const fullText = [msgData.content, ...(msgData.links || [])].filter(Boolean).join(' ');
+      const fullText = buildMessageSearchText(msgData, { includeQuotes: true });
       targetMrs = this.gitlab.findMrLinks(fullText, { allowQuotes: true });
     }
 
@@ -8135,13 +8099,13 @@ export class MergeRequestWatcher {
 
     if (this.isOwnMessage(event.fromMri, event.content, event.messageId, event.clientMessageId, event.rawHtml)) return;
 
-    const extractedUrls = (event.links ?? []).map((l) => (typeof l === 'string' ? l : l?.url)).filter(Boolean);
-    const fullText = [event.content, event.rawHtml, ...extractedUrls].filter(Boolean).join(' ');
+    const fullText = buildMessageSearchText(event);
     this.watch(event.conversationId, event.messageId, fullText, {
       from: event.from,
       fromMri: event.fromMri,
       content: event.content || '',
       rawHtml: event.rawHtml || '',
+      links: event.links ?? [],
     });
   }
 
@@ -8285,14 +8249,14 @@ export class MergeRequestWatcher {
         if (ownReactions.includes('merged')) continue;
 
         const currentStatus = ownReactions.find(Boolean) ?? null;
-        const extractedUrls = (msg.links ?? []).map((l) => (typeof l === 'string' ? l : l?.url)).filter(Boolean);
-        const text = [msg.content, ...extractedUrls].filter(Boolean).join(' ');
+        const text = buildMessageSearchText({ content: msg.content, links: msg.links });
 
         this.watch(conversationId, msg.id, text, {
           from: msg.sender?.displayName || '',
           fromMri: senderMri || '',
           content: msg.content || '',
           rawHtml: msg.content || '',
+          links: msg.links ?? [],
           initialStatus: currentStatus,
           isHistory: true,
         });
