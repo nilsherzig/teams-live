@@ -133,6 +133,7 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `teams.max_session_minutes` | Age after which the push session is replaced (60). |
 | `teams.history_poll_interval_seconds` | Poll of the watched chats for missed pushes (120, 0 disables). |
 | `teams.rich_messages` | Post the watcher messages as Adaptive Cards (false). See [Rich messages](#rich-messages). |
+| `avatars.fallback_sources`, `avatars.overrides` | Profile pictures on rich cards where Teams has none. `fallback_sources` is the ordered list of services asked (`[ "jira" "confluence" ]` by default, `[ ]` turns them off); `overrides` is a list of `{ name, file }` giving an account that exists in no directory (a bot) a small PNG or JPEG. See [Profile pictures](#profile-pictures). |
 | `teams.service_alerts.*` | Dampens the admin alerts about expired connector credentials (see below). Keys, in seconds: `stable_recovery_seconds` (120), `flap_window_seconds` (600), `flap_recovery_seconds` (300), `reminder_seconds` (43200), and `flap_transitions` (4). |
 | `gitlab.approve.*` | Approve button of merge request cards: capability link (off). `gitlab.approve.merge_enabled` (off) separately enables the Merge button. See [Approving from a card](#approving-from-a-card). |
 | `teams.troll_user` | User MRI whose `/exec` gets a joke reply instead of the fake shell output. |
@@ -350,6 +351,41 @@ node src/smoke-rich.mjs <conversation-id> --dry-run   # print the payloads only
 ```
 
 The script uses generic fixture data and refuses channel conversations.
+
+### Profile pictures
+
+People on rich cards (author, approvers, auto-merge user, lists) get their
+Teams profile picture. Where Teams has none, the picture comes from, in this
+order:
+
+1. **Teams**: the person's profile photo, matched by an exact, unique Azure AD
+   identity (MRI, e-mail address or a unique full display name).
+2. **Jira**: the picture the person uploaded, matched by an exact, unique,
+   active user with that full display name (or e-mail address). Users who never
+   uploaded one share the instance's default avatar, which is not used.
+3. **Confluence**: the uploaded picture of the Jira user with the same username,
+   unless it is the default one. Pictures over 12 KB or 128 px are skipped, not
+   resized.
+4. **`avatars.overrides`**: a configured picture for a display name, for accounts
+   that exist in no directory (for example the service account that approves
+   merge requests). The match is on the exact full name, ignoring case and extra
+   spaces; the file must be a PNG or JPEG of at most 12 KB and 128 px. It is read
+   once at start; an unreadable or oversized file is skipped with a warning.
+5. **Placeholder**: a neutral silhouette.
+
+Matching is strict at every step: one word (a first name or a username), several
+people with the same name, a partial match or an inactive Jira user end in "no
+picture" for that source, never in somebody else's. GitLab pictures are not used:
+GitLab only serves them to a browser session, not to an API token. Jira and
+Confluence are asked with the tokens already configured for them, only on their
+own host, never through a redirect, and results (also "none") are cached for the
+same time as Teams pictures.
+
+```nix
+services.teams-live.settings.avatars.overrides = [
+  { name = "Example Bot"; file = ./example-bot.png; }
+];
+```
 
 ### Approving from a card
 

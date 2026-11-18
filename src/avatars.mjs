@@ -19,8 +19,15 @@
  * one identity share a request, the number of parallel requests is capped and
  * a failing endpoint trips a circuit breaker. Rendering a card never waits
  * longer than `deadlineMs` for a picture.
+ *
+ * Where Teams has no picture, the same strict identity rules apply to ordered
+ * fallback sources (`fallbacks`: Jira, Confluence; see avatar-sources.mjs) and
+ * finally to configured per-name `overrides` (for accounts that exist in no
+ * directory, such as a bot). The order is Teams, the sources in order, the
+ * override, the placeholder.
  */
 
+import fs from 'node:fs';
 import { requireSkypeSpacesAuthWithConfig } from 'msteams-mcp/dist/utils/auth-guards.js';
 import { getSkypeAuthHeaders } from 'msteams-mcp/dist/utils/api-config.js';
 import { refuseLiveReadInTests } from './test-guard.mjs';
@@ -168,7 +175,7 @@ export function createTeamsPhotoFetcher({
 }
 
 /** Reads the body but never more than `maxBytes`; null when it is larger. */
-async function readCapped(res, maxBytes) {
+export async function readCapped(res, maxBytes) {
   const reader = res.body?.getReader?.();
   if (!reader) {
     const all = new Uint8Array(await res.arrayBuffer());
@@ -204,8 +211,16 @@ export class AvatarService {
    *   directory has no match, and only an exact single hit with an orgid MRI counts
    * @param {Function} [opts.now]
    */
-  constructor({ directory, fetchPhoto, searchFn = null, now = Date.now, ...options } = {}) {
+  constructor({ directory, fetchPhoto, searchFn = null, fallbacks = [], overrides = [], now = Date.now, ...options } = {}) {
     this.directory = directory;
+    // async (person, size) => {kind:'photo',bytes}|{kind:'none'}; throws on failure. Tried in order.
+    this.fallbacks = (fallbacks || []).filter((f) => typeof f === 'function');
+    // normalized full name -> data URI of a configured picture (already validated)
+    this.overrides = new Map(
+      (overrides || [])
+        .filter((o) => o && norm(o.name) && typeof o.dataUri === 'string' && o.dataUri.startsWith('data:image/'))
+        .map((o) => [norm(o.name), o.dataUri])
+    );
     this.fetchPhoto = fetchPhoto || createTeamsPhotoFetcher({ size: options.size, maxBytes: options.maxBytes });
     this.searchFn = searchFn;
     this.now = now;
@@ -305,6 +320,16 @@ export class AvatarService {
     return entry.value;
   }
 
+  /** The normalized name a fallback source or an override is looked up by ('' when there is none). */
+  #fallbackName(person) {
+    if (typeof person === 'string') return person.includes('@') ? '' : norm(person);
+    return norm(person?.name);
+  }
+
+  #fallbackKey(name, size) {
+    return this.#key(`fallback:${name}`, size);
+  }
+
   /** Cached picture (data URI) of the given size or null; never starts a request. */
   peek(person, { size = this.opts.size } = {}) {
     let mri = this.resolveKnown(person);
@@ -314,7 +339,13 @@ export class AvatarService {
       const found = this.identities.get(name);
       if (found && found.expires > this.now()) mri = found.mri;
     }
-    return (mri && this.#cached(mri, size)) || null;
+    const teams = mri ? this.#cached(mri, size) : null;
+    if (teams) return teams;
+    const name = this.#fallbackName(person);
+    if (!name) return null;
+    const entry = this.cache.get(this.#fallbackKey(name, size));
+    if (entry && entry.expires > this.now() && entry.value) return entry.value;
+    return this.overrides.get(name) || null;
   }
 
   /**
@@ -386,6 +417,43 @@ export class AvatarService {
   }
 
   /**
+   * The picture from the first fallback source that has one for this person,
+   * as a data URI, or null. Positive and negative results are cached like
+   * Teams photos; a source that fails is skipped and the failure is cached only
+   * briefly. Only the sources run here: configured overrides are read by `peek`.
+   */
+  async #loadFallback(person, size) {
+    const name = this.#fallbackName(person);
+    if (!name || this.fallbacks.length === 0) return null;
+    const key = this.#fallbackKey(name, size);
+    const entry = this.cache.get(key);
+    if (entry && entry.expires > this.now()) return entry.value;
+    const existing = this.inflight.get(key);
+    if (existing) return existing;
+    const promise = this.#schedule(async () => {
+      let value = null;
+      let failed = false;
+      for (const source of this.fallbacks) {
+        try {
+          const result = await source(typeof person === 'string' ? { name: person } : person, size);
+          const image = result?.kind === 'photo' ? inspectImage(result.bytes, this.opts) : null;
+          if (image) {
+            value = toDataUri(result.bytes, image.mime);
+            break;
+          }
+        } catch {
+          failed = true;
+        }
+      }
+      const ttl = value ? this.opts.ttlMs : failed ? this.opts.errorTtlMs : this.opts.negativeTtlMs;
+      this.#remember(this.cache, key, { value, expires: this.now() + ttl });
+      return value;
+    }).finally(() => this.inflight.delete(key));
+    this.inflight.set(key, promise);
+    return promise;
+  }
+
+  /**
    * Returns `{ [name]: dataUri }` for the people that have a usable picture.
    * People without one (no match, ambiguous, no photo, denied, slow, failing)
    * are simply absent. Slow requests keep running and fill the cache for the
@@ -405,6 +473,8 @@ export class AvatarService {
       jobs.push(
         this.#resolve(person)
           .then((mri) => (mri ? this.#load(mri, size) : null))
+          // No Teams picture (no identity, no photo, failing): the fallback sources.
+          .then((uri) => uri || this.#loadFallback(person, size))
           .then((uri) => {
             if (uri) result[name] = uri;
           })
@@ -421,4 +491,28 @@ export class AvatarService {
     // Copy: lookups that missed the deadline must not change what the caller holds.
     return { ...result };
   }
+}
+
+/**
+ * Reads the configured per-name pictures: `[{ name, file }]` to
+ * `[{ name, dataUri }]`. A file that is missing, too big or not a PNG or JPEG
+ * within the pixel limit is skipped with a warning (no path, no name logged),
+ * so one bad entry never keeps the daemon from starting.
+ */
+export function loadAvatarOverrides(entries, { readFile = fs.readFileSync, ...limits } = {}) {
+  const out = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const name = String(entry?.name ?? '').trim();
+    const file = String(entry?.file ?? '').trim();
+    if (!name || !file) continue;
+    try {
+      const bytes = new Uint8Array(readFile(file));
+      const image = inspectImage(bytes, limits);
+      if (!image) throw new Error('not a small PNG or JPEG');
+      out.push({ name, dataUri: toDataUri(bytes, image.mime) });
+    } catch (err) {
+      log(`Ignoring a configured profile picture: ${err.message}`);
+    }
+  }
+  return out;
 }

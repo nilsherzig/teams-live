@@ -67,7 +67,8 @@ import {
   parseTvArgs,
 } from './tv.mjs';
 import { TV_CHANNEL_LABELS, buildTvProgrammeCard, formatProgrammeText, tvControlReply } from './tv-cards.mjs';
-import { AvatarService } from './avatars.mjs';
+import { AvatarService, loadAvatarOverrides } from './avatars.mjs';
+import { createAvatarFallbacks } from './avatar-sources.mjs';
 import { PLACEHOLDER_AVATAR } from './placeholder-avatar.mjs';
 import { collectCardPeople, isImageDataUri } from './card-user-row.mjs';
 import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
@@ -1144,6 +1145,14 @@ export class MergeRequestWatcher {
     this.avatarService = this.richMessages
       ? new AvatarService({
           directory: this.userDirectory,
+          // Where Teams has no picture: Jira, then Confluence, then a configured picture for accounts
+          // that exist in no directory (a bot).
+          fallbacks: createAvatarFallbacks({
+            jira: this.jira,
+            confluence: this.confluence,
+            sources: config.avatars?.fallback_sources,
+          }),
+          overrides: loadAvatarOverrides(config.avatars?.overrides),
           // The limit comes from the service: a full page means "maybe more", which fails closed.
           searchFn: async (name, limit) => {
             const res = await searchPeople(name, limit);

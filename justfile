@@ -20,6 +20,7 @@ check:
   node --check src/config.mjs
   node --check src/cards.mjs
   node --check src/avatars.mjs
+  node --check src/avatar-sources.mjs
   node --check src/card-user-row.mjs
   node --check src/smoke-rich.mjs
   node --check src/trouter.mjs

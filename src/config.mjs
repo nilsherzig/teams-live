@@ -14,6 +14,27 @@ function stripYamlComments(text) {
     .join('\n');
 }
 
+/**
+ * Profile pictures on cards (see avatars.mjs): `fallback_sources` is the ordered
+ * list of services asked when Teams has no picture (default Jira, then
+ * Confluence; an empty list turns the fallbacks off), `overrides` maps the full
+ * display name of an account that exists in no directory (a bot) to a small
+ * PNG or JPEG file.
+ */
+export function normalizeAvatarsConfig(raw) {
+  const getString = (val) => (typeof val === 'string' ? val : '');
+  const known = ['jira', 'confluence'];
+  const sources = Array.isArray(raw?.fallback_sources)
+    ? raw.fallback_sources.map((s) => String(s).trim().toLowerCase()).filter((s) => known.includes(s))
+    : known;
+  const overrides = Array.isArray(raw?.overrides)
+    ? raw.overrides
+        .map((o) => ({ name: getString(o?.name).trim(), file: getString(o?.file).trim() }))
+        .filter((o) => o.name && o.file)
+    : [];
+  return { fallback_sources: [...new Set(sources)], overrides };
+}
+
 export function parseConfigFile(filePath) {
   if (!fs.existsSync(filePath)) {
     throw new Error(`Config file not found: ${filePath}`);
@@ -353,6 +374,7 @@ export function loadConfig(configPath) {
       baseUrl: getString(fileConfig.home_assistant?.url) || process.env.HASS_URL || '',
       token: getString(fileConfig.home_assistant?.url) || process.env.HASS_URL ? homeAssistant.token || '' : '',
     }),
+    avatars: normalizeAvatarsConfig(fileConfig.avatars),
     teams,
     conversations,
   };
