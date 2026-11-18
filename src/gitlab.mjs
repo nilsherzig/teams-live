@@ -335,20 +335,24 @@ export class GitLabClient {
    * permissions decide what can be read), the path looks like it holds credentials, the file or ref does not exist, or the file is binary or
    * too large. Other failures (network, auth) are thrown, so the caller may retry.
    */
-  async getBlobPreview(link, { maxLines = 30, maxFileBytes = 1_000_000, restrictToGroup = false } = {}) {
-    if (!link?.project || !link?.refPath) return null;
+  async getBlobPreview(link, { maxLines = 30, maxFileBytes = 1_000_000, restrictToGroup = false, onUnavailable = () => {} } = {}) {
+    const unavailable = (reason) => {
+      onUnavailable(reason);
+      return null;
+    };
+    if (!link?.project || !link?.refPath) return unavailable('invalid project or file path');
     if (restrictToGroup && this.group) {
       const prefix = `${this.group.replace(/^\/+|\/+$/g, '')}/`.toLowerCase();
-      if (!link.project.toLowerCase().startsWith(prefix)) return null;
+      if (!link.project.toLowerCase().startsWith(prefix)) return unavailable('project outside configured group');
     }
 
     let segments;
     try {
       segments = link.refPath.split('/').map((s) => decodeURIComponent(s));
     } catch {
-      return null;
+      return unavailable('invalid URL encoding');
     }
-    if (segments.some((s) => !s || s === '.' || s === '..' || s.includes('\0'))) return null;
+    if (segments.some((s) => !s || s === '.' || s === '..' || s.includes('\0'))) return unavailable('invalid ref or file path');
 
     // The ref is the first segment, or the first few when the branch name has slashes.
     let file = null;
@@ -357,7 +361,7 @@ export class GitLabClient {
     for (let i = 1; i < segments.length && i <= BLOB_MAX_REF_SEGMENTS; i++) {
       refName = segments.slice(0, i).join('/');
       filePath = segments.slice(i).join('/');
-      if (isSensitivePath(filePath)) return null;
+      if (isSensitivePath(filePath)) return unavailable('sensitive file path');
       try {
         file = await this.request(
           `projects/${encodeURIComponent(link.project)}/repository/files/${encodeURIComponent(filePath)}?ref=${encodeURIComponent(refName)}`,
@@ -368,17 +372,19 @@ export class GitLabClient {
         if (err.status !== 404) throw err;
       }
     }
-    if (!file || typeof file.content !== 'string') return null;
-    if (file.encoding && file.encoding !== 'base64') return null;
-    if (Number(file.size) > maxFileBytes) return null;
+    if (!file) return unavailable('GitLab returned 404 for all ref and file combinations; check access, ref, and path');
+    if (typeof file.content !== 'string') return unavailable('GitLab response has no file content');
+    if (file.encoding && file.encoding !== 'base64') return unavailable('unsupported file encoding');
+    if (Number(file.size) > maxFileBytes) return unavailable('file exceeds size limit');
 
     const buffer = Buffer.from(file.content, 'base64');
-    if (buffer.length > maxFileBytes || buffer.includes(0)) return null;
+    if (buffer.length > maxFileBytes) return unavailable('file exceeds size limit');
+    if (buffer.includes(0)) return unavailable('binary file');
     const allLines = buffer.toString('utf8').replace(/\r\n?/g, '\n').split('\n');
     if (allLines.length > 0 && allLines.at(-1) === '') allLines.pop();
 
     const totalLines = allLines.length;
-    if (link.startLine > totalLines) return null;
+    if (link.startLine > totalLines) return unavailable(`requested line exceeds file length (${totalLines} lines)`);
     const cap = Math.max(1, Math.floor(maxLines));
     const startLine = link.startLine;
     const requestedEnd = Math.min(link.endLine, totalLines);

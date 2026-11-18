@@ -32,8 +32,9 @@ import { requireSkypeSpacesAuthWithConfig } from 'msteams-mcp/dist/utils/auth-gu
 import { getSkypeAuthHeaders } from 'msteams-mcp/dist/utils/api-config.js';
 import { refuseLiveReadInTests } from './test-guard.mjs';
 import { PLACEHOLDER_AVATAR } from './placeholder-avatar.mjs';
+import { createLogger } from './logger.mjs';
 
-const log = (...args) => console.error(new Date().toISOString(), '[avatars]', ...args);
+const log = createLogger('avatars');
 
 const ORGID_MRI = /^8:orgid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SIZE_PARAM = /^HR(24|32|48|64|96)x\1$/;
@@ -520,7 +521,7 @@ export function loadAvatarOverrides(entries, { readFile = fs.readFileSync, ...li
       if (!image) throw new Error(`not a PNG or JPEG of at most ${maxBytes} bytes and ${DEFAULTS.maxDimension} px`);
       out.push({ name, dataUri: toDataUri(bytes, image.mime) });
     } catch (err) {
-      log(`Ignoring a configured profile picture: ${err.message}`);
+      log.warn(`Ignoring a configured profile picture: ${err.message}`);
     }
   }
   return out;

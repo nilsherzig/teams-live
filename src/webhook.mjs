@@ -1,7 +1,8 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { createLogger } from './logger.mjs';
 
-const log = (...args) => console.error(new Date().toISOString(), '[webhook]', ...args);
+const log = createLogger('webhook');
 
 export class GitLabWebhookServer {
   constructor({
@@ -106,7 +107,7 @@ export class GitLabWebhookServer {
     const gitlabToken = req.headers['x-gitlab-token'];
     const tokenMatch = this.matchToken(gitlabToken);
     if (!tokenMatch.ok) {
-      log('Rejected webhook request: invalid X-Gitlab-Token');
+      log.warn('Rejected webhook request: invalid X-Gitlab-Token');
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized: invalid secret token' }));
       return;

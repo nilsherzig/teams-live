@@ -45,6 +45,18 @@ function stubbedClient(files, options = {}) {
   return client;
 }
 
+test('getBlobPreview reports unavailable reasons without changing its return value', async () => {
+  const client = stubbedClient({ 'main:src/a.js': file('one\ntwo\n') });
+  const reasons = [];
+  const options = { onUnavailable: (reason) => reasons.push(reason) };
+  const missing = client.findBlobLinks(blobUrl('main/src/missing.js', '#L1'))[0];
+  assert.equal(await client.getBlobPreview(missing, options), null);
+  assert.match(reasons.pop(), /404.*access, ref, and path/);
+  const beyond = client.findBlobLinks(blobUrl('main/src/a.js', '#L3'))[0];
+  assert.equal(await client.getBlobPreview(beyond, options), null);
+  assert.equal(reasons.pop(), 'requested line exceeds file length (2 lines)');
+});
+
 // ---------------------------------------------------------------------------
 // Link parsing
 

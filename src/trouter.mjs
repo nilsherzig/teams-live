@@ -2,6 +2,7 @@ import './test-guard.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { extractHrefs, stripQuotedHtml } from './message-links.mjs';
+import { createLogger } from './logger.mjs';
 
 const TROUTER = 'https://go.trouter.teams.microsoft.com';
 const REGISTRAR = 'https://teams.microsoft.com/registrar/prod/V2/registrations';
@@ -22,7 +23,7 @@ const DEFAULT_LIVENESS_TIMEOUT_MS = 100_000;
 const MESSAGE_KINDS = new Set(['NewMessage', 'MessageUpdate']);
 const isContentType = (t) => t === 'Text' || t?.startsWith('RichText');
 
-const log = (...args) => console.error(new Date().toISOString(), '[trouter]', ...args);
+const log = createLogger('trouter');
 
 function deterministicUuid(seed) {
   const bytes = Buffer.from(createHash('sha256').update(seed).digest().subarray(0, 16));
@@ -63,7 +64,7 @@ async function register(auth, registrationId, appId, templateKey, path) {
       transports: { TROUTER: [{ context: '', path, ttl: REGISTRATION_TTL }] },
     }),
   });
-  log(`registrar ${appId}: HTTP ${res.status}`);
+  log.debug(`registrar ${appId}: HTTP ${res.status}`);
   if (!res.ok) throw new Error(`registrar ${appId}: HTTP ${res.status}`);
 }
 
@@ -242,7 +243,7 @@ export class TrouterClient {
         if (err) reject(err);
         else resolve();
       };
-      ws.addEventListener('open', () => log('websocket open'));
+      ws.addEventListener('open', () => log.debug('websocket open'));
       ws.addEventListener('error', (e) => {
         finish(new Error(`websocket error: ${e.message ?? e.type}`));
       });
@@ -353,7 +354,7 @@ export class TrouterClient {
             const now = Date.now();
             if (now - (this.lastRegistrationAt ?? 0) < 30_000 || now - lastLossRegistration < 30_000) return;
             lastLossRegistration = now;
-            log('server reported message loss, re-registering');
+            log.warn('server reported message loss, re-registering');
             try {
               await register(latestAuth(), epid, 'TeamsCDLWebWorker', 'TeamsCDLWebWorker_2.1', info.surl);
               this.lastRegistrationAt = Date.now();
@@ -361,7 +362,7 @@ export class TrouterClient {
               log(`re-registration after message loss failed: ${err.message}`);
             }
           } else if (this.verbose) {
-            log(`control: ${frame}`);
+            log.debug(`control: ${frame}`);
           }
         }
       });

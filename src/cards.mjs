@@ -24,6 +24,15 @@ import { MR_BADGES } from './mr-badges.mjs';
 import { approvalBadge, approvalBadgeText } from './approval-badges.mjs';
 import { CI_STATUS_ICONS } from './ci-icons.mjs';
 import { GITLAB_ICONS_SMALL } from './gitlab-icons-small.mjs';
+import {
+  HIGHLIGHT_LEVELS,
+  expandTabs,
+  highlightedRow,
+  languageForPath,
+  preserveWhitespace,
+  restrictTokens,
+  tokenizeLines,
+} from './code-highlight.mjs';
 import { planCardAvatars, avatarColumn, isImageDataUri, pillImage, userRow } from './card-user-row.mjs';
 
 export const ADAPTIVE_CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json';
@@ -908,7 +917,7 @@ export function buildCodePreviewCard(preview) {
     preview.startLine === preview.endLine ? `L${preview.startLine}` : `L${preview.startLine}-${preview.endLine}`;
   const width = String(preview.endLine).length;
   const rows = preview.lines.map((l) => `${String(l.n).padStart(width, ' ')}  ${l.text}`);
-  const items = [codeBlock(rows)];
+  const items = [highlightedCodeBlock(preview, width) ?? codeBlock(rows)];
   if (preview.truncated) {
     items.push(
       textBlock(`Showing ${preview.lines.length} of ${preview.requestedEndLine - preview.startLine + 1} lines`, {
@@ -1026,11 +1035,12 @@ export function buildMarkdownCard(markdown, { service, kind, style = 'emphasis',
   return assembleCard({ service, kind, style, title, extraItems: items, fallbackText });
 }
 
-/** Escapes what a TextBlock would interpret as markdown, for verbatim (code) lines. */
+/**
+ * Escapes what a TextBlock would interpret as markdown, for verbatim (code)
+ * lines, and keeps the indentation: Teams collapses plain leading spaces.
+ */
 function verbatimText(line) {
-  const escaped = line.replace(/([\\*_[\]`])/g, '\\$1');
-  const indent = /^ */.exec(escaped)[0].length;
-  return `${' '.repeat(indent)}${escaped.slice(indent)}` || ' ';
+  return preserveWhitespace(line.replace(/([\\*_[\]`])/g, '\\$1'));
 }
 
 /**
@@ -1050,6 +1060,35 @@ function codeBlock(codeLines) {
       spacing: 'None',
     })),
   };
+}
+
+/**
+ * Largest highlighted code block (JSON bytes). Every styled token is a run of
+ * its own, and a card has to fit MAX_CARD_BYTES on the wire together with its
+ * header and fallback text (a card that does not fit is sent as plain
+ * markdown), so a bigger block drops the colour of the less useful token types
+ * and, as a last resort, stays plain.
+ */
+export const MAX_HIGHLIGHTED_CODE_BYTES = 14000;
+
+/**
+ * The code of a preview as a syntax-highlighted block: one RichTextBlock per
+ * line whose runs carry the token colours. Null (plain block) when the file
+ * type is not recognized or even the lightest highlighting is too large.
+ */
+function highlightedCodeBlock(preview, numberWidth) {
+  const language = languageForPath(preview.path);
+  const tokenized = language ? tokenizeLines(preview.lines.map((l) => expandTabs(l.text)), language) : null;
+  if (!tokenized) return null;
+  for (const types of HIGHLIGHT_LEVELS) {
+    const block = {
+      type: 'Container',
+      spacing: 'Small',
+      items: preview.lines.map((l, idx) => highlightedRow({ number: l.n }, restrictTokens(tokenized[idx], types), numberWidth)),
+    };
+    if (Buffer.byteLength(JSON.stringify(block)) <= MAX_HIGHLIGHTED_CODE_BYTES) return block;
+  }
+  return null;
 }
 
 /**

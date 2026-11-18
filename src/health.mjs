@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createLogger } from './logger.mjs';
 
-const log = (...args) => console.error(new Date().toISOString(), '[health]', ...args);
+const log = createLogger('health');
 
 export class HealthMonitor {
   constructor({ stateDir, gitlab, jira, confluence = null, opsgenie, hrworks, screenshot = null, authManager, getTrouter }) {

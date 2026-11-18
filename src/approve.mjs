@@ -46,9 +46,10 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createLogger } from './logger.mjs';
 
 const FULL_WARN_INTERVAL_MS = 10 * 60 * 1000;
-const log = (...args) => console.error(new Date().toISOString(), '[approve]', ...args);
+const log = createLogger('approve');
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const ID_PATTERN = /^[0-9a-f]{64}$/;

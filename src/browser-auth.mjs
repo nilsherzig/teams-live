@@ -1,8 +1,9 @@
 import './test-guard.mjs';
 import { writeSessionState, clearTokenCache } from 'msteams-mcp/dist/auth/session-store.js';
 import { extractMessageAuth } from 'msteams-mcp/dist/auth/token-extractor.js';
+import { createLogger } from './logger.mjs';
 
-const log = (...args) => console.error(new Date().toISOString(), '[browser-auth]', ...args);
+const log = createLogger('browser-auth');
 
 export async function acquireFromBrowserDaemon(bdConfig) {
   if (!bdConfig?.url) return null;
@@ -163,7 +164,7 @@ export async function acquireFromBrowserDaemon(bdConfig) {
       }
 
       if (attempt < maxAttempts) {
-        log(`Waiting for Skype Spaces token in localStorage (attempt ${attempt}/${maxAttempts})...`);
+        log.debug(`Waiting for Skype Spaces token in localStorage (attempt ${attempt}/${maxAttempts})...`);
         await new Promise(r => setTimeout(r, 3000));
       }
     }

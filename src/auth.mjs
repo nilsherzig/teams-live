@@ -9,10 +9,11 @@ import { refreshTokensViaHttp } from 'msteams-mcp/dist/auth/token-refresh-http.j
 import { signInViaBrowserDaemon } from 'msteams-mcp/dist/auth/token-refresh.js';
 import { writeSessionState } from 'msteams-mcp/dist/auth/session-store.js';
 import { acquireFromBrowserDaemon } from './browser-auth.mjs';
+import { createLogger } from './logger.mjs';
 
 export { getUserProfile, getUserDisplayName };
 
-const log = (...args) => console.error(new Date().toISOString(), '[auth]', ...args);
+const log = createLogger('auth');
 
 export class AuthManager {
   constructor(config) {
@@ -68,7 +69,7 @@ export class AuthManager {
     try {
       const stat = fs.statSync(this.credentialsFile);
       if (!force && this.credentialsLoaded && this.lastLoadedCredentialsMtime && stat.mtimeMs <= this.lastLoadedCredentialsMtime) {
-        log(`Credentials file ${this.credentialsFile} unmodified on disk, preserving active session`);
+        log.debug(`Credentials file ${this.credentialsFile} unmodified on disk, preserving active session`);
         return null;
       }
       this.lastLoadedCredentialsMtime = stat.mtimeMs;
@@ -78,7 +79,7 @@ export class AuthManager {
 
       // If full session state (cookies and origins from msteams-mcp session-state)
       if (data.cookies && data.origins) {
-        log(`Loaded full session state from ${this.credentialsFile}`);
+        log.debug(`Loaded full session state from ${this.credentialsFile}`);
         // Ensure DISCOVER-REGION-GTM exists in localStorage so msteams-mcp calendar-api can extract region
         const origin = data.origins.find((o) => o.origin?.includes('teams.'));
         if (origin && !origin.localStorage?.some((item) => item.name?.includes('DISCOVER-REGION-GTM'))) {
@@ -122,7 +123,7 @@ export class AuthManager {
     }
 
     const status = getMessageAuthStatus();
-    log(`Current messaging auth status: hasToken=${status.hasToken}, minutesRemaining=${status.minutesRemaining ?? 'unknown'}`);
+    log.debug(`Current messaging auth status: hasToken=${status.hasToken}, minutesRemaining=${status.minutesRemaining ?? 'unknown'}`);
 
     if (!forceDaemon && status.hasToken && (status.minutesRemaining ?? 0) > 15) {
       const auth = extractMessageAuth();
@@ -191,7 +192,7 @@ export class AuthManager {
     // 5. Final attempt from cached state
     const fallbackAuth = extractMessageAuth();
     if (fallbackAuth) {
-      log('Using cached session state despite warnings');
+      log.warn('Using cached session state despite warnings');
       return fallbackAuth;
     }
 

@@ -1,6 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { normalizeTvConfig } from './tv.mjs';
+import { createLogger } from './logger.mjs';
+
+const log = createLogger('config');
 
 function stripYamlComments(text) {
   return text
@@ -101,7 +104,7 @@ export function loadConfig(configPath) {
     try {
       browserDaemonSecret = fs.readFileSync(browserDaemon.secret_file, 'utf8').trim();
     } catch (e) {
-      console.warn(`Could not read browser-daemon secret file ${browserDaemon.secret_file}: ${e.message}`);
+      log.warn(`Could not read browser-daemon secret file ${browserDaemon.secret_file}: ${e.message}`);
     }
   }
 
@@ -212,7 +215,7 @@ export function loadConfig(configPath) {
     try {
       webhook.secret = fs.readFileSync(webhook.secret_file, 'utf8').trim();
     } catch (e) {
-      console.warn(`Could not read GitLab webhook secret file ${webhook.secret_file}: ${e.message}`);
+      log.warn(`Could not read GitLab webhook secret file ${webhook.secret_file}: ${e.message}`);
     }
   } else if (process.env.TEAMS_GITLAB_WEBHOOK_SECRET) {
     webhook.secret = process.env.TEAMS_GITLAB_WEBHOOK_SECRET.trim();
@@ -239,7 +242,7 @@ export function loadConfig(configPath) {
   };
   for (const removed of ['owner_users', 'owner_users_file', 'user_header', 'proxy_secret', 'proxy_secret_file', 'proxy_secret_header']) {
     if (rawApprove[removed] !== undefined) {
-      console.warn(`gitlab.approve.${removed} is no longer used (approval links are capability links) and is ignored.`);
+      log.warn(`gitlab.approve.${removed} is no longer used (approval links are capability links) and is ignored.`);
     }
   }
   gitlab.approve = approve;
@@ -265,7 +268,7 @@ export function loadConfig(configPath) {
           break;
         }
       } catch (e) {
-        console.warn(`Could not read GitLab token override file ${p}: ${e.message}`);
+        log.warn(`Could not read GitLab token override file ${p}: ${e.message}`);
       }
     }
   }
@@ -282,7 +285,7 @@ export function loadConfig(configPath) {
       try {
         gitlab.token = fs.readFileSync(gitlab.token_file, 'utf8').trim();
       } catch (e) {
-        console.warn(`Could not read GitLab token file ${gitlab.token_file}: ${e.message}`);
+        log.warn(`Could not read GitLab token file ${gitlab.token_file}: ${e.message}`);
       }
     } else if (process.env.GITLAB_TOKEN) {
       gitlab.token = process.env.GITLAB_TOKEN.trim();
@@ -302,7 +305,7 @@ export function loadConfig(configPath) {
     try {
       jira.token = fs.readFileSync(jira.token_file, 'utf8').trim();
     } catch (e) {
-      console.warn(`Could not read Jira token file ${jira.token_file}: ${e.message}`);
+      log.warn(`Could not read Jira token file ${jira.token_file}: ${e.message}`);
     }
   } else if (process.env.JIRA_TOKEN) {
     jira.token = process.env.JIRA_TOKEN.trim();
@@ -318,7 +321,7 @@ export function loadConfig(configPath) {
     try {
       confluence.token = fs.readFileSync(confluence.token_file, 'utf8').trim();
     } catch (e) {
-      console.warn(`Could not read Confluence token file ${confluence.token_file}: ${e.message}`);
+      log.warn(`Could not read Confluence token file ${confluence.token_file}: ${e.message}`);
     }
   } else if (process.env.CONFLUENCE_TOKEN) {
     confluence.token = process.env.CONFLUENCE_TOKEN.trim();
@@ -371,7 +374,7 @@ export function loadConfig(configPath) {
     try {
       homeAssistant.token = fs.readFileSync(homeAssistant.token_file, 'utf8').trim();
     } catch (e) {
-      console.warn(`Could not read Home Assistant token file ${homeAssistant.token_file}: ${e.message}`);
+      log.warn(`Could not read Home Assistant token file ${homeAssistant.token_file}: ${e.message}`);
     }
   } else if (process.env.HASS_TOKEN) {
     homeAssistant.token = process.env.HASS_TOKEN.trim();

@@ -26,6 +26,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createLogger } from './logger.mjs';
+
+const log = createLogger('test-guard');
 
 export function isTestRun() {
   return (
@@ -112,8 +115,8 @@ if (isTestRun()) {
       // best effort
     }
     if (refusals.length === 0) return;
-    console.error(
-      `[test-guard] ${refusals.length} unstubbed live attempt(s) during this test run: ` +
+    log.error(
+      `${refusals.length} unstubbed live attempt(s) during this test run: ` +
         refusals.map((r) => `${r.kind}:${r.what}`).join(', ')
     );
     if (code === 0) process.exitCode = 1;

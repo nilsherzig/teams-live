@@ -1,6 +1,9 @@
 import './test-guard.mjs';
 import fs from 'node:fs';
 import { normalizeName } from './users.mjs';
+import { createLogger } from './logger.mjs';
+
+const log = createLogger('hrworks');
 
 /**
  * Returns inclusive date strings (YYYY-MM-DD) for FullCalendar events where
@@ -118,7 +121,7 @@ export class HRWorksClient {
           this.token = fs.readFileSync(this.tokenFile, 'utf8').trim();
         }
       } catch (err) {
-        console.warn(`[HRWorksClient] Could not read token file ${this.tokenFile}: ${err.message}`);
+        log.warn(`Could not read token file ${this.tokenFile}: ${err.message}`);
       }
     }
     return this.token;
@@ -127,7 +130,7 @@ export class HRWorksClient {
   async callService(service, data = {}, { timeoutMs = 60000 } = {}) {
     const token = this.getToken();
     if (!token) {
-      console.warn('[HRWorksClient] No Home Assistant token configured');
+      log.warn('No Home Assistant token configured');
       return null;
     }
 
@@ -146,7 +149,7 @@ export class HRWorksClient {
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
         const errStr = `HRworks HTTP ${resp.status}: ${summarizeErrorBody(text)}`;
-        console.warn(`[HRWorksClient] Service ${service} returned ${resp.status}: ${summarizeErrorBody(text)}`);
+        log.warn(`Service ${service} returned ${resp.status}: ${summarizeErrorBody(text)}`);
         this.lastError = errStr;
         if (resp.status === 401 || resp.status === 403) {
           this.onAuthError?.(errStr);
@@ -159,7 +162,7 @@ export class HRWorksClient {
       const json = await resp.json();
       return json.service_response || json.response || json;
     } catch (err) {
-      console.warn(`[HRWorksClient] Call to ${service} failed: ${err.message}`);
+      log.warn(`Call to ${service} failed: ${err.message}`);
       this.lastError = err.message;
       return null;
     }
@@ -276,8 +279,8 @@ export class HRWorksClient {
           const batch = units.slice(i, i + this.batchSize);
           if (!(await this.getCompanyAbsences({ units: batch }))) {
             this.companyData.resumeIndex = i;
-            console.warn(
-              `[HRWorksClient] Company prefetch stopped at units ${i + 1}-${i + batch.length} of ${units.length}; resuming there next run`
+            log.warn(
+              `Company prefetch stopped at units ${i + 1}-${i + batch.length} of ${units.length}; resuming there next run`
             );
             return this.getAggregatedCompanyData();
           }

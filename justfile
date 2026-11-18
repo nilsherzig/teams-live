@@ -19,6 +19,7 @@ check:
   node --check src/snake.mjs
   node --check src/config.mjs
   node --check src/cards.mjs
+  node --check src/code-highlight.mjs
   node --check src/avatars.mjs
   node --check src/avatar-sources.mjs
   node --check src/card-user-row.mjs
@@ -27,6 +28,7 @@ check:
   node --check src/message-links.mjs
   node --check src/webhook.mjs
   node --check src/approve.mjs
+  node --check src/logger.mjs
   shellcheck scripts/*.sh
   nix flake check
 

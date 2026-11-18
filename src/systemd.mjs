@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
+import { createLogger } from './logger.mjs';
 
-const log = (...args) => console.error(new Date().toISOString(), '[systemd]', ...args);
+const log = createLogger('systemd');
 
 export class SystemdWatchdog {
   constructor() {
@@ -47,7 +48,7 @@ export class SystemdWatchdog {
           this.watchdog(result.status);
         } else {
           const reason = result?.status || 'Unknown failure';
-          log(`Watchdog check not satisfied (${reason}); skipping WATCHDOG=1 ping`);
+          log.warn(`Watchdog check not satisfied (${reason}); skipping WATCHDOG=1 ping`);
           this.status(`Degraded: ${reason}`);
         }
       } catch (err) {

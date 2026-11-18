@@ -1,7 +1,8 @@
 import './test-guard.mjs';
 import fs from 'node:fs';
+import { createLogger } from './logger.mjs';
 
-const log = (...args) => console.error(new Date().toISOString(), '[screenshot]', ...args);
+const log = createLogger('screenshot');
 
 export class ScreenshotClient {
   constructor(config = {}) {
@@ -27,7 +28,7 @@ export class ScreenshotClient {
         this.clusterSecret = fs.readFileSync(this.secretFile, 'utf8').trim();
         return this.clusterSecret;
       } catch (err) {
-        console.warn(`Could not read browser-daemon secret file ${this.secretFile}: ${err.message}`);
+        log.warn(`Could not read browser-daemon secret file ${this.secretFile}: ${err.message}`);
       }
     }
     return null;
@@ -101,7 +102,7 @@ export class ScreenshotClient {
 
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
-        log(`browser-daemon run HTTP ${resp.status} for ${targetUrl}: ${text.slice(0, 150)}`);
+        log.warn(`browser-daemon run HTTP ${resp.status} for ${targetUrl}: ${text.slice(0, 150)}`);
         return null;
       }
 

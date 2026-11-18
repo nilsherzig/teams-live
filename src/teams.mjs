@@ -17,6 +17,9 @@ import { buildReplyCard, splitMarkdownForCards, stripMentionMarkup, MAX_CARD_BYT
 import { refreshTokensViaHttp } from 'msteams-mcp/dist/auth/token-refresh-http.js';
 import { searchPeople as mcpSearchPeople } from 'msteams-mcp/dist/api/substrate-api.js';
 import { resolveProfiles as mcpResolveProfiles } from 'msteams-mcp/dist/api/profile-api.js';
+import { createLogger } from './logger.mjs';
+
+const log = createLogger('teams');
 
 export {
   getThreadMessages,
@@ -64,15 +67,15 @@ async function attemptTokenRefreshOnAuthError(res) {
     res.error?.code === 'AUTH_REQUIRED';
   if (!isAuth) return false;
 
-  console.warn(new Date().toISOString(), `[teams] Auth error detected (${res.error?.message}), attempting token refresh...`);
+  log.warn(`Auth error detected (${res.error?.message}), attempting token refresh...`);
   try {
     const refreshed = await refreshTokensViaHttp();
     if (refreshed.ok) {
-      console.log(new Date().toISOString(), '[teams] Token refresh succeeded, retrying operation...');
+      log.info('Token refresh succeeded, retrying operation...');
       return true;
     }
   } catch (err) {
-    console.error(new Date().toISOString(), '[teams] Token refresh threw:', err.message);
+    log.error('Token refresh threw:', err.message);
   }
   return false;
 }
@@ -133,9 +136,7 @@ async function retrySendWithRecovery(sendFn) {
   while (!result.ok && isRetryableNetworkError(result) && attempt < maxRetries) {
     attempt++;
     const delayMs = attempt * 1500;
-    console.warn(
-      new Date().toISOString(),
-      `[teams] Transient network error (${result.error?.message || result.error}), retry ${attempt}/${maxRetries} in ${delayMs / 1000}s...`
+    log.warn(`Transient network error (${result.error?.message || result.error}), retry ${attempt}/${maxRetries} in ${delayMs / 1000}s...`
     );
     await new Promise((r) => setTimeout(r, delayMs));
     result = await sendFn();
@@ -481,7 +482,7 @@ export function prepareRichMessages(message) {
     try {
       return makeRichMessage(text, buildReplyCard(text, { part }));
     } catch (err) {
-      console.warn(new Date().toISOString(), '[teams] Could not build a card, sending regular message:', err?.message || err);
+      log.warn('Could not build a card, sending regular message:', err?.message || err);
       return text;
     }
   };
@@ -604,9 +605,7 @@ async function withCardFallback(message, run) {
   const result = await run(message);
   // Network and auth failures were already retried; a plain message would not fare better.
   if (result.ok || !isRichMessage(message) || isRetryableNetworkError(result)) return result;
-  console.warn(
-    new Date().toISOString(),
-    '[teams] Adaptive Card message failed, retrying as regular message:',
+  log.warn('Adaptive Card message failed, retrying as regular message:',
     result.error?.message || result.error
   );
   return run(message.markdown);
@@ -639,7 +638,7 @@ async function sendDirectMessageOnce(conversationId, markdown) {
   };
   const result = await retrySendWithRecovery(() => transport.sendMessage(conversationId, html, options));
   if (!result.ok) {
-    console.error(new Date().toISOString(), `[teams] sendDirectMessage failed in ${conversationId}:`, result.error?.message || result.error);
+    log.error(`sendDirectMessage failed in ${conversationId}:`, result.error?.message || result.error);
   } else if (result.value) {
     recordBotMessageId(result.value.timestamp);
     recordBotMessageId(result.value.messageId);
@@ -679,7 +678,7 @@ async function sendReplyOnce(conversationId, originalMessage, replyMarkdown, opt
     if (updateResult.ok) {
       return updateResult;
     }
-    console.warn(new Date().toISOString(), `[teams] updateReply failed for ${updateId}, falling back to sendMessage:`, updateResult.error?.message || updateResult.error);
+    log.warn(`updateReply failed for ${updateId}, falling back to sendMessage:`, updateResult.error?.message || updateResult.error);
   }
 
   const isChannel = conversationId.endsWith('@thread.tacv2');
@@ -732,7 +731,7 @@ async function sendReplyOnce(conversationId, originalMessage, replyMarkdown, opt
 
   const result = await retrySendWithRecovery(() => transport.sendMessage(conversationId, html, options));
   if (!result.ok) {
-    console.error(new Date().toISOString(), `[teams] sendReply failed in ${conversationId}:`, result.error?.message || result.error);
+    log.error(`sendReply failed in ${conversationId}:`, result.error?.message || result.error);
   } else if (result.value) {
     recordBotMessageId(result.value.timestamp);
     recordBotMessageId(result.value.messageId);
@@ -876,7 +875,7 @@ async function updateReplyOnce(conversationId, serverMessageId, originalMessage,
 
   const result = await retrySendWithRecovery(() => transport.editMessage(conversationId, String(serverMessageId), html, 'html', options));
   if (!result.ok) {
-    console.error(new Date().toISOString(), `[teams] updateReply failed for ${serverMessageId} in ${conversationId}:`, result.error?.message || result.error);
+    log.error(`updateReply failed for ${serverMessageId} in ${conversationId}:`, result.error?.message || result.error);
   }
   return result;
 }
@@ -988,9 +987,7 @@ export async function appendThumbnailToMessage(
   if (amsRes.ok && amsRes.objectId && amsRes.url) {
     thumbnailBlock = `<p style="margin-top:6px;margin-bottom:0;"><a href="${cleanUrl}"><img src="${amsRes.url}" itemscope="" itemtype="http://schema.skype.com/AMSImage" itemid="${amsRes.objectId}" alt="Preview" style="display:block;border-radius:6px;border:1px solid #d1d1d1;max-width:320px;" /></a></p><span style="display:none">${BOT_WATERMARK}</span>`;
   } else {
-    console.warn(
-      new Date().toISOString(),
-      `[teams] AMS upload failed (${amsRes.error?.message || amsRes.error}), falling back to data URI:`,
+    log.warn(`AMS upload failed (${amsRes.error?.message || amsRes.error}), falling back to data URI:`,
       amsRes.error
     );
     thumbnailBlock = `<p style="margin-top:6px;margin-bottom:0;"><a href="${cleanUrl}"><img src="data:image/jpeg;base64,${b64}" width="280" alt="Preview" style="display:block;border-radius:6px;border:1px solid #d1d1d1;max-width:320px;" /></a></p><span style="display:none">${BOT_WATERMARK}</span>`;
@@ -1010,9 +1007,7 @@ export async function appendThumbnailToMessage(
     transport.editMessage(conversationId, String(serverMessageId), newHtml, 'html', options)
   );
   if (!result.ok) {
-    console.error(
-      new Date().toISOString(),
-      `[teams] appendThumbnailToMessage failed for ${serverMessageId} in ${conversationId}:`,
+    log.error(`appendThumbnailToMessage failed for ${serverMessageId} in ${conversationId}:`,
       result.error?.message || result.error
     );
   }
@@ -1052,9 +1047,7 @@ async function editOriginalMessageOnce(conversationId, messageId, originalUrl, c
     transport.editMessage(conversationId, String(messageId), fullHtml, 'html', { properties })
   );
   if (!result.ok) {
-    console.error(
-      new Date().toISOString(),
-      `[teams] editOriginalMessage failed for ${messageId} in ${conversationId}:`,
+    log.error(`editOriginalMessage failed for ${messageId} in ${conversationId}:`,
       result.error?.message || result.error
     );
   }

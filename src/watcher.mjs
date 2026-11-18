@@ -83,8 +83,9 @@ import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
 import { formatTokenExpiry } from './gitlab.mjs';
 import { ServiceAlertTracker, formatServiceAlert, serviceAlertOptionsFromConfig } from './service-alerts.mjs';
+import { createLogger } from './logger.mjs';
 
-const log = (...args) => console.error(new Date().toISOString(), '[watcher]', ...args);
+const log = createLogger('watcher');
 
 // Longest wait before a watched Jira issue we cannot read (403/404) is checked again.
 const JIRA_ISSUE_DENIED_MAX_DELAY_MS = 6 * 60 * 60 * 1000;
@@ -2092,14 +2093,14 @@ export class MergeRequestWatcher {
     }
     recordBotMessageId(msgId);
 
-    log(`[thumbnail] Capturing screenshot for unrecognized link ${targetUrl} in message ${msgId}...`);
+    log.debug(`[thumbnail] Capturing screenshot for unrecognized link ${targetUrl} in message ${msgId}...`);
     const thumbData = await this.screenshot.capture(targetUrl);
     if (!thumbData || (!thumbData.b64 && typeof thumbData !== 'string')) {
-      log(`[thumbnail] Failed to capture screenshot for ${targetUrl}`);
+      log.warn(`[thumbnail] Failed to capture screenshot for ${targetUrl}`);
       return;
     }
 
-    log(`[thumbnail] Editing message ${msgId} with thumbnail screenshot card...`);
+    log.debug(`[thumbnail] Editing message ${msgId} with thumbnail screenshot card...`);
     const result = await appendThumbnailToMessage(
       event.conversationId,
       event.messageId,
@@ -2613,7 +2614,7 @@ export class MergeRequestWatcher {
     try {
       await this.avatarService.avatarsFor(collectCardPeople(data));
     } catch (e) {
-      log(`profile picture lookup failed: ${e.message}`);
+      log.warn(`profile picture lookup failed: ${e.message}`);
     }
   }
 
@@ -2744,7 +2745,7 @@ export class MergeRequestWatcher {
     if (!shouldNotify) return;
 
     if (!this.isRecentMrMessage(entry, mr)) {
-      log(
+      log.debug(
         `Skipping CI status comment for older message ${entry.messageId} in ${entry.conversationId} for ${mr.project}!${mr.iid} (only updating last 3 messages)`
       );
       return;
@@ -2878,7 +2879,7 @@ export class MergeRequestWatcher {
     if (!notifyMerged) return;
 
     if (!this.isRecentMrMessage(entry, mr)) {
-      log(
+      log.debug(
         `Skipping merged comment for older message ${entry.messageId} in ${entry.conversationId} for ${mr.project}!${mr.iid} (only updating last 3 messages)`
       );
       return;
@@ -2987,7 +2988,7 @@ export class MergeRequestWatcher {
     if (!notifyClosed) return;
 
     if (!this.isRecentMrMessage(entry, mr)) {
-      log(
+      log.debug(
         `Skipping closed comment for older message ${entry.messageId} in ${entry.conversationId} for ${mr.project}!${mr.iid} (only updating last 3 messages)`
       );
       return;
@@ -3618,7 +3619,7 @@ export class MergeRequestWatcher {
             try {
               const resolved = await this.gitlab.resolveProjectPath(mr.project);
               if (resolved && resolved !== mr.project) {
-                log(`Resolved project ${mr.project} -> ${resolved} for MR !${mr.iid}`);
+                log.debug(`Resolved project ${mr.project} -> ${resolved} for MR !${mr.iid}`);
                 mr.project = resolved;
                 const key = `${mr.project}!${mr.iid}`.toLowerCase();
                 if (seenProjects.has(key)) {
@@ -3934,13 +3935,17 @@ export class MergeRequestWatcher {
         }
         link.attempts = (link.attempts || 0) + 1;
         try {
+          let unavailableReason = null;
           const preview = await this.gitlab.getBlobPreview(link, {
             maxLines: this.config?.gitlab?.code_preview?.max_lines ?? 30,
             restrictToGroup: this.config?.gitlab?.code_preview?.restrict_to_group === true,
+            onUnavailable: (reason) => {
+              unavailableReason = reason;
+            },
           });
           if (!preview) {
             link.unavailable = true;
-            log(`no code preview for ${link.key}`);
+            log.warn(`no code preview for ${link.key}${unavailableReason ? `: ${unavailableReason}` : ''}`);
             continue;
           }
           await this.handleCodePreviewComment(entry, link, preview);
@@ -4084,7 +4089,7 @@ export class MergeRequestWatcher {
 
   async setCommandReaction(conversationId, messageId, reactionKey) {
     if (!conversationId || !messageId) {
-      log(`Cannot set command reaction: missing conversationId (${conversationId}) or messageId (${messageId})`);
+      log.warn(`Cannot set command reaction: missing conversationId (${conversationId}) or messageId (${messageId})`);
       return;
     }
     try {
@@ -4095,9 +4100,9 @@ export class MergeRequestWatcher {
       }
       const res = await addReaction(conversationId, messageId, reactionKey);
       if (res && !res.ok) {
-        log(`Warning: Failed to set reaction ${reactionKey} on ${messageId} in ${conversationId}: ${res.error?.message || JSON.stringify(res.error)}`);
+        log.warn(`Failed to set reaction ${reactionKey} on ${messageId} in ${conversationId}: ${res.error?.message || JSON.stringify(res.error)}`);
       } else {
-        log(`Set reaction ${reactionKey} on ${messageId} in ${conversationId}`);
+        log.debug(`Set reaction ${reactionKey} on ${messageId} in ${conversationId}`);
       }
       return res;
     } catch (err) {
@@ -4141,7 +4146,7 @@ export class MergeRequestWatcher {
           const msgText = buildMessageSearchText({ content: msg.content, links: msg.links }, { includeQuotes: true });
           const links = deduplicateMrs(this.gitlab.findMrLinks(msgText, { allowQuotes: true }));
           if (links.length > 0) {
-            log(`Found target MR in preceding message ${msg.id}: ${links.map((l) => `${l.project}!${l.iid}`).join(', ')}`);
+            log.debug(`Found target MR in preceding message ${msg.id}: ${links.map((l) => `${l.project}!${l.iid}`).join(', ')}`);
             links.source = 'preceding';
             links.sourceMessageId = String(msg.id);
             links.interveningHumanMessages = interveningHumanMessages;
@@ -4235,7 +4240,7 @@ export class MergeRequestWatcher {
           `✅ Approved [${mrRef}](${mrUrl})${titleLine}${noteText}`
         );
       } else {
-        log(`Skipping 'Approved' reply for ${mr.project}!${mr.iid} in ${event.conversationId} because it is a direct response to a watched MR message`);
+        log.debug(`Skipping 'Approved' reply for ${mr.project}!${mr.iid} in ${event.conversationId} because it is a direct response to a watched MR message`);
       }
       await this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success);
 
@@ -4925,7 +4930,7 @@ export class MergeRequestWatcher {
     const react = (kind) =>
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS[kind]).catch(() => {});
     if (!this.isAdmin(event)) {
-      log(`Unauthorized /tv ${action} attempt from ${event.from || event.fromMri} in ${event.conversationId}`);
+      log.warn(`Unauthorized /tv ${action} attempt from ${event.from || event.fromMri} in ${event.conversationId}`);
       await sendReply(event.conversationId, event, this.respondNotPrivileged(event));
       react('failure');
       return;
@@ -5177,7 +5182,7 @@ export class MergeRequestWatcher {
             presenceData = presRes.value.data[0]?.presence || {};
           }
         } catch (err) {
-          log(`Warning: Failed to fetch presence for ${targetPerson.mri}: ${err.message}`);
+          log.warn(`Failed to fetch presence for ${targetPerson.mri}: ${err.message}`);
         }
       }
 
@@ -5208,7 +5213,7 @@ export class MergeRequestWatcher {
           }
         }
       } catch (err) {
-        log(`Warning: Calendar view query failed: ${err.message}`);
+        log.warn(`Calendar view query failed: ${err.message}`);
       }
 
       // Check HRworks absences
@@ -5217,7 +5222,7 @@ export class MergeRequestWatcher {
         try {
           hrworksAbsence = await this.hrworks.findPersonAbsence(targetPerson);
         } catch (err) {
-          log(`Warning: HRworks absence query failed: ${err.message}`);
+          log.warn(`HRworks absence query failed: ${err.message}`);
           hrworksAbsence = { checked: true, error: err.message };
         }
       }
@@ -5488,7 +5493,7 @@ export class MergeRequestWatcher {
       for (const person of this.mrListAuthorPersons(mrs).values()) unique.set(person.name, person);
       await this.avatarService.avatarsFor([...unique.values()], { deadlineMs: MRS_LIST_AVATAR_DEADLINE_MS, size: MRS_LIST_AVATAR_SIZE });
     } catch (e) {
-      log(`profile picture lookup failed: ${e.message}`);
+      log.warn(`profile picture lookup failed: ${e.message}`);
     }
   }
 
@@ -6004,7 +6009,7 @@ export class MergeRequestWatcher {
 
   async executeAdminCommand(event, args = []) {
     if (!this.isAdmin(event)) {
-      log(`Unauthorized /sudo attempt from ${event.from || event.fromMri} in ${event.conversationId}`);
+      log.warn(`Unauthorized /sudo attempt from ${event.from || event.fromMri} in ${event.conversationId}`);
       await sendReply(event.conversationId, event, this.respondNotPrivileged(event));
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
       return;
@@ -6117,7 +6122,7 @@ export class MergeRequestWatcher {
 
   async executeRestartCommand(event) {
     if (!this.isAdmin(event)) {
-      log(`Unauthorized /restart attempt from ${event.from || event.fromMri} in ${event.conversationId}`);
+      log.warn(`Unauthorized /restart attempt from ${event.from || event.fromMri} in ${event.conversationId}`);
       await sendReply(event.conversationId, event, this.respondNotPrivileged(event));
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
       return;
@@ -6139,7 +6144,7 @@ export class MergeRequestWatcher {
 
   async executeReauthCommand(event) {
     if (!this.isAdmin(event)) {
-      log(`Unauthorized /reauth attempt from ${event.from || event.fromMri} in ${event.conversationId}`);
+      log.warn(`Unauthorized /reauth attempt from ${event.from || event.fromMri} in ${event.conversationId}`);
       await sendReply(event.conversationId, event, this.respondNotPrivileged(event));
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
       return;
@@ -6208,7 +6213,7 @@ export class MergeRequestWatcher {
           savedPath = configuredPath;
         }
       } catch (err) {
-        log(`Configured secret file (${configuredPath}) is not writable (${err.code || err.message}). Using override directory.`);
+        log.warn(`Configured secret file (${configuredPath}) is not writable (${err.code || err.message}). Using override directory.`);
         isReadOnlySecret = true;
       }
 
@@ -6254,7 +6259,7 @@ export class MergeRequestWatcher {
 
   async executeRenewGitLabTokenCommand(event) {
     if (!this.isAdmin(event)) {
-      log(`Unauthorized GitLab token renewal attempt from ${event.from || event.fromMri} in ${event.conversationId}`);
+      log.warn(`Unauthorized GitLab token renewal attempt from ${event.from || event.fromMri} in ${event.conversationId}`);
       await sendReply(event.conversationId, event, this.respondNotPrivileged(event));
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
       return;
@@ -6353,7 +6358,7 @@ export class MergeRequestWatcher {
         }
 
         if (adminConv) {
-          log(`GitLab token expires in ${diffDays} days (< 10d), sending warning to admin ${adminConv}...`);
+          log.warn(`GitLab token expires in ${diffDays} days (< 10d), sending warning to admin ${adminConv}...`);
           const warningMsg =
             '⚠️ **GitLab Personal Access Token Expiry Warning**\n\n' +
             `The GitLab personal access token will expire in **${diffDays} day${diffDays === 1 ? '' : 's'}** (${tokenData.expires_at}).\n\n` +
@@ -6815,7 +6820,7 @@ export class MergeRequestWatcher {
       });
       await Promise.all([...bySize].map(([size, people]) => this.avatarService.avatarsFor(people, { size, deadlineMs: MRS_LIST_AVATAR_DEADLINE_MS })));
     } catch (e) {
-      log(`profile picture lookup failed: ${e.message}`);
+      log.warn(`profile picture lookup failed: ${e.message}`);
     }
   }
 
@@ -7420,7 +7425,7 @@ export class MergeRequestWatcher {
     if (!parsed) return;
 
     const { command, args } = parsed;
-    log(`Handling slash command ${command} from ${event.from || event.fromMri} in ${event.conversationId}`);
+    log.debug(`Handling slash command ${command} from ${event.from || event.fromMri} in ${event.conversationId}`);
 
     this.recordUserInteraction(event, command);
 
@@ -7801,7 +7806,7 @@ export class MergeRequestWatcher {
           continue;
         }
         if (mrState.status === 'merged' || mrState.status === 'closed') {
-          log(`MR ${mr.project}!${mr.iid} is already ${mrState.status}, cannot approve`);
+          log.warn(`MR ${mr.project}!${mr.iid} is already ${mrState.status}, cannot approve`);
           continue;
         }
 
@@ -7848,7 +7853,7 @@ export class MergeRequestWatcher {
       // Award missing emojis
       for (const name of desiredEmojiNames) {
         if (!existingNames.has(name)) {
-          log(`Awarding emoji :${name}: on ${project}!${iid}...`);
+          log.debug(`Awarding emoji :${name}: on ${project}!${iid}...`);
           try {
             await this.gitlab.awardEmoji(project, iid, name);
             log(`Awarded emoji :${name}: on ${project}!${iid}`);
@@ -7861,7 +7866,7 @@ export class MergeRequestWatcher {
       // Remove unneeded emojis (excluding thumbsup which is reserved for approval)
       for (const award of myAwards) {
         if (award.name !== 'thumbsup' && !desiredEmojiNames.has(award.name)) {
-          log(`Removing award emoji :${award.name}: (id: ${award.id}) from ${project}!${iid}...`);
+          log.debug(`Removing award emoji :${award.name}: (id: ${award.id}) from ${project}!${iid}...`);
           try {
             await this.gitlab.deleteAwardEmoji(project, iid, award.id);
             log(`Removed award emoji :${award.name}: from ${project}!${iid}`);
@@ -8216,7 +8221,7 @@ export class MergeRequestWatcher {
           if (parsed) {
             const dedupKey = `${conversationId}:${parsed.command}:${parsed.args.join(' ')}`.toLowerCase();
             if (processedHistoryCommands.has(dedupKey)) {
-              log(`Skipping duplicate slash command from history: "${msg.content}" in ${conversationId}`);
+              log.debug(`Skipping duplicate slash command from history: "${msg.content}" in ${conversationId}`);
               continue;
             }
             processedHistoryCommands.add(dedupKey);
@@ -8273,7 +8278,7 @@ export class MergeRequestWatcher {
     // Base 10 minutes with +/- 2 minutes jitter (8 to 12 minutes)
     const jitterMs = Math.floor((Math.random() * 4 - 2) * 60 * 1000);
     const delay = Math.max(60 * 1000, this.precomputeIntervalMs + jitterMs);
-    log(`Scheduling next precompute in ${(delay / 1000 / 60).toFixed(1)}m (jitter: ${(jitterMs / 1000).toFixed(0)}s)`);
+    log.debug(`Scheduling next precompute in ${(delay / 1000 / 60).toFixed(1)}m (jitter: ${(jitterMs / 1000).toFixed(0)}s)`);
     this.precomputeTimer = setTimeout(async () => {
       await this.runPrecompute();
       this.scheduleNextPrecompute();
@@ -8282,14 +8287,14 @@ export class MergeRequestWatcher {
   }
 
   async runPrecompute() {
-    log('Precomputing /mrs, /alerts, /sprint, and /meetings cache in background...');
+    log.debug('Precomputing /mrs, /alerts, /sprint, and /meetings cache in background...');
     await Promise.allSettled([
       this.getOrFetchMrsData({ force: true }).catch((err) => log(`Precompute /mrs failed: ${err.message}`)),
       this.getOrFetchAlertsData({ force: true }).catch((err) => log(`Precompute /alerts failed: ${err.message}`)),
       this.getOrFetchSprintText({ force: true }).catch((err) => log(`Precompute /sprint failed: ${err.message}`)),
       this.getOrFetchMeetingsText({ force: true }).catch((err) => log(`Precompute /meetings failed: ${err.message}`)),
     ]);
-    log('Precompute /mrs, /alerts, /sprint, and /meetings cache completed');
+    log.debug('Precompute /mrs, /alerts, /sprint, and /meetings cache completed');
     if (this.hrworks) {
       this.hrworks.prefetchAllAbsences().catch((err) => log(`Precompute HRworks absences failed: ${err.message}`));
     }

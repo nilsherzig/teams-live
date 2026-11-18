@@ -16,8 +16,9 @@ import path from 'node:path';
 import { SystemdWatchdog } from './systemd.mjs';
 import { HealthMonitor } from './health.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
+import { createLogger } from './logger.mjs';
 
-const log = (...args) => console.error(new Date().toISOString(), '[main]', ...args);
+const log = createLogger('main');
 
 // CLI args
 const args = process.argv.slice(2);
@@ -181,10 +182,10 @@ async function main() {
     const whCfg = config.gitlab.webhook;
     const manage = Boolean(whCfg.auto_setup && whCfg.url && gitlab.token && whCfg.secret);
     if (whCfg.auto_setup && whCfg.url && whCfg.secret && !isStrongSecret(whCfg.secret)) {
-      log(`The GitLab webhook secret is shorter than ${MIN_SECRET_LENGTH} characters: hooks are registered but never replaced or cleaned up.`);
+      log.warn(`The GitLab webhook secret is shorter than ${MIN_SECRET_LENGTH} characters: hooks are registered but never replaced or cleaned up.`);
     }
     if (whCfg.auto_setup && whCfg.url && !whCfg.secret) {
-      log('No GitLab webhook secret configured: the hook is registered without one and never replaced or cleaned up.');
+      log.warn('No GitLab webhook secret configured: the hook is registered without one and never replaced or cleaned up.');
     }
     if (manage) {
       webhookReconciler = new WebhookReconciler({
@@ -201,7 +202,7 @@ async function main() {
       try {
         webhookReconciler.loadState();
       } catch (err) {
-        log(`Webhook state unusable (${err.message}): hook management is off`);
+        log.warn(`Webhook state unusable (${err.message}): hook management is off`);
         webhookReconciler = null;
       }
     }
@@ -272,7 +273,7 @@ async function main() {
   const apCfg = config.gitlab?.approve;
   if (apCfg?.enable) {
     if (config.teams?.rich_messages !== true) {
-      log('GitLab approval flow is enabled but teams.rich_messages is off: no Approve button will be shown.');
+      log.warn('GitLab approval flow is enabled but teams.rich_messages is off: no Approve button will be shown.');
     }
     try {
       approveServer = new ApproveServer({
@@ -288,7 +289,7 @@ async function main() {
       await approveServer.start();
       watcher.setApproveFlow(approveServer);
     } catch (err) {
-      log(`GitLab approval flow not started: ${err.message}`);
+      log.warn(`GitLab approval flow not started: ${err.message}`);
       approveServer = null;
     }
   }
@@ -382,6 +383,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('Fatal error in teams-live:', err);
+  log.error('Fatal error in teams-live:', err);
   process.exit(1);
 });
