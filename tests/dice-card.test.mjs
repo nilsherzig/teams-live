@@ -75,6 +75,13 @@ test('a separator makes it a pick; options are trimmed, de-duplicated and capped
   assert.equal(parsePickOptions(Array.from({ length: 30 }, (_, i) => `o${i}`).join('|')).length, MAX_OPTIONS);
 });
 
+test('picks accept commas without spaces, "or" and a mix of separators', () => {
+  assert.deepEqual(parseDiceArgs(['pizza,', 'sushi,tuna']).options, ['pizza', 'sushi', 'tuna']);
+  assert.deepEqual(parseDiceArgs(['pizza', 'or', 'fish']).options, ['pizza', 'fish']);
+  assert.deepEqual(parseDiceArgs(['pizza,', 'sushi', 'or', 'tuna']).options, ['pizza', 'sushi', 'tuna']);
+  assert.deepEqual(parseDiceArgs(['Pizza', 'OR', 'fish']).options, ['Pizza', 'fish']);
+});
+
 test('rolling: totals, modifier and the keep rules drop the right dice', () => {
   const plain = rollDice(parseDiceArgs(['2d6+3']), seq(at(4, 6), at(5, 6)));
   assert.deepEqual(plain.rolls.map((r) => r.value), [4, 5]);
