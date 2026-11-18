@@ -52,6 +52,17 @@ test('loadConfig resolves secrets before reading values', () => {
   assert.equal(config.conversations[0].id, '48:notes');
 });
 
+test('GitLab fallback token files are loaded in order and deduplicated', () => {
+  const dir = tmpDir();
+  const first = path.join(dir, 'first');
+  const second = path.join(dir, 'second');
+  fs.writeFileSync(first, 'fallback-one\n');
+  fs.writeFileSync(second, 'fallback-two\n');
+  const configPath = path.join(dir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ gitlab: { fallback_token_files: [first, second, first] } }));
+  assert.deepEqual(loadConfig(configPath).gitlab.fallback_tokens, ['fallback-one', 'fallback-two']);
+});
+
 test('teams.rich_messages is off by default and only enabled by boolean true', () => {
   const dir = tmpDir();
   const write = (teams) => {

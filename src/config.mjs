@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { normalizeTvConfig } from './tv.mjs';
 import { createLogger } from './logger.mjs';
@@ -291,6 +292,24 @@ export function loadConfig(configPath) {
       gitlab.token = process.env.GITLAB_TOKEN.trim();
     } else if (typeof fileConfig.gitlab?.token === 'string' && fileConfig.gitlab.token) {
       gitlab.token = fileConfig.gitlab.token.trim();
+    }
+  }
+
+  gitlab.fallback_tokens = [];
+  gitlab.fallback_token_sources = [];
+  const tokenOverrideBase = (homeDir && homeDir !== '/' && homeDir !== '/root' ? homeDir : null) || stateDir;
+  for (const file of Array.isArray(fileConfig.gitlab?.fallback_token_files) ? fileConfig.gitlab.fallback_token_files : []) {
+    if (typeof file !== 'string' || !file) continue;
+    const key = createHash('sha256').update(file).digest('hex');
+    const override = path.join(tokenOverrideBase, 'overrides', `gitlab-token-${key}`);
+    try {
+      const token = fs.readFileSync(fs.existsSync(override) ? override : file, 'utf8').trim();
+      if (token && token !== gitlab.token && !gitlab.fallback_tokens.includes(token)) {
+        gitlab.fallback_tokens.push(token);
+        gitlab.fallback_token_sources.push({ file, override });
+      }
+    } catch (e) {
+      log.warn(`Could not read GitLab fallback token file ${file}: ${e.message}`);
     }
   }
 

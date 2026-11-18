@@ -885,14 +885,15 @@ export class ApproveServer {
     if (record.status === 'approved') return { status: 'used' };
     if (record.status === 'stale') return { status: 'blocked', reason: 'This link was superseded because the merge request changed. Use the button on the current Teams card.' };
     let mr;
+    let tokenIndex;
     try {
-      mr = await this.gitlab.getMr(record.project, record.iid);
+      ({ mr, tokenIndex } = await this.readMr(record));
     } catch {
       return { status: 'blocked', reason: 'GitLab could not be reached to read the merge request. Nothing was approved. Try again later.' };
     }
     if (mr?.state !== 'opened') {
       this.store.invalidate(record.project, record.iid);
-      return { status: 'blocked', mr, reason: `This merge request is ${mr?.state === 'merged' ? 'merged' : 'no longer open'}. Nothing to approve.` };
+      return { status: 'blocked', mr, tokenIndex, reason: `This merge request is ${mr?.state === 'merged' ? 'merged' : 'no longer open'}. Nothing to approve.` };
     }
     const draft = Boolean(mr.draft || mr.work_in_progress || mr.detailed_merge_status === 'draft_status');
     if (draft) return { status: 'blocked', mr, reason: 'This merge request is a draft and cannot be approved.' };
@@ -902,15 +903,48 @@ export class ApproveServer {
       this.store.invalidate(record.project, record.iid);
       return { status: 'blocked', mr, reason: 'The merge request changed after this card was posted (new commits). Review it again and use the button on the updated card.' };
     }
-    const state = await this.gitlab.getUserApprovalState(record.project, record.iid);
+    // Identity and approvals come from the credential that can see the merge
+    // request, and the approval is sent under that same one.
+    const state = await this.gitlab.getUserApprovalState(record.project, record.iid, this.asToken(tokenIndex));
+    if (tokenIndex !== undefined && state.tokenIndex !== undefined && state.tokenIndex !== tokenIndex) {
+      return { status: 'blocked', mr, reason: 'The GitLab account could not be verified consistently. Nothing was approved. Try again later.' };
+    }
     if (!state.known) {
       return { status: 'blocked', mr, reason: 'The configured GitLab account or the current approvals could not be verified. Nothing was approved. Try again later.' };
     }
-    if (state.hasApproved) return { status: 'already', mr, user: state.user };
+    if (state.hasApproved) return { status: 'already', mr, user: state.user, tokenIndex };
     if (state.canApprove === false) {
-      return { status: 'blocked', mr, user: state.user, reason: 'GitLab does not allow the configured account to approve this merge request (for example as its author).' };
+      return { status: 'blocked', mr, user: state.user, tokenIndex, reason: 'GitLab does not allow the configured account to approve this merge request (for example as its author).' };
     }
-    return { status: 'ready', mr, user: state.user };
+    return { status: 'ready', mr, user: state.user, tokenIndex };
+  }
+
+  /**
+   * Reads the merge request and, with the real client, WHO acts: the first
+   * credential that can see it (`tokenIndex`). Stand-ins without `locateMr` read
+   * it the plain way and leave the credential undecided.
+   */
+  async readMr(record) {
+    if (typeof this.gitlab.locateMr === 'function') {
+      const found = await this.gitlab.locateMr(record.project, record.iid);
+      return { mr: found.mr, tokenIndex: found.tokenIndex, user: found.user };
+    }
+    return { mr: await this.gitlab.getMr(record.project, record.iid), tokenIndex: undefined, user: null };
+  }
+
+  /** Option object that pins a read to the credential chosen by the preflight (empty when none was). */
+  asToken(tokenIndex) {
+    return tokenIndex === undefined ? undefined : { tokenIndex };
+  }
+
+  /**
+   * Options for a write: the credential the preflight chose, and the account
+   * that was shown, which the client re-checks before it sends anything. Empty
+   * when the flow runs on a stand-in client.
+   */
+  asActor(result) {
+    if (result?.tokenIndex === undefined) return {};
+    return { tokenIndex: result.tokenIndex, ...(result.user?.id ? { expectUserId: result.user.id } : {}) };
   }
 
   /**
@@ -922,14 +956,16 @@ export class ApproveServer {
     if (record.status === 'used') return { status: 'used' };
     if (record.status === 'stale') return { status: 'blocked', reason: 'This link is no longer valid because the merge request changed. Use the button on the current Teams card.' };
     let mr;
+    let tokenIndex;
+    let located = null;
     try {
-      mr = await this.gitlab.getMr(record.project, record.iid);
+      ({ mr, tokenIndex, user: located } = await this.readMr(record));
     } catch {
       return { status: 'blocked', reason: 'GitLab could not be reached to read the merge request. Nothing was reopened. Try again later.' };
     }
     if (mr?.state === 'opened') {
       this.store.invalidate(record.project, record.iid, 'reopen');
-      return { status: 'already', mr };
+      return { status: 'already', mr, tokenIndex };
     }
     if (mr?.state === 'merged') {
       this.store.invalidate(record.project, record.iid, 'reopen');
@@ -938,8 +974,8 @@ export class ApproveServer {
     if (mr?.state !== 'closed') {
       return { status: 'blocked', mr, reason: 'The state of the merge request is unknown. Nothing was reopened.' };
     }
-    const user = typeof this.gitlab.getCurrentUser === 'function' ? await this.gitlab.getCurrentUser().catch(() => null) : null;
-    return { status: 'ready', mr, user: user?.id ? user : null };
+    const user = await this.actingUser(tokenIndex, located);
+    return { status: 'ready', mr, user, tokenIndex };
   }
 
   /**
@@ -953,8 +989,10 @@ export class ApproveServer {
     if (record.status === 'used') return { status: 'used' };
     if (record.status === 'stale') return { status: 'blocked', reason: 'This link was superseded because the merge request changed. Use the button on the current Teams card.' };
     let mr;
+    let tokenIndex;
+    let located = null;
     try {
-      mr = await this.gitlab.getMr(record.project, record.iid);
+      ({ mr, tokenIndex, user: located } = await this.readMr(record));
     } catch {
       return { status: 'blocked', reason: 'GitLab could not be reached to read the merge request. Nothing was merged. Try again later.' };
     }
@@ -980,8 +1018,16 @@ export class ApproveServer {
     }
     const reason = mergeBlockReason(mr);
     if (reason) return { status: 'blocked', mr, reason };
-    const user = typeof this.gitlab.getCurrentUser === 'function' ? await this.gitlab.getCurrentUser().catch(() => null) : null;
-    return { status: 'ready', mr, user: user?.id ? user : null };
+    const user = await this.actingUser(tokenIndex, located);
+    return { status: 'ready', mr, user, tokenIndex };
+  }
+
+  /** The account behind the credential that will act, or null when it cannot be told (never another credential's). */
+  async actingUser(tokenIndex, located) {
+    if (located?.id) return located;
+    if (typeof this.gitlab.getCurrentUser !== 'function') return null;
+    const user = await this.gitlab.getCurrentUser(this.asToken(tokenIndex)).catch(() => null);
+    return user?.id ? user : null;
   }
 
   summary(record, mr, user) {
@@ -1123,12 +1169,13 @@ export class ApproveServer {
     const summary = this.summary(record, result.mr, result.user);
     let response;
     try {
-      response = await this.gitlab.reopenMr(record.project, record.iid);
+      response = await this.gitlab.reopenMr(record.project, record.iid, this.asActor(result));
     } catch (err) {
+      if (err?.identityMismatch) return this.identityChanged(summary, 'reopened');
       const status = gitlabStatus(err);
       log(`Reopen of ${record.project}!${record.iid} failed${status ? ` (HTTP ${status})` : ' (no response)'}`);
       if (status === null || status >= 500) {
-        return this.confirmReopen(record, summary);
+        return this.confirmReopen(record, summary, result);
       }
       if (status === 401 || status === 403) {
         return { code: 403, title: 'Reopen refused', body: `${summary}<p>GitLab refused the request (the configured account may not be allowed to reopen this merge request). Nothing was reopened.</p>` };
@@ -1142,15 +1189,15 @@ export class ApproveServer {
     // an empty or odd body) is looked up again before a word is said.
     if (response?.state === 'opened') return this.reopened(record, summary);
     log(`Reopen of ${record.project}!${record.iid} answered with state ${JSON.stringify(response?.state ?? null)}`);
-    return this.confirmReopen(record, summary);
+    return this.confirmReopen(record, summary, result);
   }
 
   /**
    * Reads the merge request back after a failed, unanswered or inconclusive
    * reopen. Only a confirmed "opened" uses the link up and refreshes the card.
    */
-  async confirmReopen(record, summary) {
-    const mr = await this.gitlab.getMr(record.project, record.iid).catch(() => null);
+  async confirmReopen(record, summary, result = null) {
+    const mr = await this.gitlab.getMr(record.project, record.iid, this.asToken(result?.tokenIndex)).catch(() => null);
     if (mr?.state === 'opened') return this.reopened(record, summary);
     if (mr?.state === 'merged') {
       this.store.invalidate(record.project, record.iid, 'reopen');
@@ -1182,16 +1229,17 @@ export class ApproveServer {
     const summary = this.summary(record, result.mr, result.user);
     let response;
     try {
-      response = await this.gitlab.mergeMrOnce(record.project, record.iid, { sha: record.sha });
+      response = await this.gitlab.mergeMrOnce(record.project, record.iid, { sha: record.sha, ...this.asActor(result) });
     } catch (err) {
+      if (err?.identityMismatch) return this.identityChanged(summary, 'merged');
       const status = gitlabStatus(err);
       log(`Merge of ${record.project}!${record.iid} failed${status ? ` (HTTP ${status})` : ' (no response)'}`);
-      return this.confirmMerge(record, summary, { status });
+      return this.confirmMerge(record, summary, { status, result });
     }
     const head = response?.sha || response?.diff_refs?.head_sha || null;
     if (response?.state === 'merged' && head === record.sha) return this.merged(record, summary);
     log(`Merge of ${record.project}!${record.iid} answered with state ${JSON.stringify(response?.state ?? null)}`);
-    return this.confirmMerge(record, summary, { accepted: true });
+    return this.confirmMerge(record, summary, { accepted: true, result });
   }
 
   /**
@@ -1203,13 +1251,13 @@ export class ApproveServer {
    * link up and refreshes the card, and "not merged" is only said where a read
    * shows the merge request open (or closed).
    */
-  async confirmMerge(record, summary, { status = null, accepted = false } = {}) {
+  async confirmMerge(record, summary, { status = null, accepted = false, result = null } = {}) {
     const rejected = !accepted && status !== null && status < 500;
     const attempts = rejected ? 1 : this.mergePollAttempts;
     let mr = null;
     for (let i = 0; i < attempts; i++) {
       if (i > 0) await this.sleep(this.mergePollMs);
-      mr = await this.gitlab.getMr(record.project, record.iid).catch(() => null);
+      mr = await this.gitlab.getMr(record.project, record.iid, this.asToken(result?.tokenIndex)).catch(() => null);
       if (mr?.state === 'merged') break;
       if (mr && mr.state !== 'opened' && mr.state !== 'locked') break;
     }
@@ -1261,15 +1309,17 @@ export class ApproveServer {
   async sendApproval(record, result) {
     const summary = this.summary(record, result.mr, result.user);
     try {
-      await this.gitlab.approveMr(record.project, record.iid, { sha: record.sha });
+      await this.gitlab.approveMr(record.project, record.iid, { sha: record.sha, ...this.asActor(result) });
     } catch (err) {
+      if (err?.identityMismatch) return this.identityChanged(summary, 'approved');
       const status = gitlabStatus(err);
       log(`Approval of ${record.project}!${record.iid} failed${status ? ` (HTTP ${status})` : ' (no response)'}`);
       if (status === null || status >= 500 || status === 401 || status === 403) {
         // The outcome is uncertain (a first attempt may have landed before a
         // later answer): look before saying anything. Nothing is consumed
         // unless an approval is confirmed.
-        const state = await this.gitlab.getUserApprovalState(record.project, record.iid).catch(() => ({ known: false }));
+        // Asked as the very account the approval was sent as, never another one.
+        const state = await this.gitlab.getUserApprovalState(record.project, record.iid, this.asToken(result.tokenIndex)).catch(() => ({ known: false }));
         if (state.known && state.hasApproved) {
           return this.approved(record, summary);
         }
@@ -1287,6 +1337,11 @@ export class ApproveServer {
       return { code: 409, title: 'Approval failed', body: `${summary}<p>GitLab rejected the approval (HTTP ${status}), for example because the merge request changed. Nothing was approved. Reload the page to review it again.</p>` };
     }
     return this.approved(record, summary);
+  }
+
+  /** The account that was shown is no longer the one that would act: nothing was sent. */
+  identityChanged(summary, verb) {
+    return { code: 409, title: 'Account changed', body: `${summary}<p>The GitLab account that would act is no longer the one shown above, so nothing was sent. Nothing was ${verb}. Reload the page to review it again.</p>` };
   }
 
   async approved(record, summary) {

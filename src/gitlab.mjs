@@ -26,13 +26,17 @@ export function isSensitivePath(filePath) {
 }
 
 export class GitLabClient {
-  constructor({ host = 'git.wiit.one', token = null, group = '', onAuthError = null, onSuccess = null } = {}) {
+  constructor({ host = 'git.wiit.one', token = null, fallback_tokens = [], group = '', onAuthError = null, onSuccess = null } = {}) {
     this.host = (host || 'git.wiit.one').replace(/^https?:\/\//, '').replace(/\/+$/, '');
     this.token = token;
+    this.fallbackTokens = fallback_tokens.filter((value) => typeof value === 'string' && value && value !== token);
     this.group = group;
     this.onAuthError = onAuthError;
     this.onSuccess = onSuccess;
-    this.currentUser = null;
+    // Identity and token metadata belong to ONE credential: they are cached per
+    // credential index and never shared between credentials.
+    this.userCache = new Map();
+    this.tokenInfoCache = new Map();
     this.baseUrl = `https://${this.host}/api/v4`;
     const escapedHost = this.host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     this.escapedHost = escapedHost;
@@ -41,26 +45,48 @@ export class GitLabClient {
     this.pipelineUrlRegex = new RegExp(`https?:\\/\\/${escapedHost}\\/([\\w.\\/-]+?)\\/-\\/pipelines\\/(\\d+)`, 'g');
   }
 
-  async getCurrentUser() {
-    if (this.currentUser) return this.currentUser;
-    if (!this.token) return null;
+  /** Number of configured credentials: the primary one (index 0) and the fallbacks. */
+  get tokenCount() {
+    return 1 + this.fallbackTokens.length;
+  }
+
+  /** The credential at `index` (0 is the primary token); undefined when there is none. */
+  tokenAt(index) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.tokenCount) return undefined;
+    return index === 0 ? this.token : this.fallbackTokens[index - 1];
+  }
+
+  /** `[0, 1, ...]` of the credentials to try, in order (a missing primary token still counts as index 0). */
+  tokenIndices() {
+    return Array.from({ length: this.tokenCount }, (_, index) => index);
+  }
+
+  /**
+   * Account behind one credential (the primary one by default), or null when it
+   * cannot be told. Never answered from another credential's identity.
+   */
+  async getCurrentUser({ tokenIndex = 0 } = {}) {
+    if (!this.tokenAt(tokenIndex)) return null;
+    const cached = this.userCache.get(tokenIndex);
+    if (cached) return cached;
     try {
-      this.currentUser = await this.request('user');
-      return this.currentUser;
+      const user = await this.request('user', { tokenIndex });
+      this.userCache.set(tokenIndex, user);
+      return user;
     } catch {
       return null;
     }
   }
 
-  async verifyAuth() {
-    if (!this.token) return false;
+  async verifyAuth(token = this.token) {
+    if (!token) return false;
     try {
       const url = `${this.baseUrl}/user`;
       const res = await fetch(url, {
         method: 'GET',
         headers: {
           'User-Agent': 'teams-live/1.0',
-          'PRIVATE-TOKEN': this.token,
+          'PRIVATE-TOKEN': token,
         },
         signal: AbortSignal.timeout(10_000),
       });
@@ -70,45 +96,81 @@ export class GitLabClient {
     }
   }
 
-  async getTokenInfo() {
-    if (!this.token) return null;
-    if (this._tokenInfo && Date.now() - (this._tokenInfoFetchedAt || 0) < 60_000) {
-      return this._tokenInfo;
-    }
+  /** Metadata of one credential (the primary one by default). Never falls back to another credential. */
+  async getTokenInfo({ tokenIndex = 0 } = {}) {
+    if (!this.tokenAt(tokenIndex)) return null;
+    const cached = this.tokenInfoCache.get(tokenIndex);
+    if (cached && Date.now() - cached.at < 60_000) return cached.info;
     try {
-      const info = await this.request('personal_access_tokens/self');
-      this._tokenInfo = info;
-      this._tokenInfoFetchedAt = Date.now();
+      const info = await this.request('personal_access_tokens/self', { tokenIndex });
+      this.tokenInfoCache.set(tokenIndex, { info, at: Date.now() });
       return info;
     } catch {
       return null;
     }
   }
 
-  async rotateToken({ expiresAt = null } = {}) {
-    if (!this.token) throw new Error('Cannot rotate token: no token configured');
+  /**
+   * Rotates one credential (the primary one by default) with that credential
+   * itself. Sent once, never to another credential. Only the matching in-memory
+   * token is replaced; persisting it is the caller's job.
+   */
+  async rotateToken({ tokenIndex = 0, expiresAt = null } = {}) {
+    if (!this.tokenAt(tokenIndex)) throw new Error('Cannot rotate token: no token configured');
     const body = {};
     if (expiresAt) body.expires_at = expiresAt;
     const res = await this.request('personal_access_tokens/self/rotate', {
       method: 'POST',
       body: Object.keys(body).length > 0 ? body : null,
+      tokenIndex,
     });
     if (res?.token) {
-      this.token = res.token;
-      this._tokenInfo = res;
-      this._tokenInfoFetchedAt = Date.now();
-      this.currentUser = null;
+      if (tokenIndex === 0) this.token = res.token;
+      else this.fallbackTokens[tokenIndex - 1] = res.token;
+      this.tokenInfoCache.set(tokenIndex, { info: res, at: Date.now() });
+      this.userCache.delete(tokenIndex);
     }
     return res;
   }
 
-  async request(path, { method = 'GET', body = null, timeoutMs = 30_000, retry = true } = {}) {
+  /**
+   * Sends a request. Which credential is used:
+   * - `tokenIndex` set: exactly that credential, never another one (the caller
+   *   has decided who acts, e.g. after showing that account to a person).
+   * - the token's own endpoints (`user`, `personal_access_tokens/self*`): the
+   *   primary credential only.
+   * - otherwise the credentials are tried in order, moving on to the next one
+   *   ONLY after a definite 404 (the answer of a credential that cannot see the
+   *   resource; nothing was done). Any other outcome, a lost answer included,
+   *   ends the attempt, so a write is never repeated under another identity.
+   *   `fallback: false` pins a call to the primary credential.
+   */
+  async request(path, options = {}) {
+    const { tokenIndex = null, fallback = true, ...rest } = options;
+    if (tokenIndex !== null && tokenIndex !== undefined) {
+      const token = this.tokenAt(tokenIndex);
+      if (token === undefined) throw new Error(`GitLab credential ${tokenIndex} is not configured`);
+      return await this.requestWithToken(path, { ...rest, token });
+    }
+    const cleanPath = path.replace(/^\/+/, '');
+    const identityScoped = cleanPath === 'user' || cleanPath.startsWith('user?') || cleanPath.startsWith('personal_access_tokens/self');
+    const indices = identityScoped || !fallback ? [0] : this.tokenIndices();
+    for (let i = 0; i < indices.length; i++) {
+      try {
+        return await this.requestWithToken(path, { ...rest, token: this.tokenAt(indices[i]) });
+      } catch (error) {
+        if (error.status !== 404 || i === indices.length - 1) throw error;
+      }
+    }
+  }
+
+  async requestWithToken(path, { method = 'GET', body = null, timeoutMs = 30_000, retry = true, token = this.token } = {}) {
     const url = `${this.baseUrl}/${path.replace(/^\/+/, '')}`;
     const headers = {
       'User-Agent': 'teams-live/1.0',
     };
-    if (this.token) {
-      headers['PRIVATE-TOKEN'] = this.token;
+    if (token) {
+      headers['PRIVATE-TOKEN'] = token;
     }
     if (body) {
       headers['Content-Type'] = 'application/json';
@@ -127,7 +189,7 @@ export class GitLabClient {
       res = await makeFetch();
     } catch (err) {
       // A mutation that may already have landed must not be sent twice blindly.
-      if (!retry) throw new Error(`GitLab request failed (${err.cause?.message || err.message})`);
+      if (!retry || (method !== 'GET' && path !== '../graphql')) throw new Error(`GitLab request failed (${err.cause?.message || err.message})`);
       try {
         await new Promise((r) => setTimeout(r, 1000));
         res = await makeFetch();
@@ -153,7 +215,7 @@ export class GitLabClient {
         } else {
           // Double check token validity before raising an auth alarm.
           // Actions like author self-approval or forbidden endpoints return 401/403 even when the token is valid.
-          const isStillValid = await this.verifyAuth().catch(() => true);
+          const isStillValid = await this.verifyAuth(token).catch(() => true);
           if (!isStillValid) {
             this.onAuthError?.(errStr);
           }
@@ -502,17 +564,64 @@ export class GitLabClient {
     return projectOrName.includes('/') ? projectOrName : `${this.group}/${projectOrName}`;
   }
 
-  async getMr(project, iid) {
+  async getMr(project, iid, { tokenIndex = null } = {}) {
     return await this.request(
-      `projects/${encodeURIComponent(project)}/merge_requests/${iid}?include_diverged_commits_count=true&include_rebase_in_progress=true`
+      `projects/${encodeURIComponent(project)}/merge_requests/${iid}?include_diverged_commits_count=true&include_rebase_in_progress=true`,
+      { tokenIndex }
     );
   }
 
-  async approveMr(project, iid, { sha = null } = {}) {
+  /**
+   * Reads a merge request and decides WHO acts on it: the first credential (in
+   * order) that can see it, moving on only after a definite 404. Returns
+   * `{mr, tokenIndex, user}`, `user` being the account behind exactly that
+   * credential (null when it could not be told). Pass `tokenIndex` (and
+   * `expectUserId`) to the write calls so the account that was shown is the one
+   * that acts. Any error other than a 404 is thrown: it is not a reason to try
+   * another identity.
+   */
+  async locateMr(project, iid) {
+    const indices = this.tokenIndices();
+    for (let i = 0; i < indices.length; i++) {
+      let mr;
+      try {
+        mr = await this.getMr(project, iid, { tokenIndex: indices[i] });
+      } catch (error) {
+        if (error.status === 404 && i < indices.length - 1) continue;
+        throw error;
+      }
+      const user = await this.getCurrentUser({ tokenIndex: indices[i] });
+      return { mr, tokenIndex: indices[i], user: user?.id ? user : null };
+    }
+    return null;
+  }
+
+  /**
+   * A write as one chosen credential. With `tokenIndex` the request goes out
+   * under that credential only (never another), after checking that it still is
+   * the account the caller showed (`expectUserId`): otherwise nothing is sent and
+   * the error carries `identityMismatch`. Without `tokenIndex` the credentials
+   * are tried in order after a definite 404 only (see `request`).
+   */
+  async writeAs(path, options, { tokenIndex = null, expectUserId = null } = {}) {
+    if (tokenIndex === null || tokenIndex === undefined) return await this.request(path, options);
+    if (expectUserId !== null && expectUserId !== undefined) {
+      const user = await this.getCurrentUser({ tokenIndex });
+      if (!user || String(user.id) !== String(expectUserId)) {
+        const error = new Error('The GitLab account is not the one that was shown; nothing was sent');
+        error.identityMismatch = true;
+        throw error;
+      }
+    }
+    return await this.request(path, { ...options, tokenIndex });
+  }
+
+  async approveMr(project, iid, { sha = null, tokenIndex = null, expectUserId = null } = {}) {
     const body = sha ? { sha } : {};
-    return await this.request(
+    return await this.writeAs(
       `projects/${encodeURIComponent(project)}/merge_requests/${iid}/approve`,
-      { method: 'POST', body, retry: false }
+      { method: 'POST', body, retry: false },
+      { tokenIndex, expectUserId }
     );
   }
 
@@ -551,11 +660,12 @@ export class GitLabClient {
    * resent: a first attempt that landed must not be followed by a blind second
    * one, so an unanswered request is read back by the caller instead.
    */
-  async mergeMrOnce(project, iid, { sha }) {
+  async mergeMrOnce(project, iid, { sha, tokenIndex = null, expectUserId = null }) {
     if (!sha) throw new Error('mergeMrOnce: the expected head commit (sha) is required');
-    return await this.request(
+    return await this.writeAs(
       `projects/${encodeURIComponent(project)}/merge_requests/${iid}/merge`,
-      { method: 'PUT', body: { sha }, retry: false }
+      { method: 'PUT', body: { sha }, retry: false },
+      { tokenIndex, expectUserId }
     );
   }
 
@@ -566,10 +676,11 @@ export class GitLabClient {
     );
   }
 
-  async updateMr(project, iid, params = {}, { retry = true } = {}) {
-    return await this.request(
+  async updateMr(project, iid, params = {}, { retry = true, tokenIndex = null, expectUserId = null } = {}) {
+    return await this.writeAs(
       `projects/${encodeURIComponent(project)}/merge_requests/${iid}`,
-      { method: 'PUT', body: params, retry }
+      { method: 'PUT', body: params, retry },
+      { tokenIndex, expectUserId }
     );
   }
 
@@ -577,38 +688,48 @@ export class GitLabClient {
     return await this.updateMr(project, iid, { state_event: 'close' });
   }
 
-  async reopenMr(project, iid) {
+  async reopenMr(project, iid, { tokenIndex = null, expectUserId = null } = {}) {
     // Sent once: a first attempt that landed must not be followed by a blind
     // second one (its answer would be misread as a failure).
-    return await this.updateMr(project, iid, { state_event: 'reopen' }, { retry: false });
+    return await this.updateMr(project, iid, { state_event: 'reopen' }, { retry: false, tokenIndex, expectUserId });
   }
 
-  async getApprovals(project, iid) {
-    return await this.request(`projects/${encodeURIComponent(project)}/merge_requests/${iid}/approvals`);
+  async getApprovals(project, iid, { tokenIndex = null } = {}) {
+    return await this.request(`projects/${encodeURIComponent(project)}/merge_requests/${iid}/approvals`, { tokenIndex });
   }
 
   /**
-   * Approval state of the token user (the identity an approval is made as):
-   * `{known, user, hasApproved, canApprove}`. The overall `approved` flag is
-   * deliberately not used. `known` is false when the identity or the approvals
-   * could not be retrieved. `canApprove` is null when GitLab does not say.
+   * Approval state of the account an approval is made as:
+   * `{known, user, hasApproved, canApprove, tokenIndex}`. The overall `approved`
+   * flag is deliberately not used. `known` is false when the identity or the
+   * approvals could not be retrieved. `canApprove` is null when GitLab does not
+   * say. With `tokenIndex` only that credential is asked. Without, the
+   * credentials are tried in order after a definite 404; identity and approvals
+   * always come from the SAME credential, reported as `tokenIndex`.
    */
-  async getUserApprovalState(project, iid) {
-    const user = await this.getCurrentUser();
-    if (!user?.id) return { known: false, user: null, hasApproved: false, canApprove: null };
-    let approvals;
-    try {
-      approvals = await this.getApprovals(project, iid);
-    } catch {
-      return { known: false, user, hasApproved: false, canApprove: null };
+  async getUserApprovalState(project, iid, { tokenIndex = null } = {}) {
+    const pinned = tokenIndex !== null && tokenIndex !== undefined;
+    const indices = pinned ? [tokenIndex] : this.tokenIndices();
+    for (let i = 0; i < indices.length; i++) {
+      const index = indices[i];
+      const user = await this.getCurrentUser({ tokenIndex: index });
+      if (!user?.id) return { known: false, user: null, hasApproved: false, canApprove: null, tokenIndex: index };
+      let approvals;
+      try {
+        approvals = await this.getApprovals(project, iid, { tokenIndex: index });
+      } catch (error) {
+        if (error.status === 404 && i < indices.length - 1) continue;
+        return { known: false, user, hasApproved: false, canApprove: null, tokenIndex: index };
+      }
+      if (!Array.isArray(approvals?.approved_by)) {
+        return { known: false, user, hasApproved: false, canApprove: null, tokenIndex: index };
+      }
+      const ids = approvals.approved_by.map((a) => a.user?.id ?? a.id).filter((v) => v !== undefined && v !== null);
+      const hasApproved = approvals.user_has_approved === true || ids.some((id) => String(id) === String(user.id));
+      const canApprove = typeof approvals.user_can_approve === 'boolean' ? approvals.user_can_approve : null;
+      return { known: true, user, hasApproved, canApprove, tokenIndex: index };
     }
-    if (!Array.isArray(approvals?.approved_by)) {
-      return { known: false, user, hasApproved: false, canApprove: null };
-    }
-    const ids = approvals.approved_by.map((a) => a.user?.id ?? a.id).filter((v) => v !== undefined && v !== null);
-    const hasApproved = approvals.user_has_approved === true || ids.some((id) => String(id) === String(user.id));
-    const canApprove = typeof approvals.user_can_approve === 'boolean' ? approvals.user_can_approve : null;
-    return { known: true, user, hasApproved, canApprove };
+    return { known: false, user: null, hasApproved: false, canApprove: null, tokenIndex: null };
   }
 
   /**
@@ -931,7 +1052,7 @@ export class GitLabClient {
     if (!targetGroup) throw new Error('No GitLab group configured');
     const all = [];
     for (let page = 1; page <= 50; page++) {
-      const batch = await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks?per_page=100&page=${page}`);
+      const batch = await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks?per_page=100&page=${page}`, { fallback: false });
       if (!Array.isArray(batch)) throw new Error('GitLab returned an unexpected hook list');
       all.push(...batch);
       if (batch.length < 100) return all;
@@ -944,7 +1065,7 @@ export class GitLabClient {
     const targetGroup = group || this.group;
     if (!targetGroup) throw new Error('No GitLab group configured');
     try {
-      return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks/${hookId}`);
+      return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks/${hookId}`, { fallback: false });
     } catch (err) {
       if (/\(404\)/.test(err.message)) return null;
       throw err;
@@ -957,6 +1078,7 @@ export class GitLabClient {
     if (!targetGroup) throw new Error('No GitLab group configured');
     return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks/${hookId}/test/${trigger}`, {
       method: 'POST',
+      fallback: false,
     });
   }
 
@@ -966,6 +1088,7 @@ export class GitLabClient {
     return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks`, {
       method: 'POST',
       body: hookData,
+      fallback: false,
     });
   }
 
@@ -975,6 +1098,7 @@ export class GitLabClient {
     return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks/${hookId}`, {
       method: 'PUT',
       body: hookData,
+      fallback: false,
     });
   }
 
@@ -983,12 +1107,14 @@ export class GitLabClient {
     if (!targetGroup) throw new Error('No GitLab group configured');
     return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks/${hookId}`, {
       method: 'DELETE',
+      fallback: false,
     });
   }
 
   async getAwardEmojis(project, mrIid) {
     return await this.request(
-      `projects/${encodeURIComponent(project)}/merge_requests/${mrIid}/award_emoji?per_page=100`
+      `projects/${encodeURIComponent(project)}/merge_requests/${mrIid}/award_emoji?per_page=100`,
+      { fallback: false }
     );
   }
 
@@ -998,6 +1124,7 @@ export class GitLabClient {
       {
         method: 'POST',
         body: { name },
+        fallback: false,
       }
     );
   }
@@ -1005,7 +1132,7 @@ export class GitLabClient {
   async deleteAwardEmoji(project, mrIid, awardId) {
     return await this.request(
       `projects/${encodeURIComponent(project)}/merge_requests/${mrIid}/award_emoji/${awardId}`,
-      { method: 'DELETE' }
+      { method: 'DELETE', fallback: false }
     );
   }
 }

@@ -562,6 +562,27 @@ test('renewGitLabToken falls back to override file when configured secret is rea
   }
 });
 
+test('fallback rotation saves each token to its own override', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const os = await import('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teams-live-fallback-'));
+  try {
+    const override = path.join(dir, 'overrides', 'fallback');
+    const gitlab = { rotateToken: async ({ tokenIndex }) => ({ token: `rotated-${tokenIndex}` }) };
+    const watcher = new MergeRequestWatcher({ config: { conversations: [], teams: {}, gitlab: {
+      fallback_tokens: ['old'], fallback_token_sources: [{ file: '/read-only/token', override }],
+    } }, gitlab });
+    const result = await watcher.renewGitLabFallbackToken(1);
+    assert.equal(result.savedPath, override);
+    assert.equal(fs.readFileSync(override, 'utf8'), 'rotated-1');
+    assert.equal(watcher.config.gitlab.fallback_tokens[0], 'rotated-1');
+    assert.equal(fs.statSync(override).mode & 0o777, 0o600);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('checkGitLabTokenExpiryAndAutoRenew auto-renews when token expires in <= 3 days', async () => {
   let renewCalled = false;
 

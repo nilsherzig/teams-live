@@ -138,7 +138,8 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `gitlab.approve.*` | Approve button of merge request cards: capability link (off). `gitlab.approve.merge_enabled` (off) separately enables the Merge button. See [Approving from a card](#approving-from-a-card). |
 | `teams.troll_user` | User MRI whose `/exec` gets a joke reply instead of the fake shell output. |
 | `browser_daemon.url`, `.profile`, `.secret_file` | browser-daemon used to sign in to Teams again. |
-| `gitlab.host`, `.group`, `.token_file` | GitLab instance, group for `/mrs`, API token. |
+| `gitlab.host`, `.group`, `.token_file` | GitLab instance, group for `/mrs`, primary API token. |
+| `gitlab.fallback_token_files` | Ordered list of additional token files. Requests use credentials in order and try the next only after a 404. Approval pages identify the account selected for the merge request and pin the action to that account. Each token is checked and rotated independently; rotated fallback tokens are kept in the service state directory until their configured secrets are updated. |
 | `gitlab.poll_interval_seconds` | MR status poll (60). |
 | `gitlab.history_limit`, `.history_max_age_minutes` | Messages scanned at startup. |
 | `gitlab.max_watch_duration_seconds` | How long an MR is watched (7200). |

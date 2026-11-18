@@ -6168,6 +6168,28 @@ export class MergeRequestWatcher {
     }
   }
 
+  async renewGitLabFallbackToken(index, { expiresAt = null } = {}) {
+    const source = this.config.gitlab?.fallback_token_sources?.[index - 1];
+    if (!source) throw new Error(`No configured GitLab fallback token at position ${index}`);
+    fs.mkdirSync(path.dirname(source.override), { recursive: true, mode: 0o700 });
+    const temporary = `${source.override}.${process.pid}.pending`;
+    const fd = fs.openSync(temporary, 'wx', 0o600);
+    try {
+      const rotated = await this.gitlab.rotateToken({ tokenIndex: index, expiresAt });
+      if (!rotated?.token) throw new Error('GitLab token rotation response did not include a new token');
+      fs.writeFileSync(fd, rotated.token, 'utf8');
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fs.renameSync(temporary, source.override);
+      this.config.gitlab.fallback_tokens[index - 1] = rotated.token;
+      return { rotated, savedPath: source.override, isReadOnlySecret: true };
+    } catch (error) {
+      try { fs.closeSync(fd); } catch { /* already closed */ }
+      try { fs.unlinkSync(temporary); } catch { /* no temporary file */ }
+      throw error;
+    }
+  }
+
   async renewGitLabToken({ reason = 'manual', expiresAt = null } = {}) {
     if (!this.gitlab?.rotateToken) {
       throw new Error('GitLab client is not configured or does not support token rotation');
@@ -6269,8 +6291,30 @@ export class MergeRequestWatcher {
     await this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.pending).catch(() => {});
 
     try {
-      const renewal = await this.renewGitLabToken({ reason: 'admin_command' });
-      await this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+      let renewal;
+      let primaryError;
+      try {
+        renewal = await this.renewGitLabToken({ reason: 'admin_command' });
+      } catch (error) {
+        primaryError = error;
+      }
+      const fallbackResults = [];
+      let fallbackFailed = false;
+      for (let index = 1; index <= (this.config.gitlab?.fallback_token_sources?.length || 0); index++) {
+        try {
+          await this.renewGitLabFallbackToken(index);
+          fallbackResults.push(`- Fallback ${index}: renewed`);
+        } catch (error) {
+          fallbackFailed = true;
+          fallbackResults.push(`- Fallback ${index}: failed (${error.message})`);
+        }
+      }
+      await this.setCommandReaction(event.conversationId, event.messageId, primaryError || fallbackFailed ? COMMAND_REACTIONS.failure : COMMAND_REACTIONS.success).catch(() => {});
+      if (primaryError) {
+        const details = [`Primary: failed (${primaryError.message})`, ...fallbackResults].join('\n');
+        await sendReply(event.conversationId, event, `❌ **GitLab token renewal incomplete**\n\n${details}`);
+        return;
+      }
 
       let text =
         '✅ **GitLab Personal Access Token Renewed Successfully!**\n\n' +
@@ -6287,6 +6331,7 @@ export class MergeRequestWatcher {
         text += `- **Saved to**: \`${renewal.savedPath}\``;
       }
 
+      if (fallbackResults.length) text += `\n\n${fallbackResults.join('\n')}`;
       await sendReply(event.conversationId, event, text);
     } catch (err) {
       log(`GitLab token renewal failed: ${err.message}`);
@@ -6297,6 +6342,22 @@ export class MergeRequestWatcher {
 
   async checkGitLabTokenExpiryAndAutoRenew() {
     if (!this.gitlab?.token || !this.gitlab?.getTokenInfo) return;
+    for (let index = 1; index <= (this.config.gitlab?.fallback_token_sources?.length || 0); index++) {
+      try {
+        const info = await this.gitlab.getTokenInfo({ tokenIndex: index });
+        if (!info?.expires_at) continue;
+        const days = Math.ceil((new Date(`${info.expires_at}T23:59:59Z`).getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+        if (days <= 3) {
+          await this.renewGitLabFallbackToken(index);
+          const adminConv = this.getAdminConversationId();
+          if (adminConv) await sendDirectMessage(adminConv, `🔄 GitLab fallback token ${index} was automatically renewed. Update its configured secret from its override file.`);
+        } else if (days <= 10) {
+          log.warn(`GitLab fallback token ${index} expires in ${days} days`);
+        }
+      } catch (error) {
+        log.warn(`GitLab fallback token ${index} expiry check or renewal failed: ${error.message}`);
+      }
+    }
     try {
       const tokenData = await this.gitlab.getTokenInfo();
       if (!tokenData || !tokenData.expires_at) return;

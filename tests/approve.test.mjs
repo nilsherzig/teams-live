@@ -1360,7 +1360,7 @@ test('a reopen answer that is not "opened" and cannot be read back is reported a
   }
 });
 
-test('reopenMr sends exactly once on a thrown fetch error, while closeMr and reads keep their retry', async () => {
+test('writes are sent exactly once on a thrown fetch error, while reads keep their retry', async () => {
   const { GitLabClient } = await import('../src/gitlab.mjs');
   const realFetch = globalThis.fetch;
   const realTimeout = globalThis.setTimeout;
@@ -1379,9 +1379,14 @@ test('reopenMr sends exactly once on a thrown fetch error, while closeMr and rea
     assert.equal(calls, 1, 'reopen is sent once');
     assert.equal(bodies[0], JSON.stringify({ state_event: 'reopen' }));
 
+    // No write is repeated after an ambiguous failure, whoever the caller is.
     calls = 0;
     await assert.rejects(() => client.closeMr('group/app', 7), /GitLab request failed/);
-    assert.equal(calls, 2, 'other updateMr callers keep the default retry');
+    assert.equal(calls, 1, 'close is sent once as well');
+
+    calls = 0;
+    await assert.rejects(() => client.getMr('group/app', 7), /GitLab request failed/);
+    assert.equal(calls, 2, 'reads keep their retry');
   } finally {
     globalThis.fetch = realFetch;
     globalThis.setTimeout = realTimeout;
