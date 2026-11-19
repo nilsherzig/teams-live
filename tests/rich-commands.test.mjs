@@ -65,7 +65,7 @@ const factsOf = (card) => {
   return out;
 };
 const textsIn = (i) =>
-  i.type === 'TextBlock' ? [i.text] : i.type === 'ColumnSet' ? i.columns.flatMap((c) => c.items.flatMap(textsIn)) : [];
+  i.type === 'TextBlock' ? [i.text] : i.type === 'ColumnSet' ? i.columns.flatMap((c) => c.items.flatMap(textsIn)) : i.type === 'Container' ? i.items.flatMap(textsIn) : [];
 const rowsOf = (card) => card.body[0].items.flatMap(textsIn);
 
 async function run(fn) {

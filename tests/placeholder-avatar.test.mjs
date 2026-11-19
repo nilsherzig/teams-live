@@ -118,8 +118,11 @@ test('userRow: placeholders only take what real photos leave, and count against 
   assert.deepEqual(urls.map(([, kind]) => kind), ['placeholder', 'placeholder', 'photo', 'photo', 'photo']);
 
   const tight = userRow('Approvers', people, { charBudget: PHOTO.length + PLACEHOLDER_AVATAR.length });
-  assert.deepEqual(imagesOf(tight).map((i) => i.altText).sort(), ['Alice Example', 'Bob Example']);
-  assert.equal(userRow('Approvers', people, { charBudget: 10 }), null, 'over budget: names only, the caller keeps the plain fact');
+  const kinds = (row2) => imagesOf(row2).map((i) => (i.url === PLACEHOLDER_AVATAR ? 'placeholder' : 'photo'));
+  assert.equal(kinds(tight).length, 5, 'everybody keeps a picture');
+  assert.equal(kinds(tight).filter((k) => k === 'photo').length, 1, 'photos only take the budget');
+  const none = userRow('Approvers', people, { charBudget: 10 });
+  assert.deepEqual(kinds(none), Array(5).fill('placeholder'), 'over budget: placeholders, never a bare name');
 });
 
 test('userRow: every name stays in order whether it has an image or not', () => {

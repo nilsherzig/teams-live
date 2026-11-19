@@ -130,9 +130,29 @@ test('/mrs list: every fact of the plain list card is kept, pictures only add a 
   const without = await noPictures(mrs);
   assert.equal(personsIn(without).length, 0);
   assert.equal(messageMarkdown(withPictures), messageMarkdown(without));
-  const strip = (card) => JSON.stringify(card).replace(/\{"type":"Column","width":"auto","verticalContentAlignment":"Center","items":\[\{"type":"Image","url":"data:[^"]+","altText":"[^"]+","style":"Person","width":"18px","height":"18px"\}\]\},?/g, '');
-  const normalize = (s) => s.replace(/,\]/g, ']');
-  assert.equal(normalize(strip(cardOf(withPictures))), normalize(JSON.stringify(cardOf(without))));
+  // The picture sits directly before the author name (`<picture> <name>`); the words on the card are unchanged.
+  const words = (card) => {
+    const out = [];
+    const walk = (n) => {
+      if (Array.isArray(n)) return n.forEach(walk);
+      if (!n || typeof n !== 'object') return;
+      if (n.type === 'TextBlock' && n.text) out.push(n.text);
+      Object.values(n).forEach(walk);
+    };
+    walk(card);
+    return out.join(' ').replace(/\s+/g, ' ').replace(/ ·/g, ' ·').trim();
+  };
+  assert.equal(words(cardOf(withPictures)), words(cardOf(without)));
+  const flowNames = [];
+  const visit = (n) => {
+    if (Array.isArray(n)) return n.forEach(visit);
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n.items)) n.items.forEach((item, i) => item.type === 'Image' && item.style === 'Person' && flowNames.push([item.altText, n.items[i + 1]?.text]));
+    Object.values(n).forEach(visit);
+  };
+  visit(cardOf(withPictures));
+  assert.equal(flowNames.length, 3);
+  for (const [alt, next] of flowNames) assert.ok(next.startsWith(alt), `${alt} is followed directly by their name`);
   // The GitLab state glyphs are still images, not emojis.
   assert.ok(JSON.stringify(cardOf(withPictures)).includes('data:image/png'));
 });

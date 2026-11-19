@@ -65,6 +65,35 @@ function pictureSpacer() {
   };
 }
 
+/**
+ * THE way a person is shown on every card: `<picture> <name>`, the picture
+ * always directly left of the name (a placeholder-sized spacer keeps the names
+ * aligned when a picture is missing). A `lead` ("🔀 Enabled by") is plain text
+ * BEFORE the pair, so it never separates a picture from its name. In compact
+ * mode only the picture is shown, with initials inside placeholder pictures.
+ */
+export function personChip({ name, avatar }, { lead = '', compact = false, stretch = false, textStyle = {} } = {}) {
+  const columns = [];
+  if (lead) columns.push(textColumn(lead, textStyle, 'auto'));
+  if (avatar) columns.push(avatarColumn(name, avatar, stretch ? `${AVATAR_PX}px` : 'auto'));
+  else if (!compact) columns.push(pictureSpacer());
+  if (!compact) columns.push(textColumn(name, textStyle, stretch ? 'stretch' : 'auto'));
+  else if (!avatar || avatar === PLACEHOLDER_AVATAR) columns.push(textColumn(nameInitials(name), textStyle, 'auto'));
+  return { type: 'ColumnSet', columns };
+}
+
+/**
+ * The same `<picture> <name>` pair as flat items for a Layout.Flow container (no Column wrappers, so
+ * long lists stay small on the wire): the picture, then the name directly after it. `trail` is
+ * text that continues in the same block after the name.
+ */
+export function personChipItems({ name, avatar }, { textStyle = {}, trail = '' } = {}) {
+  const items = [];
+  if (avatar) items.push({ type: 'Image', url: avatar, altText: name, style: 'Person', width: `${AVATAR_PX}px`, height: `${AVATAR_PX}px` });
+  items.push({ type: 'TextBlock', text: trail ? `${name} ${trail}` : name, wrap: false, ...textStyle });
+  return items;
+}
+
 // The widest a pill may be: the value column of a 308px card is about 190px and
 // the label column eats the rest, so a wider image would run into the card padding.
 export const MAX_PILL_PX = 132;
@@ -84,7 +113,12 @@ export function pillImage(pill) {
 const usablePill = (pill) =>
   pill && isImageDataUri(pill.url) && Number.isFinite(pill.width) && pill.width > 0 && Number.isFinite(pill.height) && pill.height > 0;
 
-/** Select one image per person for every occurrence on a card, accounting for each copy on the wire. */
+/**
+ * Select one image per person for every occurrence on a card, accounting for each copy on the wire.
+ * Once any person on the card has a picture, EVERYONE named gets one: a photo when it fits the
+ * budget, else a placeholder. Placeholders do not use the photo budget, so a heavy photo can never
+ * starve another person (a bot, a service account) of their picture.
+ */
 export function planCardAvatars(people, budget = MAX_AVATAR_CHARS_PER_CARD) {
   const groups = new Map();
   for (const person of people) {
@@ -98,13 +132,22 @@ export function planCardAvatars(people, budget = MAX_AVATAR_CHARS_PER_CARD) {
     if (isImageDataUri(person.avatar) && person.avatar !== PLACEHOLDER_AVATAR) group.photo ||= person.avatar;
     groups.set(key, group);
   }
+  const inPlay = [...groups.values()].some((group) => group.photo || group.placeholder || group.compact);
   const selected = new Map();
-  for (const [key, group] of [...groups].sort((a, b) => Number(Boolean(b[1].photo)) - Number(Boolean(a[1].photo)))) {
-    const fallback = group.compact ? (initialsAvatar(group.name) || PLACEHOLDER_AVATAR) : (group.photo || group.placeholder ? PLACEHOLDER_AVATAR : null);
-    const candidates = [group.photo, fallback].filter(Boolean);
-    const image = candidates.find((candidate) => candidate.length * group.count <= budget) || null;
-    if (image) budget -= image.length * group.count;
-    selected.set(key, image);
+  // Pass 1: the cheap fallback for everybody. Placeholders are tiny and never count against the photo budget.
+  for (const [key, group] of groups) {
+    const fallback = inPlay ? (group.compact ? initialsAvatar(group.name) || PLACEHOLDER_AVATAR : PLACEHOLDER_AVATAR) : null;
+    group.fallback = fallback;
+    selected.set(key, fallback);
+  }
+  // Pass 2: upgrade to the real photo where the remaining budget allows it.
+  for (const [key, group] of groups) {
+    if (!group.photo) continue;
+    const cost = group.photo.length * group.count;
+    if (cost <= budget) {
+      budget -= cost;
+      selected.set(key, group.photo);
+    }
   }
   return (name) => selected.get(text(name).toLocaleLowerCase().replace(/\s+/gu, ' ')) ?? null;
 }
@@ -145,17 +188,7 @@ export function userRow(label, people, { headline = '', pill = null, compact = f
     // Pill and people flow left to right and wrap only when the card is too
     // narrow (Layout.Flow, Adaptive Cards 1.5: Teams honours it; an older
     // renderer ignores it and stacks the same items, which is still readable).
-    // Each person stays together; compact rows use initials for placeholder pictures.
-    const people = entries.map(({ name, avatar }, index) => {
-      const columns = [];
-      if (avatar) columns.push(avatarColumn(name, avatar, 'auto'));
-      if (!compact) {
-        columns.push(textColumn(index === 0 && lead ? `${lead} ${name}` : name, {}, 'auto'));
-      } else if (!avatar || avatar === PLACEHOLDER_AVATAR) {
-        columns.push(textColumn(nameInitials(name), {}, 'auto'));
-      }
-      return { type: 'ColumnSet', columns };
-    });
+    const people = entries.map((entry, index) => personChip(entry, { lead: index === 0 ? lead : '', compact }));
     valueItems = [
       {
         type: 'Container',
@@ -165,9 +198,7 @@ export function userRow(label, people, { headline = '', pill = null, compact = f
     ];
   } else {
     // One person, no pill: one compact line, only the name stretches.
-    const { name, avatar } = entries[0];
-    const columns = [avatar ? avatarColumn(name, avatar, `${AVATAR_PX}px`) : pictureSpacer(), textColumn(lead ? `${lead} ${name}` : name, {}, 'stretch')];
-    valueItems = [{ type: 'ColumnSet', columns }];
+    valueItems = [personChip(entries[0], { lead, compact, stretch: true })];
   }
   // With the pill and people stacked or wrapped, the label stays with the first line.
   if (hasPill || entries.length > 1) labelColumn.verticalContentAlignment = 'Top';

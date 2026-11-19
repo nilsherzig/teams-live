@@ -33,7 +33,7 @@ import {
   restrictTokens,
   tokenizeLines,
 } from './code-highlight.mjs';
-import { planCardAvatars, avatarColumn, isImageDataUri, pillImage, userRow } from './card-user-row.mjs';
+import { planCardAvatars, isImageDataUri, personChipItems, pillImage, userRow } from './card-user-row.mjs';
 
 export const ADAPTIVE_CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json';
 export const ADAPTIVE_CARD_VERSION = '1.4';
@@ -1267,8 +1267,24 @@ function listIconColumn(glyph, { images, emoji }) {
  * column. `before` is what precedes the CI status in the plain line ("Open",
  * the author), `ci` its label or '', `after` what follows (Jira, badges, readiness).
  */
-function mrListMetaLine({ before, ci, after, ciStatus, ciIcons }) {
+function mrListMetaLine({ before, ci, after, ciStatus, ciIcons, authorChip = null }) {
   const small = { size: 'Small', isSubtle: true, spacing: 'None' };
+  if (authorChip) {
+    // The author is `<picture> <name>` (see personChip) inside the meta line, so the picture sits next to the name.
+    const icon = ciIcons && ci ? ciStatusIcon(ciStatus) : null;
+    const pre = [icon && ci, ...before.slice(0, -1)].filter(Boolean).join(' \u00b7 ');
+    const post = [!icon && ci && `${ciStatusEmoji(ciStatus)} ${ci}`, ...after].filter(Boolean).join(' \u00b7 ');
+    const items = [];
+    if (icon) items.push({ type: 'Image', url: icon.url, altText: icon.alt, width: LIST_ICON_PX, height: LIST_ICON_PX });
+    if (pre) items.push(textBlock(`${pre} \u00b7`, { ...small, wrap: false }));
+    items.push(...personChipItems(authorChip, { textStyle: small, trail: post && `\u00b7 ${post}` }));
+    return {
+      type: 'Container',
+      spacing: 'None',
+      layouts: [{ type: 'Layout.Flow', horizontalItemsAlignment: 'Left', verticalItemsAlignment: 'Center', columnSpacing: 'Small', rowSpacing: 'None' }],
+      items,
+    };
+  }
   if (!ciIcons || !ci) {
     return textBlock([...before, ci && `${ciStatusEmoji(ciStatus)} ${ci}`, ...after].filter(Boolean).join(' \u00b7 '), small);
   }
@@ -1292,7 +1308,7 @@ function mrListMetaLine({ before, ci, after, ciStatus, ciIcons }) {
  * without images), the linked reference and title, and one meta line. The CI
  * status is the GitLab status icon of the other cards (the emoji without
  * images) with its label. With `avatars`, a row whose author has a picture (`row.avatar`, a
- * data URI) shows it, 18px like on the other cards, in a column on the right.
+ * data URI) shows the author as `<picture> <name>` (personChip), 18px like on the other cards.
  */
 function mrListRow(row, { images, ciIcons, avatars = false }) {
   const state = MR_LIST_STATES[row.state] || MR_LIST_STATES.open;
@@ -1311,11 +1327,17 @@ function mrListRow(row, { images, ciIcons, avatars = false }) {
       width: 'stretch',
       items: [
         textBlock(title, { weight: 'Bolder' }),
-        mrListMetaLine({ before, ci: ciLabel, after, ciStatus: row.ciStatus, ciIcons }),
+        mrListMetaLine({
+          before,
+          ci: ciLabel,
+          after,
+          ciStatus: row.ciStatus,
+          ciIcons,
+          authorChip: avatars && author && isImageDataUri(row.avatar) ? { name: author, avatar: row.avatar } : null,
+        }),
       ],
     },
   ];
-  if (avatars && isImageDataUri(row.avatar)) columns.push(avatarColumn(author || 'Author', row.avatar));
   return { type: 'ColumnSet', spacing: 'Small', columns };
 }
 

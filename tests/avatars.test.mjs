@@ -16,6 +16,7 @@ import {
   userRow,
 } from '../src/card-user-row.mjs';
 import { buildJiraIssueCard, buildMergeRequestCard, buildOpsGenieAlertCard, MAX_CARD_BYTES } from '../src/cards.mjs';
+import { PLACEHOLDER_AVATAR } from '../src/placeholder-avatar.mjs';
 import { makeRichMessage, richMessageWireBytes } from '../src/teams.mjs';
 
 // All people, ids and pictures below are generic fixtures.
@@ -645,7 +646,7 @@ test('merge request approvers and the auto-merge user get pictures, in fact orde
   // The Enabled state stays explicit, on the same single line as the picture and name.
   const personLines = linesOf(autoMerge);
   assert.equal(autoMerge.columns[1].items.length, 1, 'one compact line');
-  assert.deepEqual(personLines.map(lineTexts), [['Carol Example', '\u{1F500} Enabled by Carol Example']]);
+  assert.deepEqual(personLines.map(lineTexts), [['\u{1F500} Enabled by', 'Carol Example', 'Carol Example']]);
   assert.equal(autoMerge.columns[0].verticalContentAlignment, 'Center');
   const order = items(card).filter((i) => i.type === 'ColumnSet').map((i) => i.columns[0].items[0].text ?? '');
   assert.ok(order.indexOf('Approval') < order.indexOf('Auto-merge'));
@@ -685,11 +686,13 @@ test('person rows wrap only their name: one stretch value column, a picture cell
     assert.equal(row.columns[1].width, 'stretch');
     for (const line of linesOf(row)) {
       // [picture] [name]: the picture never wraps, the name does; no fixed lead column eats the name width.
-      assert.ok(line.columns.length <= 2, 'picture (when there is one) and name only');
+      // [lead text] [picture] [name]: the picture is always directly left of the name.
+      assert.ok(line.columns.length <= 3, 'lead, picture and name only');
       const name = line.columns.at(-1);
       assert.ok(['TextBlock', 'Image'].includes(name.items[0].type));
       if (name.items[0].type === 'TextBlock') assert.equal(name.items[0].wrap, true);
-      for (const c of line.columns.slice(0, -1)) assert.equal(c.items[0].type, 'Image');
+      const beforeName = line.columns.at(-2);
+      if (beforeName) assert.equal(beforeName.items[0].type === 'Image' || beforeName.items[0].text === '\u{1F500} Enabled by', true);
     }
   }
   // The approval pill replaces the "By" lead; the auto-merge lead stays.
@@ -708,8 +711,10 @@ test('userRow flows several people in one value column; a name without a picture
   assert.equal(flow.layouts[0].horizontalItemsAlignment, 'Left', 'left aligned like every other value');
   const lines = flow.items;
   assert.equal(lines.length, 3, 'no extra line for the lead');
-  assert.deepEqual(lines.map((l) => l.columns.length), [2, 1, 2], 'picture and name, or only the name');
-  assert.deepEqual(lines.map((l) => l.columns.at(-1).items[0].text), ['\u{1F44D} By Alice Example', 'Bob Example', 'Carol Example']);
+  assert.deepEqual(lines.map((l) => l.columns.length), [3, 2, 2], 'lead, picture and name; everybody has a picture, a placeholder when there is no photo');
+  assert.deepEqual(lines.map((l) => l.columns.at(-1).items[0].text), ['Alice Example', 'Bob Example', 'Carol Example']);
+  assert.equal(lines[0].columns[0].items[0].text, '\u{1F44D} By', 'the lead comes before the picture, never between picture and name');
+  assert.equal(lines[1].columns[0].items[0].url, PLACEHOLDER_AVATAR);
   assert.equal(lines[0].columns.at(-1).width, 'auto', 'inside the flow a name sizes to its text and wraps when needed');
   assert.equal(row.columns[0].verticalContentAlignment, 'Top', 'the label stays with the first line');
   const single = userRow('Author', [{ name: 'Alice Example', avatar: URI }], { labelWidth: '112px' });
@@ -800,9 +805,10 @@ test('a single approver is one compact line: picture, then the lead and the name
   const longName = 'Alexandra Maximiliane Example-Longname';
   const { row } = userRow('Approval', [{ name: longName, avatar: URI }], { headline: '\u{1F44D} By', labelWidth: '112px' });
   assert.equal(row.columns[1].items.length, 1, 'one line, no headline row');
-  const [picture, name] = row.columns[1].items[0].columns;
+  const [lead, picture, name] = row.columns[1].items[0].columns;
+  assert.equal(lead.items[0].text, '\u{1F44D} By');
   assert.deepEqual([picture.width, name.width], [`${AVATAR_PX}px`, 'stretch']);
-  assert.equal(name.items[0].text, `\u{1F44D} By ${longName}`);
+  assert.equal(name.items[0].text, longName);
   assert.equal(name.items[0].wrap, true, 'wraps at word boundaries; no fixed lead column squeezes it');
   assert.equal(row.columns[0].verticalContentAlignment, 'Center');
 });
@@ -931,4 +937,28 @@ test('a photo that cannot fit twice is replaced consistently in both rows', () =
   const approver = linesOf(factOf(card, 'Approval'))[0].columns[0].items[0];
   assert.notEqual(author.url, photo);
   assert.equal(author.url, approver.url);
+});
+
+test('everybody on a card gets a picture: heavy photos never starve a bot or service account of theirs', () => {
+  // Two photos that together use the whole budget, plus a bot the picture service only knows as a placeholder.
+  const huge = bigUri(Math.floor(MAX_AVATAR_CHARS_PER_CARD / 2) - 50);
+  const card = buildMergeRequestCard({
+    ...MR,
+    author: 'Dave Example',
+    approvedBy: ['Service Bot'],
+    autoMergeUser: 'Dave Example',
+    avatars: { 'Dave Example': huge, 'Service Bot': PLACEHOLDER_AVATAR },
+  });
+  const person = (name) => JSON.stringify(card).includes(`"altText":"${name}","style":"Person"`);
+  assert.ok(person('Dave Example'));
+  assert.ok(person('Service Bot'), 'the bot has a picture, a placeholder at least');
+});
+
+test('every person is `<picture> <name>`: the lead text comes before the picture, never between picture and name', () => {
+  const card = buildMergeRequestCard({ ...MR, avatars: { 'Carol Example': URI } });
+  const row = rows(card).find((r) => r.columns[0].items[0].text === 'Auto-merge');
+  const [lead, picture, name] = row.columns[1].items[0].columns;
+  assert.equal(lead.items[0].text, '\u{1F500} Enabled by');
+  assert.equal(picture.items[0].type, 'Image');
+  assert.equal(name.items[0].text, 'Carol Example');
 });

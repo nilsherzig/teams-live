@@ -117,7 +117,7 @@ test('/mrs card: GitLab state glyph images with readable labels (open, draft), n
   for (const img of allNodes(message).filter((n) => n.type === 'Image')) assert.match(img.url, /^data:image\/png;base64,/);
   // The state is also written out.
   assert.ok(texts(message).some((t) => t.includes('Draft')));
-  assert.ok(texts(message).some((t) => t.startsWith('Open · ')));
+  assert.ok(texts(message).some((t) => t.startsWith('Open · ') || t.includes(' Open ·') || t.includes('Open ·')));
 });
 
 test('/mrs card: the CI status is the GitLab status icon next to its label, not an emoji', () => {
@@ -134,10 +134,17 @@ test('/mrs card: the CI status is the GitLab status icon next to its label, not 
   assert.ok(!/[\u2705\u274C]\s*CI /u.test(all), 'no CI emoji next to the label');
   assert.ok(!all.includes('\u23F3 CI'), 'no running emoji next to the label');
   // The icon sits in its own column, directly followed by the label column.
-  const set = allNodes(message).find((n) => n.type === 'ColumnSet' && n.columns.some((c) => c.items.some((i) => i.url === CI_STATUS_ICONS.success.url)));
-  const at = set.columns.findIndex((c) => c.items.some((i) => i.url === CI_STATUS_ICONS.success.url));
-  assert.equal(set.columns[at].width, '16px');
-  assert.equal(set.columns[at + 1].items[0].text.startsWith('CI passed'), true);
+  // Rows with an author picture flow it inline (icon, label, picture, name); the others use an icon column.
+  const flow = allNodes(message).find((n) => n.type === 'Container' && n.items.some((i) => i.url === CI_STATUS_ICONS.success.url));
+  if (flow) {
+    const at = flow.items.findIndex((i) => i.url === CI_STATUS_ICONS.success.url);
+    assert.equal(flow.items[at + 1].text.startsWith('CI passed'), true);
+  } else {
+    const set = allNodes(message).find((n) => n.type === 'ColumnSet' && n.columns.some((c) => c.items.some((i) => i.url === CI_STATUS_ICONS.success.url)));
+    const at = set.columns.findIndex((c) => c.items.some((i) => i.url === CI_STATUS_ICONS.success.url));
+    assert.equal(set.columns[at].width, '16px');
+    assert.equal(set.columns[at + 1].items[0].text.startsWith('CI passed'), true);
+  }
 });
 
 test('/mrs card: a row without a pipeline has no CI icon and keeps a single meta line', () => {
