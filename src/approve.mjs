@@ -46,6 +46,8 @@
 // read back, and the link is used up only when that read confirms it.
 
 import { buildApprovalNote } from './approval-note.mjs';
+import { teamsMessageLink } from './message-links.mjs';
+import { PAGE_CSS, TANUKI, escapeHtml, liveScript, liveSlots, liveState, renderSummary, safeLink } from './approve-page.mjs';
 import http from 'node:http';
 import { isIP } from 'node:net';
 import crypto from 'node:crypto';
@@ -76,6 +78,7 @@ const REFRESH_TIMEOUT_MS = 15_000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const COOKIE_NAME = 'tl_approve';
 const ACTIONS = ['approve', 'reopen', 'merge'];
+const LIVE_CACHE_MS = 3000;
 const MERGE_POLL_MS = 2000;
 const MERGE_POLL_ATTEMPTS = 8;
 
@@ -109,56 +112,12 @@ const COPY = {
   generic: { kicker: 'GitLab', footer: 'actions are sent through the configured account.' },
 };
 
-const escapeHtml = (value) =>
-  String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-
 const sha256 = (value) => crypto.createHash('sha256').update(String(value)).digest();
 const sha256Hex = (value) => sha256(value).toString('hex');
 
 /** Constant-time string comparison (digests, so the length does not leak). */
 function safeEqual(a, b) {
   return crypto.timingSafeEqual(sha256(a), sha256(b));
-}
-
-// Page styling: GitLab-inspired (calm neutral surfaces, rounded panels, tinted
-// state pills) but its own thing, branded teams-live. The state colors match the
-// badges on the Teams card.
-const PAGE_CSS = [
-  ':root{color-scheme:light dark;--bg:#f4f5f8;--panel:#fff;--text:#1f2430;--muted:#5d6475;--line:#dcdfe6;--accent:#3b4fd8;--code:#eef0f6;',
-  '--ok:#1f7a4a;--ok-bg:#e3f4ea;--merged:#6b46c1;--merged-bg:#ece6f9;--closed:#b3261e;--closed-bg:#fbe6e3;--draft:#555a66;--draft-bg:#e9eaee;--warn:#8a5a00;--warn-bg:#fdf1d8;--btn:#1f7a4a;--btn-h:#18643b}',
-  '@media (prefers-color-scheme:dark){:root{--bg:#14161c;--panel:#1d2029;--text:#e7e9ef;--muted:#a3a9b8;--line:#343845;--accent:#8c9bff;--code:#2a2e3a;',
-  '--ok:#6fd49b;--ok-bg:#16352a;--merged:#b9a0f5;--merged-bg:#2c2347;--closed:#ff9b92;--closed-bg:#40201e;--draft:#b8bdc9;--draft-bg:#2b2f3a;--warn:#f0c46b;--warn-bg:#3a2e12}}',
-  '*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}',
-  '.shell{max-width:36rem;margin:0 auto;padding:2rem 1rem 3rem}',
-  '.brand{display:flex;align-items:center;gap:.5rem;margin:0 0 1rem;color:var(--muted);font-size:.9rem}.brand svg{flex:none}.brand .word{color:var(--text);font-weight:650;letter-spacing:.01em}',
-  '.panel{background:var(--panel);border:1px solid var(--line);border-left-width:4px;border-radius:10px;padding:1.25rem 1.5rem 1.5rem;box-shadow:0 1px 2px rgba(0,0,0,.06)}',
-  '.tone-ok{border-left-color:var(--ok)}.tone-warn{border-left-color:#d99a00}.tone-error{border-left-color:var(--closed)}.tone-neutral{border-left-color:var(--accent)}',
-  'h1{font-size:1.35rem;line-height:1.3;margin:0 0 1rem}p{margin:.6rem 0}',
-  'code{background:var(--code);padding:.05rem .35rem;border-radius:4px;font:.88em ui-monospace,SFMono-Regular,Menlo,monospace}',
-  '.note{color:var(--muted);font-size:.9rem}',
-  '.mr{border:1px solid var(--line);border-radius:8px;padding:.75rem 1rem;margin:0 0 1rem;background:var(--bg)}',
-  '.mr-head{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin:0 0 .35rem}.mr-head .ref{color:var(--muted);font:.85rem ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}',
-  '.mr p{margin:.2rem 0}',
-  '.pill{display:inline-flex;align-items:center;gap:.35rem;border-radius:999px;padding:.1rem .6rem;font-size:.8rem;font-weight:600;line-height:1.5;border:1px solid currentColor}',
-  '.pill i{width:.55rem;height:.55rem;border-radius:50%;background:currentColor;display:inline-block}',
-  '.pill-open{color:var(--ok);background:var(--ok-bg)}.pill-merged{color:var(--merged);background:var(--merged-bg)}.pill-closed{color:var(--closed);background:var(--closed-bg)}.pill-draft{color:var(--draft);background:var(--draft-bg)}',
-  '.callout{border-radius:8px;padding:.6rem .85rem;margin:.9rem 0;background:var(--warn-bg);color:var(--text);border:1px solid var(--line);font-size:.9rem}',
-  '.btn{font:inherit;font-weight:600;color:#fff;background:var(--btn);border:0;border-radius:8px;padding:.6rem 1.25rem;cursor:pointer}.btn:hover{background:var(--btn-h)}',
-  '.btn:focus-visible{outline:3px solid var(--accent);outline-offset:2px}',
-  '.foot{margin-top:1rem;color:var(--muted);font-size:.8rem}',
-  '@media (max-width:30rem){.panel{padding:1rem}.btn{width:100%}}',
-].join('');
-
-const BRAND_MARK =
-  '<svg width="22" height="22" viewBox="0 0 22 22" role="img" aria-label="teams-live" focusable="false"><rect width="22" height="22" rx="6" fill="#3b4fd8"/><circle cx="7" cy="6.5" r="2" fill="#fff"/><circle cx="7" cy="15.5" r="2" fill="#fff"/><circle cx="15" cy="9" r="2" fill="#fff"/><path d="M7 8.5v5M15 11c0 2.2-2 3-5.5 3.6" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/></svg>';
-
-/** Pill for the live state of a merge request. Draft wins over open, like the card. */
-function stateBadge(mr) {
-  if (!mr?.state) return '';
-  const draft = Boolean(mr.draft || mr.work_in_progress || mr.detailed_merge_status === 'draft_status');
-  const [cls, label] =
-    mr.state === 'merged' ? ['merged', 'Merged'] : mr.state === 'closed' ? ['closed', 'Closed'] : mr.state === 'opened' ? (draft ? ['draft', 'Draft'] : ['open', 'Open']) : ['draft', escapeHtml(mr.state)];
-  return `<span class="pill pill-${cls}"><i aria-hidden="true"></i>${label}</span>`;
 }
 
 const toneForCode = (code) => (code >= 500 ? 'error' : code >= 400 ? 'warn' : 'ok');
@@ -612,6 +571,13 @@ export class ApproveServer {
     this.server = null;
     this.script = this.bootstrapScript();
     this.scriptHash = `sha256-${crypto.createHash('sha256').update(this.script).digest('base64')}`;
+    // The script that keeps an open page current (the state endpoint is `<base>/state`).
+    this.liveScript = liveScript(`${this.basePath}/state`);
+    this.liveHash = `sha256-${crypto.createHash('sha256').update(this.liveScript).digest('base64')}`;
+    // Links on the pages point at the GitLab host only.
+    this.gitlabHost = typeof gitlab.host === 'string' ? gitlab.host : '';
+    this.lastApprovals = new Map();
+    this.liveCache = new Map();
   }
 
   /**
@@ -703,12 +669,14 @@ export class ApproveServer {
       'X-Frame-Options': 'DENY',
       'Referrer-Policy': 'same-origin',
       'Cross-Origin-Opener-Policy': 'same-origin',
-      'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; ${script ? `script-src '${this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
+      'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; ${script ? `script-src '${script === 'live' ? this.liveHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
       ...extra,
     };
   }
 
   send(res, status, html, { head = false, extra = {}, script = false } = {}) {
+    // A page with a merge request on it carries the live script (see page()).
+    if (!script && html.includes('data-live-root')) script = 'live';
     const body = head ? '' : html;
     res.writeHead(status, this.headers({ 'Content-Length': Buffer.byteLength(html), ...extra }, { script }));
     res.end(body);
@@ -722,7 +690,8 @@ export class ApproveServer {
   page(title, body, { script = '', tone = 'neutral', kind = 'approve' } = {}) {
     const safeTone = ['neutral', 'ok', 'warn', 'error'].includes(tone) ? tone : 'neutral';
     const copy = COPY[kind] || COPY.approve;
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}</style></head><body><div class="shell"><header class="brand">${BRAND_MARK}<span class="word">teams-live</span><span class="sep" aria-hidden="true">·</span><span class="kicker">${copy.kicker}</span></header><main class="panel tone-${safeTone}"><h1>${escapeHtml(title)}</h1>${body}${script}</main><footer class="foot">Served by your teams-live instance. Nothing here is GitLab itself; ${copy.footer}</footer></div></body></html>`;
+    const tail = script || (body.includes('data-live-root') ? `<script>${this.liveScript}</script>` : '');
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}</style></head><body><header class="brand"><div class="in">${TANUKI}<span class="word">teams-live</span><span class="sep" aria-hidden="true">·</span><span class="kicker">${copy.kicker}</span></div></header><div class="shell"><main class="panel tone-${safeTone}"><h1>${escapeHtml(title)}</h1>${body}${tail}</main><footer class="foot">Served by your teams-live instance. Nothing here is GitLab itself; ${copy.footer}</footer></div></body></html>`;
   }
 
   /** The static script that exchanges the fragment token for a session. */
@@ -742,7 +711,7 @@ export class ApproveServer {
     if (this.basePath && (pathname === this.basePath || pathname.startsWith(`${this.basePath}/`))) {
       pathname = pathname.slice(this.basePath.length) || '/';
     }
-    return ['/', '/session', '/confirm'].includes(pathname) ? pathname : null;
+    return ['/', '/session', '/confirm', '/state'].includes(pathname) ? pathname : null;
   }
 
   readForm(req) {
@@ -864,6 +833,10 @@ export class ApproveServer {
     if (route === '/session') {
       if (method !== 'POST') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: 'POST' } });
       return this.bootstrap(req, res);
+    }
+    if (route === '/state') {
+      if (method !== 'GET') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: 'GET' } });
+      return this.state(req, res);
     }
     // /confirm
     if (method === 'HEAD') return this.send(res, 200, '', { head: true });
@@ -1058,11 +1031,8 @@ export class ApproveServer {
   }
 
   summary(record, mr, user) {
-    const reopen = record.action === 'reopen';
-    const lines = [
-      `<div class="mr"><div class="mr-head">${stateBadge(mr)}<span class="ref">${escapeHtml(record.project)}!${escapeHtml(record.iid)}</span></div><p><strong>${escapeHtml(mr?.title || `Merge request !${record.iid}`)}</strong></p>`,
-      reopen ? '</div>' : `<p class="note">Head commit <code>${escapeHtml(record.sha.slice(0, 12))}</code></p></div>`,
-    ];
+    const kind = kindOf(record);
+    const lines = [renderSummary({ record, mr, approvals: this.lastApprovals.get(record.id) ?? null, host: this.gitlabHost, kind })];
     if (user) {
       const who = escapeHtml(user.username || user.name || user.id);
       lines.push(
@@ -1100,8 +1070,76 @@ export class ApproveServer {
     return promise;
   }
 
+  /** A JSON answer with the same hardening headers as the pages. */
+  json(res, status, data) {
+    const body = JSON.stringify(data);
+    res.writeHead(status, this.headers({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body) }));
+    res.end(body);
+  }
+
+  /**
+   * What an open page shows live: its changing pieces as escaped HTML and whether the action is still
+   * possible. One read per merge request every few seconds however many tabs are open.
+   */
+  liveSnapshot(record) {
+    const now = this.now();
+    for (const [id, c] of this.liveCache) if (now - c.at > 60_000 || !this.store.records.has(id)) this.liveCache.delete(id);
+    const hit = this.liveCache.get(record.id);
+    if (hit && now - hit.at < LIVE_CACHE_MS) return hit.promise;
+    const promise = (async () => {
+      const { mr } = await this.readMr(record);
+      const approvals = await this.refreshApprovals(record);
+      const kind = kindOf(record);
+      return { slots: liveSlots({ kind, mr, approvals, host: this.gitlabHost }), actionable: liveState(kind, mr).actionable };
+    })();
+    const entry = { at: now, promise };
+    this.liveCache.set(record.id, entry);
+    promise.catch(() => {
+      if (this.liveCache.get(record.id) === entry) this.liveCache.delete(record.id);
+    });
+    return promise;
+  }
+
+  /** The approvals of the merge request for the page (remembered for the next render); null when unknown. */
+  async refreshApprovals(record) {
+    if (typeof this.gitlab.getApprovalSummary !== 'function') return null;
+    try {
+      const approvals = await this.gitlab.getApprovalSummary(record.project, record.iid);
+      if (approvals?.known === false) return this.lastApprovals.get(record.id) ?? null;
+      this.lastApprovals.set(record.id, approvals);
+      while (this.lastApprovals.size > 500) this.lastApprovals.delete(this.lastApprovals.keys().next().value);
+      return approvals;
+    } catch {
+      return this.lastApprovals.get(record.id) ?? null;
+    }
+  }
+
+  /** GET <base>/state: the live status of the merge request behind the session's link. */
+  async state(req, res) {
+    const session = this.sessionOf(req);
+    if (!session) return this.json(res, 401, {});
+    try {
+      return this.json(res, 200, await this.liveSnapshot(session.record));
+    } catch {
+      return this.json(res, 502, {});
+    }
+  }
+
+  /** Buttons that lead on after a finished action: the merge request in GitLab and the Teams card. */
+  followLinks(record) {
+    const mr = safeLink(typeof this.gitlab.mrLink === 'function' ? this.gitlab.mrLink(record.project, record.iid) : '', this.gitlabHost);
+    const card = typeof this.locateCard === 'function' ? this.locateCard(record.project, record.iid) : null;
+    const teams = card ? teamsMessageLink(card.conversationId, card.messageId) : '';
+    const links = [
+      mr ? `<a class="btn" href="${escapeHtml(mr)}" target="_blank" rel="noopener noreferrer">View merge request in GitLab</a>` : '',
+      teams ? `<a class="btn btn-secondary" href="${escapeHtml(teams)}" target="_blank" rel="noopener noreferrer">Open the Teams card</a>` : '',
+    ].filter(Boolean);
+    return links.length ? `<p class="links">${links.join('')}</p>` : '';
+  }
+
   async showConfirmation(res, { sid, record }) {
     const result = await this.evaluateCached(record);
+    await this.refreshApprovals(record);
     if (result.status === 'used') {
       const u = this.usedPage(record);
       return this.send(res, u.code, this.page(u.title, u.body, { tone: toneForCode(u.code) }));
@@ -1112,7 +1150,8 @@ export class ApproveServer {
       return this.send(res, 409, this.page(copy.blocked, `${this.summary(record, result.mr, result.user)}<p>${escapeHtml(result.reason)}</p>`, { tone: 'warn', kind }));
     }
     if (result.status === 'already') {
-      return this.send(res, 200, this.page(...this.alreadyPage(record, result), { tone: 'ok', kind }));
+      const [alreadyTitle, alreadyBody] = this.alreadyPage(record, result);
+      return this.send(res, 200, this.page(alreadyTitle, alreadyBody + this.followLinks(record), { tone: 'ok', kind }));
     }
     const actor = actorOf(result);
     if (!actor) {
@@ -1120,7 +1159,7 @@ export class ApproveServer {
     }
     // The shown account and credential travel with the form and are bound into the CSRF token.
     const token = this.csrf.issue(sid, record.id, actorBind(actor));
-    const form = `<form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><input type="hidden" name="user" value="${escapeHtml(actor.user)}"><input type="hidden" name="cred" value="${escapeHtml(actor.cred)}"><p>${copy.question}</p>${kind === 'merge' ? `<p class="note">Merges exactly the head commit above. Source-branch removal and squash follow the merge request's own settings. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}<button class="btn" type="submit">${copy.button}</button></form>`;
+    const form = `<div class="actions" data-live-action><form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><input type="hidden" name="user" value="${escapeHtml(actor.user)}"><input type="hidden" name="cred" value="${escapeHtml(actor.cred)}"><p>${copy.question}</p>${kind === 'merge' ? `<p class="note">Merges exactly the head commit above. Source-branch removal and squash follow the merge request's own settings. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}<button class="btn" type="submit">${copy.button}</button></form></div>`;
     return this.send(res, 200, this.page(copy.title, `${this.summary(record, result.mr, result.user)}${form}`, { tone: 'neutral', kind }));
   }
 
@@ -1199,7 +1238,7 @@ export class ApproveServer {
       if (kind === 'reopen') return this.sendReopen(current, result);
       return kind === 'merge' ? this.sendMerge(current, result) : this.sendApproval(current, result, { ip: this.clientIp(req) });
     });
-    this.send(res, outcome.code, this.page(outcome.title, outcome.body, { tone: outcome.tone || toneForCode(outcome.code), kind }));
+    this.send(res, outcome.code, this.page(outcome.title, outcome.body + (outcome.code === 200 ? this.followLinks(record) : ''), { tone: outcome.tone || toneForCode(outcome.code), kind }));
   }
 
   /**

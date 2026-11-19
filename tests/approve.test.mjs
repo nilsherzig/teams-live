@@ -259,7 +259,9 @@ test('the confirmation page needs a session, shows the account honestly and neve
     assert.match(html, /configured GitLab account/);
     assert.match(html, /not as you personally/);
     assert.equal(res.headers.get('cache-control'), 'no-store');
-    assert.doesNotMatch(res.headers.get('content-security-policy'), /script-src/);
+    // The only script is the live-status one, allowed by its hash alone (never 'unsafe-inline' for scripts).
+    assert.match(res.headers.get('content-security-policy'), /script-src 'sha256-[A-Za-z0-9+/=]+'; connect-src 'self'/);
+    assert.doesNotMatch(res.headers.get('content-security-policy'), /script-src[^;]*unsafe/);
     const head = await fetch(`${ctx.base}/approve/confirm`, { method: 'HEAD', headers: { Cookie: cookie } });
     assert.equal(head.status, 200);
     assert.equal(ctx.gitlab.calls.approve.length, 0);
@@ -286,12 +288,14 @@ test('the pages are styled self-contained: state pills, tones, dark mode, no ext
     // The merge request title is escaped, never markup.
     assert.doesNotMatch(html, /<img/);
     assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; &amp; &quot;quoted&quot;/);
-    // Nothing external or scripted: the only URL is the form action, the CSP stays closed.
-    assert.doesNotMatch(html, /<script|<[a-z][^>]*\ssrc=|<link|@import|url\(/);
+    // Nothing external: the only script is the live-status one (same origin, allowed by its hash), no src, link or import.
+    assert.equal((html.match(/<script/g) || []).length, 1, 'one script');
+    assert.match(html, /<script>\(function\(\)\{var U="\/approve\/state"/);
+    assert.doesNotMatch(html.replace(/<script>[\s\S]*?<\/script>/, ''), /<script|<[a-z][^>]*\ssrc=|<link|@import|url\(/);
     assert.deepEqual(html.match(/https?:\/\/[^\s"'<>)]+/g), ['https://approve.example.com/approve/confirm']);
     const csp = res.headers.get('content-security-policy');
     assert.match(csp, /default-src 'none'/);
-    assert.doesNotMatch(csp, /script-src/);
+    assert.match(csp, /script-src 'sha256-[A-Za-z0-9+/=]+'; connect-src 'self'/);
 
     // Drafts, closed and merged merge requests show their own pill (closed and merged burn the
     // link, so each case has its own); error pages carry a warning tone.
@@ -2256,5 +2260,138 @@ test('the merge switch is read from gitlab.approve.merge_enabled and defaults to
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── the page looks like GitLab's merge request, links to it, and updates itself ───────────────
+
+const FULL_MR = {
+  state: 'opened',
+  draft: false,
+  sha: SHA,
+  title: 'feat: update the example makefile',
+  web_url: 'https://git.example.com/group/app/-/merge_requests/7',
+  source_branch: 'feat/example',
+  target_branch: 'main',
+  author: { name: 'Alice Example', username: 'alice', web_url: 'https://git.example.com/alice' },
+  head_pipeline: { id: 42, status: 'running', web_url: 'https://git.example.com/group/app/-/pipelines/42' },
+  detailed_merge_status: 'ci_still_running',
+};
+
+function gitlabWithLinks(extra = {}) {
+  const gitlab = makeGitlab({
+    host: 'git.example.com',
+    mrLink: (project, iid) => `https://git.example.com/${project}/-/merge_requests/${iid}`,
+    async getApprovalSummary() {
+      return { known: true, approved: true, approvedBy: ['MS Teams bot'], approvalsGiven: 1, approvalsRequired: 1 };
+    },
+    ...extra,
+  });
+  gitlab.mr = { ...FULL_MR };
+  return gitlab;
+}
+
+test('the page shows the merge request like GitLab does and links to it: title, project, branches, author, pipeline, commit', async () => {
+  const ctx = await setup({ gitlab: gitlabWithLinks() });
+  try {
+    const html = await (await ctx.page(await ctx.open())).text();
+    const href = (text) => new RegExp(`<a href="([^"]+)" target="_blank" rel="noopener noreferrer">(?:<[^>]+>)*${text}`);
+    assert.equal(href('feat: update the example makefile').exec(html)[1], 'https://git.example.com/group/app/-/merge_requests/7');
+    assert.ok(html.includes('href="https://git.example.com/group/app/-/merge_requests/7" target="_blank" rel="noopener noreferrer"><span class="ref">'), 'reference');
+    assert.ok(html.includes('href="https://git.example.com/group/app/-/tree/feat%2Fexample"'), 'source branch');
+    assert.ok(html.includes('href="https://git.example.com/group/app/-/tree/main"'), 'target branch');
+    assert.ok(html.includes('href="https://git.example.com/alice"'), 'author');
+    assert.ok(html.includes('href="https://git.example.com/group/app/-/pipelines/42"'), 'pipeline');
+    assert.ok(html.includes(`href="https://git.example.com/group/app/-/commit/${SHA}"`), 'head commit');
+    assert.match(html, /Running #42/);
+    assert.match(html, /1 of 1 required by MS Teams bot/);
+    assert.match(html, /Pipeline running/);
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('links point at the GitLab host only, and what GitLab sends is escaped', async () => {
+  const gitlab = gitlabWithLinks();
+  gitlab.mr = {
+    ...FULL_MR,
+    web_url: 'https://evil.example.net/group/app/-/merge_requests/7',
+    author: { name: '<b>Eve</b>', username: 'eve', web_url: 'javascript:alert(1)' },
+    head_pipeline: { id: 1, status: 'success', web_url: 'https://evil.example.net/p' },
+    source_branch: '"><script>x</script>',
+  };
+  const ctx = await setup({ gitlab });
+  try {
+    const html = await (await ctx.page(await ctx.open())).text();
+    assert.doesNotMatch(html, /evil\.example\.net|javascript:/);
+    assert.doesNotMatch(html, /<b>Eve|<script>x/);
+    assert.match(html, /&lt;b&gt;Eve&lt;\/b&gt;/);
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('the live state endpoint needs the session, answers JSON and reads GitLab once per few seconds', async () => {
+  const gitlab = gitlabWithLinks();
+  let reads = 0;
+  const original = gitlab.getMr;
+  gitlab.getMr = async () => {
+    reads++;
+    return original.call(gitlab);
+  };
+  const ctx = await setup({ gitlab });
+  try {
+    const url = `${ctx.base}/approve/state`;
+    assert.equal((await fetch(url)).status, 401, 'no session');
+    const cookie = await ctx.open();
+    const res = await fetch(url, { headers: { Cookie: cookie } });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /application\/json/);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    const data = await res.json();
+    assert.equal(data.actionable, true);
+    assert.match(data.slots.state, /pill-open/);
+    assert.match(data.slots.pipeline, /Running #42/);
+    assert.match(data.slots.merge, /Pipeline running/);
+    const before = reads;
+    await fetch(url, { headers: { Cookie: cookie } });
+    await fetch(url, { headers: { Cookie: cookie } });
+    assert.equal(reads, before, 'served from the short cache');
+    assert.equal((await fetch(url, { method: 'POST', headers: { Cookie: cookie } })).status, 405);
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('when the merge request is merged the live state says so and the action goes away', async () => {
+  const gitlab = gitlabWithLinks();
+  gitlab.mr = { ...FULL_MR, state: 'merged', detailed_merge_status: 'not_open', head_pipeline: { id: 42, status: 'success', web_url: 'https://git.example.com/group/app/-/pipelines/42' } };
+  const ctx = await setup({ gitlab });
+  try {
+    const cookie = await ctx.open();
+    const data = await (await fetch(`${ctx.base}/approve/state`, { headers: { Cookie: cookie } })).json();
+    assert.equal(data.actionable, false);
+    assert.match(data.slots.state, /pill-merged/);
+    assert.match(data.slots.pipeline, /Passed #42/);
+    assert.equal(data.slots.notice, 'This merge request has been merged.');
+  } finally {
+    await ctx.server.stop();
+  }
+});
+
+test('after an approval the page leads on: the merge request in GitLab and the Teams card', async () => {
+  const ctx = await setup({
+    gitlab: gitlabWithLinks(),
+    serverOpts: { locateCard: () => ({ conversationId: '19:x@thread.v2', messageId: '1700000000000' }) },
+  });
+  try {
+    const res = await ctx.confirm();
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /Approved in GitLab/);
+    assert.match(html, /<a class="btn" href="https:\/\/git\.example\.com\/group\/app\/-\/merge_requests\/7" target="_blank" rel="noopener noreferrer">View merge request in GitLab<\/a>/);
+    assert.match(html, /<a class="btn btn-secondary" href="https:\/\/teams\.microsoft\.com\/l\/message\/19%3Ax%40thread\.v2\/1700000000000"[^>]*>Open the Teams card<\/a>/);
+  } finally {
+    await ctx.server.stop();
   }
 });
