@@ -37,6 +37,8 @@ icons=(
   status_skipped:#8a8a92
   status_manual:#2f7ed8
   status_created:#8a8a92
+  clock:#2f7ed8
+  repository:#8a8a92
 )
 
 out="$root/src/gitlab-icons.mjs"
@@ -80,6 +82,8 @@ small_icons=(
   status_skipped:#8a8a92
   status_manual:#2f7ed8
   status_created:#8a8a92
+  clock:#2f7ed8
+  repository:#8a8a92
 )
 
 small_out="$root/src/gitlab-icons-small.mjs"

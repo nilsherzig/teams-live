@@ -24,6 +24,7 @@ import { MR_BADGES } from './mr-badges.mjs';
 import { approvalBadge, approvalBadgeText } from './approval-badges.mjs';
 import { CI_STATUS_ICONS } from './ci-icons.mjs';
 import { GITLAB_ICONS_SMALL } from './gitlab-icons-small.mjs';
+import { autoMergeFact, autoMergeRegularFact, compactMrFacts, repoIconColumn } from './card-compact.mjs';
 import {
   HIGHLIGHT_LEVELS,
   expandTabs,
@@ -245,7 +246,7 @@ function numericReference(sigil, id, url) {
  * Compact integration header: small service logo (or emoji), "Service - kind"
  * and, right-aligned, the optional identifier of the entity (see referenceColumn).
  */
-function header(service, kind, glyph = null, ref = null, stats = null) {
+function header(service, kind, glyph = null, ref = null, stats = null, extraColumns = []) {
   const emojiBrand = EMOJI_BRANDS[service];
   const name = emojiBrand ? emojiBrand.name : SERVICES[service];
   const lead = emojiBrand
@@ -278,6 +279,7 @@ function header(service, kind, glyph = null, ref = null, stats = null) {
         verticalContentAlignment: 'Center',
         items: [headerLabel(kind ? `${name} · ${kind}` : name, stats)],
       },
+      ...extraColumns,
       ...(referenceColumn(ref) ? [referenceColumn(ref)] : []),
     ],
   };
@@ -355,15 +357,17 @@ export function assembleCard({
   extraItems = [],
   actions = [],
   fallbackText,
+  headerExtra = [],
+  factLayout = null,
 }) {
   const items = [
-    header(service, kind, glyph, ref, stats),
+    header(service, kind, glyph, ref, stats, headerExtra),
     // `title: null` is a card whose header already names it (no second heading).
     title === null ? null : titleBlock(title || subtitle || 'Update', titleUrl, { size: titleSize, asAction: titleAsAction }),
     // `subtitleUrl` makes the subtitle a click target, with the same look as without.
     subtitle && title ? clickTarget(textBlock(subtitle, { isSubtle: true, spacing: 'None', size: 'Small' }), subtitleUrl) : null,
     badgeRow(badges),
-    ...factBlocks(facts),
+    ...(factLayout ? factLayout(factBlocks(facts)) : factBlocks(facts)),
     ...extraItems,
   ].filter(Boolean);
 
@@ -568,7 +572,7 @@ function pipelineFact(pipeline, known) {
   if (!pipeline) {
     // No pipeline: say "none" when GitLab was asked, "unknown" when the lookup failed, nothing when not asked.
     if (known === true) return ['Pipeline', '\ud83c\udfd7\ufe0f None'];
-    if (known === false) return ['Pipeline', '\u2754 Unknown (not retrieved)'];
+    if (known === false) return ['Pipeline', '\u2754 Unknown'];
     return null;
   }
   const status = str(pipeline.status);
@@ -597,7 +601,7 @@ const tri = (value) => (value === true ? true : value === false ? false : null);
  *
  * `approved` and `autoMerge` are tri-state: true, false, or null/undefined
  * when the value was not retrieved. An open merge request always shows both
- * (unknown reads "Unknown (not retrieved)", never "no"). `pipelineKnown`
+ * (unknown reads "Unknown", never "no"). `pipelineKnown`
  * (true/false/undefined) tells "no pipeline" from a failed lookup. The rebase fact
  * appears only while a rebase is required. Merged and closed merge requests
  * keep the details that are known. `draft` marks an open merge request as a
@@ -608,7 +612,7 @@ const tri = (value) => (value === true ? true : value === false ? false : null);
  * acts by itself. `author` (a display name) adds an "Author" fact;
  * with a profile picture in `avatars` it is a picture row, otherwise plain text.
  */
-export function buildMergeRequestCard(mr) {
+export function buildMergeRequestCard(mr, { compact = false } = {}) {
   const state = mr.state || 'open';
   const live = state === 'open' || state === 'rebase' || state === 'rebased';
   const approved = tri(mr.approved);
@@ -638,7 +642,7 @@ export function buildMergeRequestCard(mr) {
     approval = approvers.length > 0 ? `👍 By ${approvers.join(', ')}` : '👍 Approved';
     approvalPill = approvalBadge(approvalState);
   } else if (live || (state === 'closed' && approved === false)) {
-    approval = approved === false ? `⏳ ${approvalBadgeText(approvalState)}` : '❔ Unknown (not retrieved)';
+    approval = approved === false ? `⏳ ${approvalBadgeText(approvalState)}` : '❔ Unknown';
     approvalPill = approvalBadge(approvalState);
   }
 
@@ -647,7 +651,7 @@ export function buildMergeRequestCard(mr) {
     // Who enabled it is not shown: it is almost always the author, which the card already says.
     autoMergeText = '🔀 Enabled';
   } else if (live) {
-    autoMergeText = autoMerge === false ? '⏸️ Disabled' : '❔ Unknown (not retrieved)';
+    autoMergeText = autoMerge === false ? '⏸️ Disabled' : '❔ Unknown';
   }
 
   let rebase = '';
@@ -671,8 +675,12 @@ export function buildMergeRequestCard(mr) {
     titleSize: 'Large',
     titleAsAction: true,
     ref: numericReference('!', mr.iid, mr.url),
-    subtitle: mr.project,
+    // The compact card has no project line: the repository icon in the header links to the project.
+    subtitle: compact ? null : mr.project,
     subtitleUrl: projectUrlOf(mr.url),
+    // Both cards: a repository icon in the header, linking to the project.
+    headerExtra: [repoIconColumn(projectUrlOf(mr.url))].filter(Boolean),
+    factLayout: compact ? compactMrFacts : null,
     stats: mr.diffStats,
     facts: [
       ['Status', statusLabel, { badge, trail }],
@@ -685,7 +693,7 @@ export function buildMergeRequestCard(mr) {
           : ['Approval', approval],
       pipelineFact(mr.pipeline, mr.pipelineKnown),
       ['Rebase', rebase],
-      ['Auto-merge', autoMergeText],
+      compact ? (autoMergeText ? autoMergeFact(autoMerge) : null) : autoMergeRegularFact(autoMerge, autoMergeText),
       logoFact('Ticket', mdLink(jiraLabel, mr.jira?.url), 'jira'),
     ].filter(Boolean),
     actions: live

@@ -2783,7 +2783,7 @@ export class MergeRequestWatcher {
           ? mrDetails.pipelineKnown
           : undefined,
       jira: jiraTicket ? { key: jiraTicket.key, url: jiraTicket.url } : null,
-    });
+    }, { compact: this.config.teams?.compact_cards === true });
   }
 
   async handleCiStatusComment(entry, mr, pipeline, mrDetails) {

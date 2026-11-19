@@ -485,6 +485,8 @@ export function loadConfig(configPath) {
     edit_own_url_messages: Boolean(fileConfig.teams?.edit_own_url_messages ?? false),
     // Opt-in: send GitLab/Jira/OpsGenie/Confluence updates as Adaptive Cards
     rich_messages: fileConfig.teams?.rich_messages === true,
+    // The compact merge request card (two columns, short labels, one-line approval); on unless set to false.
+    compact_cards: fileConfig.teams?.compact_cards !== false,
     // Dampening of connector expired/restored alerts; see src/service-alerts.mjs
     service_alerts: fileConfig.teams?.service_alerts && typeof fileConfig.teams.service_alerts === 'object'
       ? fileConfig.teams.service_alerts

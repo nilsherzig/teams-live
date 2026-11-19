@@ -103,7 +103,7 @@ test('MR status card: API approval and auto-merge data reach the initial card, d
   );
   const facts = factsOf(cardOf(call.args[2]));
   assert.equal(facts.Approval, 'Not approved yet');
-  assert.equal(facts['Auto-merge'], '⏸️ Disabled');
+  assert.equal(facts['Auto-merge'], 'Disabled');
   assert.equal(facts.Pipeline, 'Passed (#7)');
   assert.equal(facts.Rebase, undefined);
 });
@@ -120,7 +120,7 @@ test('MR status card: approved without approver names and enabled auto-merge', a
   );
   const facts = factsOf(cardOf(call.args[2]));
   assert.equal(facts.Approval, 'Approved');
-  assert.equal(facts['Auto-merge'], '\u{1F500} Enabled');
+  assert.equal(facts['Auto-merge'], 'Enabled');
 });
 
 test('MR status card: unknown approval and auto-merge are not shown as false', async () => {
@@ -134,8 +134,8 @@ test('MR status card: unknown approval and auto-merge are not shown as false', a
     )
   );
   const facts = factsOf(cardOf(call.args[2]));
-  assert.equal(facts.Approval, '❔ Unknown (not retrieved)');
-  assert.equal(facts['Auto-merge'], '❔ Unknown (not retrieved)');
+  assert.equal(facts.Approval, '❔ Unknown');
+  assert.equal(facts['Auto-merge'], '❔ Unknown');
 });
 
 test('MR status card: in-place updates carry the new approval, auto-merge and rebase data', async () => {
@@ -164,7 +164,7 @@ test('MR status card: in-place updates carry the new approval, auto-merge and re
   const f = factsOf(resolved);
   assert.equal(f.Rebase, undefined);
   assert.equal(f.Approval, 'Approved Alice Example');
-  assert.equal(f['Auto-merge'], '\u{1F500} Enabled');
+  assert.equal(f['Auto-merge'], 'Enabled');
 });
 
 test('MR rebase comment: required keeps the reason, resolved is conflict-free and the line goes away', async () => {
@@ -199,7 +199,7 @@ test('MR merged and closed cards keep what is known', async () => {
   const mergedFacts = factsOf(cardOf(merged[0].args[2]));
   assert.equal(mergedFacts.Status, 'Merged');
   assert.equal(mergedFacts.Approval, 'Approved Alice Example');
-  assert.equal(mergedFacts['Auto-merge'], '\u{1F500} Enabled');
+  assert.equal(mergedFacts['Auto-merge'], 'Enabled');
 
   const closed = await run(() =>
     watcher.handleCiStatusComment(
@@ -212,7 +212,7 @@ test('MR merged and closed cards keep what is known', async () => {
   const closedFacts = factsOf(cardOf(closed[0].args[2]));
   assert.equal(closedFacts.Status, 'Closed');
   assert.equal(closedFacts.Approval, 'Approved');
-  assert.equal(closedFacts['Auto-merge'], '\u{1F500} Enabled');
+  assert.equal(closedFacts['Auto-merge'], 'Enabled');
 });
 
 test('MR status without rich messages stays a regular message', async () => {
@@ -426,7 +426,7 @@ test('/status card: "none" when the MR has no pipeline, "unknown" when the looku
   const base = { state: 'opened', approved: false, approvalKnown: true, status: 'pending', autoMerge: false, pipeline: null };
   const pipelineOf = (mrState) => factsOf(facts(mrState)).Pipeline ?? null;
   assert.equal(pipelineOf({ ...base, pipelineKnown: true }), '\u{1F3D7}️ None');
-  assert.equal(pipelineOf({ ...base, pipelineKnown: false }), '❔ Unknown (not retrieved)');
+  assert.equal(pipelineOf({ ...base, pipelineKnown: false }), '❔ Unknown');
   // Callers that did not ask GitLab keep the previous behaviour (no pipeline fact).
   assert.equal(pipelineOf(base), null);
   // A pipeline known to exist elsewhere is never reported as "none".

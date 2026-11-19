@@ -114,3 +114,17 @@ test('gitlab.approve defaults to off, has a 24 h link lifetime and ignores the f
   assert.equal(on.link_ttl_seconds, 3600);
   assert.equal('owner_users' in on, false, 'former keys are not carried');
 });
+
+test('teams.compact_cards is on by default and only an explicit false turns it off', () => {
+  const dir = tmpDir();
+  const write = (teams) => {
+    const configPath = path.join(dir, `config-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(configPath, JSON.stringify({ conversations: [{ id: '48:notes', name: 'Notes' }], ...(teams ? { teams } : {}) }));
+    return loadConfig(configPath);
+  };
+
+  assert.equal(write().teams.compact_cards, true);
+  assert.equal(write({}).teams.compact_cards, true);
+  assert.equal(write({ compact_cards: true }).teams.compact_cards, true);
+  assert.equal(write({ compact_cards: false }).teams.compact_cards, false);
+});

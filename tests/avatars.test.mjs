@@ -647,7 +647,7 @@ test('merge request approvers and the auto-merge user get pictures, in fact orde
   assert.deepEqual(approvers.map(lineTexts), [['Alice Example'], ['Bob Example']]);
   assert.equal(approvers[0].columns[0].items[0].type, 'Image');
   // The auto-merge row is plain text: it does not say who enabled it.
-  assert.equal(factOf(card, 'Auto-merge').columns[1].items[0].text, '\u{1F500} Enabled');
+  assert.ok(JSON.stringify(factOf(card, 'Auto-merge')).includes('"text":"Enabled"'), 'GitLab clock icon, then the text');
   const order = items(card).filter((i) => i.type === 'ColumnSet').map((i) => i.columns[0].items[0].text ?? '');
   assert.ok(order.indexOf('Approval') < order.indexOf('Auto-merge'));
   assert.ok(order.includes('Status'), 'plain facts stay, as rows');
