@@ -37,3 +37,18 @@ test('no GitLab user: the name alone, linked to Teams when the MRI is known; not
   assert.ok(!hostile.includes('@all') && !hostile.includes('@bad'), 'no stray mention');
   assert.equal(teamsUserLink('nonsense'), '');
 });
+
+test('the Approve button comment links the Teams card and names the address the request came from', () => {
+  const note = buildApprovalNote({
+    trigger: 'button',
+    requesterNote: "someone with the card's Approve link (confirmed as @bot)",
+    message: { conversationId: '19:x@thread.v2', messageId: '1700000000000' },
+    ip: '203.0.113.7',
+  });
+  assert.match(note, /\*\*Trigger:\*\* Approve button on \[this Teams card\]\(https:\/\/teams\.microsoft\.com\/l\/message\/19%3Ax%40thread\.v2\/1700000000000\)/);
+  assert.match(note, /\*\*IP address:\*\* `203\.0\.113\.7`/);
+  // Only a real address is ever written: anything else (a spoofed header value) is left out.
+  assert.ok(!buildApprovalNote({ trigger: 'button', ip: 'not an ip; [x](y)' }).includes('IP address'));
+  assert.match(buildApprovalNote({ trigger: 'button', ip: '2001:db8::1' }), /`2001:db8::1`/);
+  assert.match(buildApprovalNote({ trigger: 'button' }), /Approve button on a Teams card$/m);
+});

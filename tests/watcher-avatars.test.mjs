@@ -264,3 +264,18 @@ test('an MR card with the author picture that would outgrow the wire budget keep
   assert.equal(personImages(sent).length, 0, 'the photo is gone (the service logos stay)');
   assert.equal(plainAuthor(sent), 'Alice Example');
 });
+
+test('a merged MR (approvals not fetched again) still loads the pictures of the last reported approvers', () => {
+  const w = new MergeRequestWatcher({
+    config: { conversations: [], gitlab: { group: 'example-group', notify: {} }, teams: { rich_messages: true } },
+    gitlab: { findMrLinks: () => [], mrLink: () => '', pipelineLink: () => '', getMr: async () => null },
+    jira: null,
+    opsgenie: null,
+  });
+  const mr = { project: 'g/a', iid: 1, lastReportedApprovedBy: 'MS Teams bot, Alice Example' };
+  // GitLab's answer for a merged MR carries an empty approver list.
+  const people = w.mrCardPeopleData(mr, { approvedBy: [] });
+  assert.deepEqual(people.approvedBy, ['MS Teams bot', 'Alice Example']);
+  const fresh = w.mrCardPeopleData(mr, { approvedBy: ['Bob Example'] });
+  assert.deepEqual(fresh.approvedBy, ['Bob Example', 'MS Teams bot', 'Alice Example']);
+});

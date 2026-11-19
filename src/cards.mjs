@@ -34,6 +34,7 @@ import {
   tokenizeLines,
 } from './code-highlight.mjs';
 import { planCardAvatars, isImageDataUri, personChipItems, pillImage, userRow } from './card-user-row.mjs';
+import { iconTextColumns } from './card-icon-text.mjs';
 
 export const ADAPTIVE_CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json';
 export const ADAPTIVE_CARD_VERSION = '1.4';
@@ -124,12 +125,9 @@ function factRow(title, value, width, logo = null, badge = null) {
     return { type: 'ColumnSet', spacing: 'Small', columns };
   }
   if (logo) {
-    columns.push({
-      type: 'Column',
-      width: 'auto',
-      verticalContentAlignment: 'Center',
-      items: [{ type: 'Image', url: logo.logo, altText: logo.alt, width: '16px', height: '16px' }],
-    });
+    // The small icon and its text: the shared icon + text pair (one exact gap).
+    columns.push(...iconTextColumns({ icon: { type: 'Image', url: logo.logo, altText: logo.alt, width: '16px', height: '16px' }, content: textBlock(value) }));
+    return { type: 'ColumnSet', spacing: 'Small', columns };
   }
   columns.push({ type: 'Column', width: 'stretch', verticalContentAlignment: 'Center', items: [textBlock(value)] });
   return { type: 'ColumnSet', spacing: 'Small', columns };
@@ -1292,14 +1290,11 @@ function mrListMetaLine({ before, ci, after, ciStatus, ciIcons, authorChip = nul
   return {
     type: 'ColumnSet',
     spacing: 'None',
-    columns: [
-      {
-        type: 'Column',
-        width: LIST_ICON_PX,
-        items: [{ type: 'Image', url: icon.url, altText: icon.alt, width: LIST_ICON_PX, height: LIST_ICON_PX }],
-      },
-      { type: 'Column', width: 'stretch', items: [textBlock([ci, ...before, ...after].join(' \u00b7 '), small)] },
-    ],
+    columns: iconTextColumns({
+      icon: { type: 'Image', url: icon.url, altText: icon.alt, width: LIST_ICON_PX, height: LIST_ICON_PX },
+      iconWidth: LIST_ICON_PX,
+      content: textBlock([ci, ...before, ...after].join(' \u00b7 '), small),
+    }),
   };
 }
 

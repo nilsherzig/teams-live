@@ -47,6 +47,7 @@
 
 import { buildApprovalNote } from './approval-note.mjs';
 import http from 'node:http';
+import { isIP } from 'node:net';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -552,6 +553,7 @@ export class ApproveServer {
    * @param {object} opts.gitlab GitLabClient (getMr, approveMr, getUserApprovalState)
    * @param {string} opts.baseUrl public URL of the flow, e.g. https://host/approve
    * @param {(project, iid) => Promise<{matched:number,failed:number}>} [opts.refreshCards]
+   * @param {(project, iid) => ({conversationId: string, messageId: string}|null)} [opts.locateCard] the Teams card with the button, for the approval comment
    * @param {string} [opts.stateFile] persisted link records (token hashes only)
    */
   constructor({
@@ -562,6 +564,7 @@ export class ApproveServer {
     linkTtlSeconds = DEFAULT_LINK_TTL_S,
     stateFile = null,
     refreshCards = null,
+    locateCard = null,
     now = Date.now,
     mergeEnabled = false,
     mergePollMs = MERGE_POLL_MS,
@@ -589,6 +592,8 @@ export class ApproveServer {
     this.secure = base.protocol === 'https:';
     this.basePath = base.pathname.replace(/\/+$/, '');
     this.refreshCards = refreshCards;
+    // (project, iid) => {conversationId, messageId} | null: the Teams card that carries the button.
+    this.locateCard = locateCard;
     this.now = now;
     // Off unless asked for: merging from a card is a deliberate, separate opt-in.
     this.mergeEnabled = mergeEnabled === true;
@@ -1192,7 +1197,7 @@ export class ApproveServer {
         return this.identityChanged(this.summary(current, result.mr, result.user), { reopen: 'reopened', merge: 'merged', approve: 'approved' }[kind]);
       }
       if (kind === 'reopen') return this.sendReopen(current, result);
-      return kind === 'merge' ? this.sendMerge(current, result) : this.sendApproval(current, result);
+      return kind === 'merge' ? this.sendMerge(current, result) : this.sendApproval(current, result, { ip: this.clientIp(req) });
     });
     this.send(res, outcome.code, this.page(outcome.title, outcome.body, { tone: outcome.tone || toneForCode(outcome.code), kind }));
   }
@@ -1342,7 +1347,21 @@ export class ApproveServer {
     return { code: 200, title: 'Merged', body: `${summary}<p>Merged in GitLab.</p><p class="note">${escapeHtml(refresh)}</p>` };
   }
 
-  async sendApproval(record, result) {
+  /**
+   * The address the request came from. The server only listens on a loopback address, so a reverse proxy
+   * is in front of it and the socket's peer is the proxy: then the address the proxy saw is used
+   * (`X-Real-IP`, else the last `X-Forwarded-For` entry, which is the one the proxy itself added).
+   */
+  clientIp(req) {
+    const peer = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+    if (!LOOPBACK_HOSTS.has(peer) && peer !== '::1') return isIP(peer) ? peer : '';
+    const real = String(req.headers['x-real-ip'] || '').trim();
+    if (isIP(real)) return real;
+    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',').map((v) => v.trim()).filter(Boolean).at(-1) || '';
+    return isIP(forwarded) ? forwarded : '';
+  }
+
+  async sendApproval(record, result, { ip = '' } = {}) {
     const summary = this.summary(record, result.mr, result.user);
     try {
       await this.gitlab.approveMr(record.project, record.iid, { sha: record.sha, ...this.asActor(result) });
@@ -1377,9 +1396,12 @@ export class ApproveServer {
     if (typeof this.gitlab.addMrNote === 'function') {
       const account = String(result.user?.username || '').replace(/[^A-Za-z0-9_.-]/g, '');
       // The button's page has no Teams identity, only the GitLab account it acted as.
+      const card = typeof this.locateCard === 'function' ? this.locateCard(record.project, record.iid) : null;
       const note = buildApprovalNote({
         trigger: 'button',
         requesterNote: `someone with the card's Approve link${account ? ` (confirmed as @${account})` : ''}`,
+        message: card || {},
+        ip,
       });
       await this.gitlab
         .addMrNote(record.project, record.iid, note, this.asToken(result.tokenIndex))

@@ -911,8 +911,12 @@ test('merge request card: the Ticket fact keeps its bold label, then the embedde
   const card = buildMergeRequestCard({ ...baseMr, state: 'open', targetBranch: 'main', jira: { key: 'EX-123', url } });
   assertValidCard(card);
   const row = factRows(card).find((r) => r.columns[0].items[0].text === 'Ticket');
-  assert.equal(row.columns.length, 3);
-  const [labelColumn, logoColumn, textColumn] = row.columns;
+  // label, icon, the shared icon + text gap, text
+  assert.equal(row.columns.length, 4);
+  const [labelColumn, logoColumn, gapColumn, textColumn] = row.columns;
+  assert.equal(gapColumn.width, '6px');
+  assert.equal(gapColumn.spacing, 'None');
+  assert.equal(textColumn.spacing, 'None');
   assert.equal(labelColumn.items[0].weight, 'Bolder');
   assert.deepEqual(logoColumn.items[0], { type: 'Image', url: SERVICE_ICONS.jira, altText: 'Jira', width: '16px', height: '16px' });
   assert.equal(logoColumn.width, 'auto');

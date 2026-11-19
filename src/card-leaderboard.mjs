@@ -17,7 +17,8 @@
  */
 
 import { assembleCard, str, textBlock } from './cards.mjs';
-import { gapColumn, isImageDataUri } from './card-user-row.mjs';
+import { gapColumn } from './card-icon-text.mjs';
+import { isImageDataUri } from './card-user-row.mjs';
 
 export const LEADERBOARD_MAX_ENTRIES = 8;
 export const PODIUM_SIZE = 3;

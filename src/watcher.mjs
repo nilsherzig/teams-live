@@ -1942,6 +1942,23 @@ export class MergeRequestWatcher {
   }
 
   /** Re-checks the watched cards of one merge request (like a webhook event does). */
+  /**
+   * The Teams card (the bot's status message) that shows a merge request, newest first when several
+   * conversations watch it: `{conversationId, messageId}` or null. Used to link the card from the
+   * comment an Approve-button approval leaves on the MR.
+   */
+  mrCardMessage(project, iid) {
+    const projLower = String(project || '').toLowerCase();
+    let best = null;
+    for (const entry of this.watched.values()) {
+      for (const m of entry.mrs || []) {
+        if (String(m.iid) !== String(iid) || (m.project || '').toLowerCase() !== projLower || !m.ciMessageServerId) continue;
+        if (!best || (entry.createdAt || 0) > best.at) best = { conversationId: entry.conversationId, messageId: String(m.ciMessageServerId), at: entry.createdAt || 0 };
+      }
+    }
+    return best ? { conversationId: best.conversationId, messageId: best.messageId } : null;
+  }
+
   async refreshMrCards(project, iid) {
     const projLower = String(project || '').toLowerCase();
     const keys = [];
@@ -2700,11 +2717,11 @@ export class MergeRequestWatcher {
 
   /** The names an MR card shows people for: the author, approvers (live or last reported) and the auto-merge user. */
   mrCardPeopleData(mr, mrDetails) {
-    const approvedBy = Array.isArray(mrDetails?.approvedBy)
-      ? mrDetails.approvedBy
-      : mr?.lastReportedApprovedBy
-        ? String(mr.lastReportedApprovedBy).split(', ')
-        : [];
+    // The card shows the fresh approvers, and for a merged or closed merge request (whose approvals are
+    // not fetched again) the last reported ones: load the pictures of both, so nobody is left without.
+    const fresh = Array.isArray(mrDetails?.approvedBy) ? mrDetails.approvedBy : [];
+    const lastReported = mr?.lastReportedApprovedBy ? String(mr.lastReportedApprovedBy).split(', ') : [];
+    const approvedBy = [...new Set([...fresh, ...lastReported].filter(Boolean))];
     const resolved = this.resolveApprovers(mr?.project, mr?.iid, approvedBy);
     return { author: this.mrCardAuthor(mr, mrDetails), approvedBy: resolved.approvedBy, autoMergeUser: mrDetails?.autoMergeUser };
   }

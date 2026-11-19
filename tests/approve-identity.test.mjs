@@ -234,3 +234,30 @@ test('a click is refused when the account becomes unavailable after the page was
     assert.deepEqual(state.approvedBy, []);
   });
 });
+
+test('clientIp: behind the loopback proxy the address the proxy saw is used; anything else is the peer itself', () => {
+  const server = new ApproveServer({ gitlab: {}, baseUrl: `${ORIGIN}/approve`, port: 0 });
+  const req = (remote, headers = {}) => ({ socket: { remoteAddress: remote }, headers });
+  assert.equal(server.clientIp(req('127.0.0.1', { 'x-real-ip': '203.0.113.7' })), '203.0.113.7');
+  assert.equal(server.clientIp(req('::ffff:127.0.0.1', { 'x-forwarded-for': '198.51.100.1, 203.0.113.9' })), '203.0.113.9', 'the entry the proxy added, not the client-supplied one');
+  assert.equal(server.clientIp(req('::1', { 'x-real-ip': 'not an ip', 'x-forwarded-for': 'junk' })), '', 'loopback peer, nothing usable');
+  assert.equal(server.clientIp(req('192.0.2.5', { 'x-real-ip': '203.0.113.7' })), '192.0.2.5', 'a direct peer cannot name itself');
+});
+
+test('the Approve button leaves a comment with the card link and the client address', async () => {
+  const notes = [];
+  const gitlab = {
+    approveMr: async () => ({}),
+    addMrNote: async (project, iid, body) => notes.push({ project, iid, body }),
+  };
+  const server = new ApproveServer({
+    gitlab,
+    baseUrl: `${ORIGIN}/approve`,
+    port: 0,
+    locateCard: (project, iid) => (project === PROJECT && iid === IID ? { conversationId: '19:x@thread.v2', messageId: '1700000000000' } : null),
+  });
+  await server.sendApproval({ project: PROJECT, iid: IID, sha: SHA }, { user: { id: 1, username: 'bot' }, tokenIndex: 0 }, { ip: '203.0.113.7' });
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].body, /Approve button on \[this Teams card\]\(https:\/\/teams\.microsoft\.com\/l\/message\/19%3Ax%40thread\.v2\/1700000000000\)/);
+  assert.match(notes[0].body, /\*\*IP address:\*\* `203\.0\.113\.7`/);
+});

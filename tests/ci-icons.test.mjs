@@ -11,7 +11,7 @@ const textOf = (row) =>
   row.columns
     .slice(1)
     .flatMap((c) => c.items)
-    .filter((i) => i.type === 'TextBlock')
+    .filter((i) => i.type === 'TextBlock' && i.text !== '') // the empty one is the gap column
     .map((i) => i.text)
     .join(' ');
 

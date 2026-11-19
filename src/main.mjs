@@ -285,6 +285,7 @@ async function main() {
         mergeEnabled: apCfg.merge_enabled === true,
         stateFile: path.join(config.gitlab.state_dir, 'approve-links.json'),
         refreshCards: (project, iid) => watcher.refreshMrCards(project, iid),
+        locateCard: (project, iid) => watcher.mrCardMessage(project, iid),
       });
       await approveServer.start();
       watcher.setApproveFlow(approveServer);

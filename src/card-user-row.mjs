@@ -11,6 +11,9 @@
 import { PLACEHOLDER_AVATAR } from './placeholder-avatar.mjs';
 import { initialsAvatar, nameInitials } from './initials-avatar.mjs';
 import { badgeAvatar, badgedDisplayPx } from './badge-avatar.mjs';
+import { ICON_GAP_PX, gapColumn } from './card-icon-text.mjs';
+
+export { gapColumn };
 
 export const AVATAR_PX = 18;
 // Total size of the embedded pictures per card (characters of the data URIs).
@@ -29,15 +32,9 @@ const text = (value) => (value === undefined || value === null ? '' : String(val
 // The one gap between a picture and a name: an exact spacer column, because the card spacing presets
 // are either too wide or too tight. Between pictures the flow uses PICTURE_GAP (a preset, about 4px).
 export const PICTURE_GAP = 'Small';
-export const NAME_GAP_PX = 6;
+export const NAME_GAP_PX = ICON_GAP_PX;
 // A badged picture has a transparent margin of about 2px on each side, so it needs that much less.
 const BADGE_MARGIN_PX = 2;
-
-/** An empty column of fixed width: the gap between a picture and its name. */
-export function gapColumn(px = NAME_GAP_PX) {
-  // `spacing: None`: otherwise the card adds its own column spacing in front of it.
-  return { type: 'Column', width: `${px}px`, spacing: 'None', verticalContentAlignment: 'Center', items: [{ type: 'TextBlock', text: '', wrap: false, size: 'Small', spacing: 'None' }] };
-}
 
 function textColumn(content, extra = {}, width = 'auto', spacing = undefined) {
   return {
