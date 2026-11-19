@@ -49,9 +49,9 @@ test('a file that is not a MaxMind DB is refused', () => {
   assert.throws(() => openGeoIp(Buffer.from('definitely not a database')), /not a MaxMind DB/);
 });
 
-test('places read as text: the known parts, no repeats, and a flag', () => {
-  assert.equal(formatPlace({ city: 'Berlin', region: 'Berlin', country: 'Germany', countryCode: 'DE' }), 'Berlin, Germany \u{1F1E9}\u{1F1EA}');
-  assert.equal(formatPlace({ city: '', region: '', country: 'Canada', countryCode: 'CA' }), 'Canada \u{1F1E8}\u{1F1E6}');
+test('places read as text: the known parts, no repeats, the flag before the country', () => {
+  assert.equal(formatPlace({ city: 'Berlin', region: 'Berlin', country: 'Germany', countryCode: 'DE' }), 'Berlin, \u{1F1E9}\u{1F1EA} Germany');
+  assert.equal(formatPlace({ city: '', region: '', country: 'Canada', countryCode: 'CA' }), '\u{1F1E8}\u{1F1E6} Canada');
   assert.equal(formatPlace({ city: 'X', region: '', country: '', countryCode: '' }), 'X');
   assert.equal(formatPlace(null), '');
 });

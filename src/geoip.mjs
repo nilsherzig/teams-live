@@ -173,12 +173,12 @@ export function openGeoIp(source) {
   };
 }
 
-/** "Frankfurt am Main, Hesse, Germany 🇩🇪" from a lookup; the parts that are known, without repeats. */
+/** "Frankfurt am Main, Hesse, 🇩🇪 Germany" from a lookup: the known parts, no repeats, the flag before the country. */
 export function formatPlace(place) {
   if (!place) return '';
-  const parts = [place.city, place.region, place.country].filter(Boolean).filter((p, i, all) => all.indexOf(p) === i);
   const flag = /^[A-Za-z]{2}$/.test(place.countryCode || '')
     ? String.fromCodePoint(...place.countryCode.toUpperCase().split('').map((c) => 0x1f1e6 + c.charCodeAt(0) - 65))
     : '';
-  return [parts.join(', '), flag].filter(Boolean).join(' ');
+  const country = [flag, place.country].filter(Boolean).join(' ');
+  return [place.city, place.region, country].filter(Boolean).filter((p, i, all) => all.indexOf(p) === i).join(', ');
 }

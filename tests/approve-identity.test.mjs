@@ -269,6 +269,6 @@ test('the Approve button comment says where the address is when a GeoIP database
   const server = new ApproveServer({ gitlab, baseUrl: `${ORIGIN}/approve`, port: 0, geoip });
   await server.sendApproval({ project: PROJECT, iid: IID, sha: SHA }, { user: { id: 1, username: 'bot' }, tokenIndex: 0 }, { ip: '203.0.113.7' });
   await server.sendApproval({ project: PROJECT, iid: IID, sha: SHA }, { user: { id: 1, username: 'bot' }, tokenIndex: 0 }, { ip: '10.0.0.1' });
-  assert.match(notes[0], /`203\.0\.113\.7` · Berlin, Germany \u{1F1E9}\u{1F1EA}/u);
+  assert.match(notes[0], /`203\.0\.113\.7` · Berlin, \u{1F1E9}\u{1F1EA} Germany/u);
   assert.match(notes[1], /`10\.0\.0\.1`$/m, 'an address the database does not know: just the address');
 });
