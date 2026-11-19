@@ -1916,12 +1916,33 @@ export class MergeRequestWatcher {
     if (!this.approveFlow || !this.richMessages) return null;
     if (!['open', 'rebased'].includes(state)) return null;
     if (mrDetails?.draft === true) return null;
+    // Only what GitLab says is mergeable right now (approvals, pipeline, conflicts, discussions all in order):
+    // a button that can only fail is not offered. The page checks again when it is opened.
+    if (mrDetails?.detailedMergeStatus !== 'mergeable') return null;
     const sha = typeof mrDetails?.sha === 'string' && mrDetails.sha ? mrDetails.sha : null;
     if (!sha || !mr?.project || mr.iid === undefined || mr.iid === null) return null;
     try {
       return this.approveFlow.linkFor({ project: mr.project, iid: mr.iid, sha, action: 'merge' });
     } catch (err) {
       log(`Merge link failed for ${mr.project}!${mr.iid}: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Link to the rebase confirmation page, or null when the button must not be shown: flow disabled, rich mode
+   * off, not an open merge request, not behind its target branch, or with merge conflicts (a rebase cannot
+   * fix those).
+   */
+  mrRebaseUrl(mr, mrDetails, { state }) {
+    if (!this.approveFlow || !this.richMessages) return null;
+    if (!['open', 'rebase'].includes(state)) return null;
+    if (mrDetails?.needsRebase !== true || mrDetails?.hasConflicts === true) return null;
+    if (!mr?.project || mr.iid === undefined || mr.iid === null) return null;
+    try {
+      return this.approveFlow.linkFor({ project: mr.project, iid: mr.iid, action: 'rebase' });
+    } catch (err) {
+      log(`Rebase link failed for ${mr.project}!${mr.iid}: ${err.message}`);
       return null;
     }
   }
@@ -2784,6 +2805,7 @@ export class MergeRequestWatcher {
       diffStats,
       approveUrl: this.mrApproveUrl(mr, mrDetails, { state, approved }),
       mergeUrl: this.mrMergeUrl(mr, mrDetails, { state }),
+      rebaseUrl: this.mrRebaseUrl(mr, mrDetails, { state }),
       reopenUrl: this.mrReopenUrl(mr, { state }),
       iid: mr.iid,
       project: mr.project,

@@ -292,6 +292,7 @@ async function main() {
         port: apCfg.port,
         linkTtlSeconds: apCfg.link_ttl_seconds,
         mergeEnabled: apCfg.merge_enabled === true,
+        rebaseEnabled: apCfg.rebase_enabled !== false,
         stateFile: path.join(config.gitlab.state_dir, 'approve-links.json'),
         refreshCards: (project, iid) => watcher.refreshMrCards(project, iid),
         locateCard: (project, iid) => watcher.mrCardMessage(project, iid),

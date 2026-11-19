@@ -26,6 +26,10 @@
 //   or merged. An uncertain outcome consumes nothing.
 // - The listener binds to loopback only and sits behind the reverse proxy.
 //
+// A fourth action, "Rebase", is offered on OPEN merge requests that are behind their target branch (and have no
+// conflicts). It asks GitLab to rebase the source branch (one PUT, never repeated) and reads the result back.
+// Like Reopen it is not pinned to a head commit (a rebase changes it) and has its own records.
+//
 // Optional "Sign in with GitLab" (`oauth`): before any confirmation the page sends the visitor through
 // GitLab's OAuth authorization-code flow (PKCE, scope read_user) and learns the verified GitLab user. That
 // user is bound into the session and the CSRF token, may be restricted to an allow-list, cannot be the
@@ -86,7 +90,11 @@ const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const COOKIE_NAME = 'tl_approve';
 const WHO_COOKIE = 'tl_who';
 const WHO_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const ACTIONS = ['approve', 'reopen', 'merge'];
+const ACTIONS = ['approve', 'reopen', 'merge', 'rebase'];
+const REBASE_POLL_MS = 2000;
+const REBASE_POLL_ATTEMPTS = 10;
+// Links without a head commit to pin.
+const UNPINNED = new Set(['reopen', 'rebase']);
 const LIVE_CACHE_MS = 3000;
 const MERGE_POLL_MS = 2000;
 const MERGE_POLL_ATTEMPTS = 8;
@@ -120,6 +128,14 @@ const COPY = {
     footer: 'the merge is sent through the configured account.',
     question: 'Merge this merge request?',
     button: 'Merge merge request',
+  },
+  rebase: {
+    title: 'Rebase merge request',
+    blocked: 'Cannot rebase',
+    kicker: 'GitLab rebase',
+    footer: 'the rebase is sent through the configured account.',
+    question: 'Rebase this merge request onto its target branch?',
+    button: 'Rebase merge request',
   },
   generic: { kicker: 'GitLab', footer: 'actions are sent through the configured account.' },
 };
@@ -193,6 +209,7 @@ export class ApprovalStore {
       // Merge links live under their own key: a build that predates the Merge
       // action does not read it, so a rollback cannot turn one into an approval.
       for (const r of Array.isArray(data?.mergeRecords) ? data.mergeRecords : []) this.adopt(r, 'merge');
+      for (const r of Array.isArray(data?.rebaseRecords) ? data.rebaseRecords : []) this.adopt(r, 'rebase');
       for (const a of Array.isArray(data?.approvedHeads) ? data.approvedHeads : []) {
         if (typeof a?.key === 'string' && Number.isFinite(a.at)) this.approvedHeads.set(a.key, a.at);
       }
@@ -250,8 +267,9 @@ export class ApprovalStore {
       // key and would otherwise load a merge link as an approval link.
       const state = {
         version: 5,
-        records: all.filter((r) => r.action !== 'merge'),
+        records: all.filter((r) => r.action !== 'merge' && r.action !== 'rebase'),
         mergeRecords: all.filter((r) => r.action === 'merge'),
+        rebaseRecords: all.filter((r) => r.action === 'rebase'),
         approvedHeads: [...this.approvedHeads].map(([key, at]) => ({ key, at })),
       };
       fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
@@ -267,19 +285,19 @@ export class ApprovalStore {
    * issued. Open links of other head commits of the merge request become stale.
    */
   linkFor({ project, iid, sha, action = 'approve' }) {
-    const reopen = action === 'reopen';
+    const unpinned = UNPINNED.has(action);
     if (!ACTIONS.includes(action)) return null;
-    // An approval and a merge are pinned to a head commit; a reopen link has none to pin.
-    if (!project || iid === undefined || iid === null || (!sha && !reopen)) return null;
+    // An approval and a merge are pinned to a head commit; a reopen or rebase link has none to pin.
+    if (!project || iid === undefined || iid === null || (!sha && !unpinned)) return null;
     let changed = this.prune();
     const key = keyOf(project, iid);
-    const cacheKey = reopen ? `${key}#reopen` : action === 'merge' ? `${key}#merge@${sha}` : `${key}@${sha}`;
+    const cacheKey = unpinned ? `${key}#${action}` : action === 'merge' ? `${key}#merge@${sha}` : `${key}@${sha}`;
     if (action === 'approve' && this.approvedHeads.has(cacheKey)) {
       if (changed) this.persist();
       return null;
     }
     for (const r of this.records.values()) {
-      if (!reopen && r.action === action && keyOf(r.project, r.iid) === key && r.sha !== sha && r.status === 'open') {
+      if (!unpinned && r.action === action && keyOf(r.project, r.iid) === key && r.sha !== sha && r.status === 'open') {
         r.status = 'stale';
         changed = true;
       }
@@ -367,6 +385,15 @@ export class ApprovalStore {
     const key = keyOf(project, iid);
     for (const r of this.records.values()) {
       if (r.action === 'reopen' && keyOf(r.project, r.iid) === key && r.status === 'open') r.status = 'used';
+    }
+    this.persist();
+  }
+
+  /** A rebase GitLab accepted uses up every rebase link of the merge request. */
+  markRebased(project, iid) {
+    const key = keyOf(project, iid);
+    for (const r of this.records.values()) {
+      if (r.action === 'rebase' && keyOf(r.project, r.iid) === key && r.status === 'open') r.status = 'used';
     }
     this.persist();
   }
@@ -540,6 +567,7 @@ export class ApproveServer {
     oauth = null,
     now = Date.now,
     mergeEnabled = false,
+    rebaseEnabled = true,
     mergePollMs = MERGE_POLL_MS,
     mergePollAttempts = MERGE_POLL_ATTEMPTS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -577,8 +605,12 @@ export class ApproveServer {
     this.now = now;
     // Off unless asked for: merging from a card is a deliberate, separate opt-in.
     this.mergeEnabled = mergeEnabled === true;
+    // On unless switched off: a rebase rewrites no history the author did not already own, so it needs no opt-in.
+    this.rebaseEnabled = rebaseEnabled !== false;
     this.mergePollMs = mergePollMs;
     this.mergePollAttempts = Math.max(1, Number(mergePollAttempts) || 1);
+    this.rebasePollMs = mergePollMs === MERGE_POLL_MS ? REBASE_POLL_MS : mergePollMs;
+    this.rebasePollAttempts = mergePollAttempts === MERGE_POLL_ATTEMPTS ? REBASE_POLL_ATTEMPTS : Math.max(1, Number(mergePollAttempts) || 1);
     this.sleep = sleep;
     this.store = new ApprovalStore({ file: stateFile, ttlMs: normalizeLinkTtlSeconds(linkTtlSeconds) * 1000, now });
     this.store.load();
@@ -609,6 +641,7 @@ export class ApproveServer {
   linkFor({ project, iid, sha, action = 'approve' }) {
     // No merge link is minted (so no button is shown) while merging is switched off.
     if (action === 'merge' && !this.mergeEnabled) return null;
+    if (action === 'rebase' && !this.rebaseEnabled) return null;
     try {
       if (action === 'approve' && this.store.hasApprovedHead(project, iid, sha)) this.revalidateApproved(project, iid, sha);
       const link = this.store.linkFor({ project, iid, sha, action });
@@ -907,6 +940,11 @@ export class ApproveServer {
    */
   async evaluate(record) {
     if (record.action === 'reopen') return this.evaluateReopen(record);
+    if (record.action === 'rebase') {
+      // A link minted while rebasing was on stops working when it is switched off.
+      if (!this.rebaseEnabled) return { status: 'blocked', reason: 'Rebasing from cards is turned off. Nothing was rebased.' };
+      return this.evaluateRebase(record);
+    }
     if (record.action === 'merge') {
       // A link minted while merging was on stops working when it is switched off.
       if (!this.mergeEnabled) return { status: 'blocked', reason: 'Merging from cards is turned off. Nothing was merged.' };
@@ -1052,6 +1090,40 @@ export class ApproveServer {
     return { status: 'ready', mr, user, tokenIndex };
   }
 
+  /**
+   * Rebase: only an open merge request that is behind its target branch and has no conflicts. `ready`,
+   * `already` (it is up to date, or GitLab is rebasing it right now) or `blocked`. GitLab decides again on
+   * the PUT; this read only keeps the page from offering what cannot work.
+   */
+  async evaluateRebase(record) {
+    if (record.status === 'used') return { status: 'used' };
+    if (record.status === 'stale') return { status: 'blocked', reason: 'This link is no longer valid because the merge request changed. Use the button on the current Teams card.' };
+    let mr;
+    let tokenIndex;
+    let located = null;
+    try {
+      ({ mr, tokenIndex, user: located } = await this.readMr(record));
+    } catch {
+      return { status: 'blocked', reason: 'GitLab could not be reached to read the merge request. Nothing was rebased. Try again later.' };
+    }
+    if (mr?.state !== 'opened') {
+      this.store.invalidate(record.project, record.iid, 'rebase');
+      return { status: 'blocked', mr, reason: `This merge request is ${mr?.state === 'merged' ? 'merged' : 'no longer open'}. Nothing to rebase.` };
+    }
+    if (mr.rebase_in_progress === true) return { status: 'already', mr, rebasing: true };
+    const status = mr.detailed_merge_status;
+    if (mr.has_conflicts === true || status === 'conflict') {
+      return { status: 'blocked', mr, reason: 'The merge request has merge conflicts. A rebase cannot fix them: resolve them in GitLab. Nothing was rebased.' };
+    }
+    const behind = status === 'need_rebase' || mr.should_be_rebased === true || (typeof mr.diverged_commits_count === 'number' && mr.diverged_commits_count > 0);
+    if (!behind) {
+      this.store.invalidate(record.project, record.iid, 'rebase');
+      return { status: 'already', mr, tokenIndex };
+    }
+    const user = await this.actingUser(tokenIndex, located);
+    return { status: 'ready', mr, user, tokenIndex };
+  }
+
   /** The account behind the credential that will act, or null when it cannot be told (never another credential's). */
   async actingUser(tokenIndex, located) {
     if (located?.id) return located;
@@ -1068,6 +1140,8 @@ export class ApproveServer {
       lines.push(
         record.action === 'reopen'
           ? `<p class="callout">The merge request is reopened with the configured GitLab account <code>${who}</code>, not as you personally.${this.anyone('reopen')}</p>`
+          : record.action === 'rebase'
+            ? `<p class="callout">The rebase is made with the configured GitLab account <code>${who}</code>, not as you personally.${this.anyone('rebase')}</p>`
           : record.action === 'merge'
             ? `<p class="callout">The merge is made with the configured GitLab account <code>${who}</code>, not as you personally.${this.anyone('merge')} GitLab's own rules (approvals, pipeline, protected branch) still apply and are not bypassed.</p>`
             : `<p class="callout">The approval is made with the configured GitLab account <code>${who}</code>, not as you personally.${this.anyone('approve')}</p>`,
@@ -1089,12 +1163,13 @@ export class ApproveServer {
   }
 
   /** Why the signed-in user may not act on this merge request, or '' (also when sign-in is off). */
-  signInDenied(user, mr) {
+  signInDenied(user, mr, kind = 'approve') {
     if (!this.oauth) return '';
     if (!user) return 'Sign in with GitLab first.';
     const name = String(user.username).toLowerCase();
     if (this.oauth.allowedUsers.size > 0 && !this.oauth.allowedUsers.has(name)) return `The GitLab user ${user.username} is not allowed to use this page.`;
-    if (mr?.author?.username && String(mr.author.username).toLowerCase() === name) return 'You are the author of this merge request and cannot confirm it yourself.';
+    // Only an approval is about a second pair of eyes: the author may rebase, merge or reopen their own merge request.
+    if (kind === 'approve' && mr?.author?.username && String(mr.author.username).toLowerCase() === name) return 'You are the author of this merge request and cannot confirm it yourself.';
     return '';
   }
 
@@ -1208,7 +1283,7 @@ export class ApproveServer {
   }
 
   usedPage(record) {
-    const text = { reopen: 'reopen the merge request', merge: 'merge the merge request' }[record.action] || 'approve the merge request';
+    const text = { reopen: 'reopen the merge request', merge: 'merge the merge request', rebase: 'rebase the merge request' }[record.action] || 'approve the merge request';
     return { code: 410, title: 'Link already used', body: `${this.summary(record, null, null)}<p>This link was already used to ${text}. Nothing more was sent.</p>` };
   }
 
@@ -1320,11 +1395,11 @@ export class ApproveServer {
     if (!actor) {
       return this.send(res, 409, this.page(copy.blocked, `${this.summary(record, result.mr, null)}<p>${escapeHtml(UNVERIFIED_ACCOUNT)}</p>`, { tone: 'warn', kind }));
     }
-    const denied = this.signInDenied(session.user, result.mr);
+    const denied = this.signInDenied(session.user, result.mr, kind);
     if (denied) return this.send(res, 403, this.page(copy.blocked, `${this.summary(record, result.mr, result.user)}<p>${escapeHtml(denied)}</p>`, { tone: 'warn', kind }));
     // The shown account and credential travel with the form and are bound into the CSRF token.
     const token = this.csrf.issue(sid, record.id, this.bindOf(actor, session.user));
-    const form = `<div class="actions" data-live-action><form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><input type="hidden" name="user" value="${escapeHtml(actor.user)}"><input type="hidden" name="cred" value="${escapeHtml(actor.cred)}"><p>${copy.question}</p>${kind === 'merge' ? `<p class="note">Merges exactly the head commit above. Source-branch removal and squash follow the merge request's own settings. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}<button class="btn" type="submit">${copy.button}</button></form></div>`;
+    const form = `<div class="actions" data-live-action><form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><input type="hidden" name="user" value="${escapeHtml(actor.user)}"><input type="hidden" name="cred" value="${escapeHtml(actor.cred)}"><p>${copy.question}</p>${kind === 'rebase' ? `<p class="note">GitLab rebases the source branch onto the target branch and rewrites its commits, without a merge commit. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}${kind === 'merge' ? `<p class="note">Merges exactly the head commit above. Source-branch removal and squash follow the merge request's own settings. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}<button class="btn" type="submit">${copy.button}</button></form></div>`;
     return this.send(res, 200, this.page(copy.title, `${this.summary(record, result.mr, result.user)}${this.whoHtml(session.user)}${form}`, { tone: 'neutral', kind }));
   }
 
@@ -1333,6 +1408,9 @@ export class ApproveServer {
     const summary = this.summary(record, result.mr, result.user);
     if (record.action === 'merge') {
       return ['Already merged', `${summary}<p>This merge request is already merged in GitLab. ${sent ? 'Nothing was sent.' : 'Nothing to do.'}</p>`];
+    }
+    if (record.action === 'rebase') {
+      return ['Already up to date', `${summary}<p>${result.rebasing ? 'GitLab is rebasing this merge request right now.' : 'This merge request is already up to date with its target branch.'} ${sent ? 'Nothing was sent.' : 'Nothing to do.'}</p>`];
     }
     if (record.action === 'reopen') {
       return ['Already open', `${summary}<p>This merge request is already open in GitLab. ${sent ? 'Nothing was sent.' : 'Nothing to do.'}</p>`];
@@ -1360,7 +1438,7 @@ export class ApproveServer {
   async approve(req, res, session) {
     const { sid, record } = session;
     const kind = kindOf(record);
-    const nothing = { reopen: 'Nothing was reopened.', merge: 'Nothing was merged.', approve: 'Nothing was approved.' }[kind];
+    const nothing = { reopen: 'Nothing was reopened.', merge: 'Nothing was merged.', rebase: 'Nothing was rebased.', approve: 'Nothing was approved.' }[kind];
     if (!this.originAllowed(req)) {
       this.send(res, 403, this.page('Not allowed', `<p>The request did not come from the confirmation page. ${nothing}</p>`, { tone: 'warn', kind }));
       return;
@@ -1392,6 +1470,7 @@ export class ApproveServer {
       }
       if (result.status === 'already') {
         if (kind === 'reopen') this.store.markReopened(current.project, current.iid);
+        else if (kind === 'rebase') this.store.markRebased(current.project, current.iid);
         else if (kind === 'merge') this.store.markMerged(current.project, current.iid);
         else this.store.markApproved(current.project, current.iid, current.sha);
         const [title, body] = this.alreadyPage(current, result, true);
@@ -1402,15 +1481,72 @@ export class ApproveServer {
       if (!actor) {
         return { code: 409, title: COPY[kind].blocked, body: `${this.summary(current, result.mr, null)}<p>${escapeHtml(UNVERIFIED_ACCOUNT)}</p>` };
       }
-      const denied = this.signInDenied(session.user, result.mr);
+      const denied = this.signInDenied(session.user, result.mr, kind);
       if (denied) return { code: 403, title: COPY[kind].blocked, body: `${this.summary(current, result.mr, result.user)}<p>${escapeHtml(denied)} ${nothing}</p>` };
       if (actor.user !== shown.user || actor.cred !== shown.cred) {
-        return this.identityChanged(this.summary(current, result.mr, result.user), { reopen: 'reopened', merge: 'merged', approve: 'approved' }[kind]);
+        return this.identityChanged(this.summary(current, result.mr, result.user), { reopen: 'reopened', merge: 'merged', rebase: 'rebased', approve: 'approved' }[kind]);
       }
       if (kind === 'reopen') return this.sendReopen(current, result);
+      if (kind === 'rebase') return this.sendRebase(current, result);
       return kind === 'merge' ? this.sendMerge(current, result) : this.sendApproval(current, result, { ip: this.clientIp(req), signedIn: session.user });
     });
     this.send(res, outcome.code, this.page(outcome.title, outcome.body + (outcome.code === 200 ? this.followLinks(record) : ''), { tone: outcome.tone || toneForCode(outcome.code), kind }));
+  }
+
+  /**
+   * Rebases the merge request: ONE request, never resent. GitLab answers at once and rebases in the
+   * background, so the result is read back (`rebase_in_progress`, `merge_error`) a few times, spaced out.
+   * The link is used up as soon as GitLab accepted the request.
+   */
+  async sendRebase(record, result) {
+    const summary = this.summary(record, result.mr, result.user);
+    try {
+      await this.gitlab.rebaseMr(record.project, record.iid, this.asActor(result));
+    } catch (err) {
+      if (err?.identityMismatch) return this.identityChanged(summary, 'rebased');
+      const status = gitlabStatus(err);
+      log(`Rebase of ${record.project}!${record.iid} failed${status ? ` (HTTP ${status})` : ' (no response)'}`);
+      if (status === 401 || status === 403) {
+        return { code: 403, title: 'Rebase refused', body: `${summary}<p>GitLab refused the request (the configured account may not be allowed to rebase this merge request). Nothing was rebased.</p>` };
+      }
+      if (status === 404) return { code: 404, title: 'Rebase failed', body: `${summary}<p>GitLab could not find the merge request. Nothing was rebased.</p>` };
+      if (status !== null && status < 500) {
+        return { code: 409, title: 'Rebase failed', body: `${summary}<p>GitLab rejected the request (HTTP ${status}), for example because a rebase is already running or the merge request changed. Nothing was rebased. Reload the page to review it again.</p>` };
+      }
+      // No answer, or a server error: the request may have landed. Look before saying anything.
+      const state = await this.readRebase(record, result);
+      if (state?.rebase_in_progress === true) return this.rebaseStarted(record, summary);
+      return { code: 502, title: 'Outcome unknown', body: `${summary}<p>GitLab did not give a clear answer. The merge request may or may not be rebased: check it in GitLab before retrying.</p>` };
+    }
+    this.store.markRebased(record.project, record.iid);
+    let state = null;
+    for (let i = 0; i < this.rebasePollAttempts; i++) {
+      if (i > 0) await this.sleep(this.rebasePollMs);
+      state = await this.readRebase(record, result);
+      if (state && state.rebase_in_progress !== true) break;
+    }
+    if (state?.merge_error) {
+      return { code: 409, title: 'Rebase failed', body: `${summary}<p>GitLab could not rebase the merge request: ${escapeHtml(String(state.merge_error).slice(0, 300))}</p>` };
+    }
+    if (state && state.rebase_in_progress !== true) return this.rebased(record, summary);
+    return this.rebaseStarted(record, summary);
+  }
+
+  /** The merge request read back after a rebase request (null when it could not be read). */
+  async readRebase(record, result) {
+    return await this.gitlab.getMr(record.project, record.iid, this.asToken(result?.tokenIndex)).catch(() => null);
+  }
+
+  async rebased(record, summary) {
+    this.store.markRebased(record.project, record.iid);
+    const refresh = await this.refresh(record);
+    return { code: 200, title: 'Rebased', body: `${summary}<p>Rebased in GitLab.</p><p class="note">${escapeHtml(refresh)}</p>` };
+  }
+
+  async rebaseStarted(record, summary) {
+    this.store.markRebased(record.project, record.iid);
+    const refresh = await this.refresh(record);
+    return { code: 200, title: 'Rebase started', body: `${summary}<p>GitLab accepted the rebase and is still working on it. The card updates when it is done.</p><p class="note">${escapeHtml(refresh)}</p>` };
   }
 
   /**

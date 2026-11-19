@@ -699,6 +699,8 @@ export function buildMergeRequestCard(mr, { compact = false } = {}) {
     ].filter(Boolean),
     actions: live
       ? [
+          // Rebase first (it changes the head the others refer to), then approve, then merge.
+          mr.rebaseUrl ? { title: '🔁 Rebase', url: mr.rebaseUrl } : null,
           mr.approveUrl ? { title: '👍 Approve', url: mr.approveUrl } : null,
           // Never on a draft, and only while the merge request is open (not "rebase required").
           mr.mergeUrl && !draft && state !== 'rebase' ? { title: '🔀 Merge', url: mr.mergeUrl } : null,

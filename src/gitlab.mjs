@@ -735,6 +735,18 @@ export class GitLabClient {
     return await this.updateMr(project, iid, { state_event: 'reopen' }, { retry: false, tokenIndex, expectUserId });
   }
 
+  /**
+   * Asks GitLab to rebase the source branch onto the target branch. Sent once and never retried: GitLab
+   * answers 202 and rebases in the background (`rebase_in_progress`), so read the result back with getMr.
+   */
+  async rebaseMr(project, iid, { tokenIndex = null, expectUserId = null } = {}) {
+    return await this.writeAs(
+      `projects/${encodeURIComponent(project)}/merge_requests/${iid}/rebase`,
+      { method: 'PUT', retry: false },
+      { tokenIndex, expectUserId }
+    );
+  }
+
   async getApprovals(project, iid, { tokenIndex = null } = {}) {
     return await this.request(`projects/${encodeURIComponent(project)}/merge_requests/${iid}/approvals`, { tokenIndex });
   }

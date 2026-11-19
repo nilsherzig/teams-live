@@ -2044,7 +2044,7 @@ test('the card has the Merge button only for a live, non-draft merge request wit
 test('the watcher offers Merge only on live, non-draft cards with the flow enabled in rich mode', () => {
   const flow = new ApproveServer({ gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve`, mergeEnabled: true });
   const mr = { project: PROJECT, iid: IID, title: 'Example' };
-  const details = { sha: SHA, draft: false, title: 'Example' };
+  const details = { sha: SHA, draft: false, title: 'Example', detailedMergeStatus: 'mergeable' };
   const text = (w, opts, d = details) => JSON.stringify(w.buildMrCard(mr, d, opts));
   const rich = watcherWith({ rich_messages: true }, flow);
 
@@ -2054,6 +2054,9 @@ test('the watcher offers Merge only on live, non-draft cards with the flow enabl
     assert.doesNotMatch(text(rich, { state }), /🔀 Merge/, state);
   }
   assert.doesNotMatch(text(rich, { state: 'open' }, { ...details, draft: true }), /🔀 Merge/, 'draft');
+  for (const detailedMergeStatus of ['not_approved', 'ci_still_running', 'need_rebase', 'conflict', 'discussions_not_resolved', 'checking', undefined]) {
+    assert.doesNotMatch(text(rich, { state: 'open' }, { ...details, detailedMergeStatus }), /🔀 Merge/, `not mergeable: ${detailedMergeStatus}`);
+  }
   assert.doesNotMatch(text(rich, { state: 'open' }, { ...details, sha: null }), /🔀 Merge/, 'no head');
   assert.doesNotMatch(text(watcherWith({ rich_messages: false }, flow), { state: 'open' }), /🔀 Merge/, 'rich mode off');
   assert.doesNotMatch(text(watcherWith({ rich_messages: true }, null), { state: 'open' }), /🔀 Merge/, 'flow disabled');
@@ -2144,7 +2147,7 @@ test('merging is off by default: no merge link, no button, and an existing link 
   assert.equal(off.linkFor({ project: PROJECT, iid: IID, sha: SHA, action: 'merge' }), null);
   assert.ok(off.linkFor({ project: PROJECT, iid: IID, sha: SHA }), 'approve links are unaffected');
   const mr = { project: PROJECT, iid: IID, title: 'Example' };
-  const details = { sha: SHA, draft: false, title: 'Example' };
+  const details = { sha: SHA, draft: false, title: 'Example', detailedMergeStatus: 'mergeable' };
   const card = (flow) => JSON.stringify(watcherWith({ rich_messages: true }, flow).buildMrCard(mr, details, { state: 'open' }));
   assert.doesNotMatch(card(off), /🔀 Merge/);
   assert.match(card(off), /Approve/);

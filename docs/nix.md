@@ -136,7 +136,7 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `teams.compact_cards` | The compact merge request card (true; set `false` for the classic one). The same header, title and icons, but the facts in two columns with short labels (Status, Approval, Pipeline / Author, Merge, Ticket), the approval as the pill plus the approvers' pictures on one line, auto-merge as a GitLab icon (blue clock: on, gray pause: off), the rebase warning only when needed, and a repository icon in the header instead of the project line. Only affects rich messages. |
 | `avatars.fallback_sources`, `avatars.overrides` | Profile pictures on rich cards where Teams has none. `fallback_sources` is the ordered list of services asked (`[ "jira" "confluence" ]` by default, `[ ]` turns them off); `overrides` is a list of `{ name, file }` giving an account that exists in no directory (a bot) a small PNG or JPEG. See [Profile pictures](#profile-pictures). |
 | `teams.service_alerts.*` | Dampens the admin alerts about expired connector credentials (see below). Keys, in seconds: `stable_recovery_seconds` (120), `flap_window_seconds` (600), `flap_recovery_seconds` (300), `reminder_seconds` (43200), and `flap_transitions` (4). |
-| `gitlab.approve.*` | Approve button of merge request cards: capability link (off). `gitlab.approve.merge_enabled` (off) separately enables the Merge button. See [Approving from a card](#approving-from-a-card). |
+| `gitlab.approve.*` | Approve button of merge request cards: capability link (off). `gitlab.approve.merge_enabled` (off) separately enables the Merge button. The Rebase button is on with the flow (`gitlab.approve.rebase_enabled = false` turns it off). See [Approving from a card](#approving-from-a-card). |
 | `teams.troll_user` | User MRI whose `/exec` gets a joke reply instead of the fake shell output. |
 | `browser_daemon.url`, `.profile`, `.secret_file` | browser-daemon used to sign in to Teams again. |
 | `gitlab.host`, `.group`, `.token_file` | GitLab instance, group for `/mrs`, primary API token. |
@@ -477,8 +477,21 @@ authentication layer. The proxy may keep the path prefix or strip it.
 | `gitlab.approve.host`, `.port` | Listener, loopback only (127.0.0.1, 3006). |
 | `gitlab.approve.base_url` | Public https URL of the page, for example `https://<host>/approve`; no query or fragment. It is also the allowed Origin of the POSTs. Plain http is accepted only for loopback. |
 | `gitlab.approve.link_ttl_seconds` | Lifetime of a link (86400). |
+| `gitlab.approve.rebase_enabled` | The Rebase button (true; only an explicit `false` turns it off). |
 | `gitlab.approve.oauth.client_id`, `.client_secret` | Turns on [Sign in with GitLab](#sign-in-with-gitlab). Give the secret as `{ _secret = "/path"; }`. Off by default. |
 | `gitlab.approve.oauth.allowed_users` | Optional list of GitLab user names allowed to confirm. Empty: any user that signs in. |
+
+#### Rebase and Merge buttons
+
+The buttons of an open merge request card are, in this order, **🔁 Rebase**, **👍 Approve** and **🔀 Merge**.
+
+- Rebase is shown only while the merge request is behind its target branch and has no merge conflicts (a rebase
+  cannot fix those). It opens a confirmation page like the others; confirming sends one rebase request to GitLab
+  (never repeated) and reads the result back: rebased, failed with GitLab's reason, or still running. Unlike an
+  approval it is not pinned to a head commit, since a rebase changes it.
+- Merge is shown only while GitLab reports the merge request as `mergeable` (approvals, pipeline, conflicts and
+  discussions all in order), so it never offers a merge that can only fail. The page still checks again when it
+  is opened.
 
 #### Sign in with GitLab
 

@@ -344,6 +344,8 @@ export function loadConfig(configPath) {
     merge_enabled: rawApprove.merge_enabled === undefined
       ? envBool(process.env.TEAMS_GITLAB_APPROVE_MERGE_ENABLED) === true
       : rawApprove.merge_enabled === true,
+    // The Rebase button is on with the flow; only an explicit false (or env "false"/"0") turns it off.
+    rebase_enabled: rawApprove.rebase_enabled === undefined ? envBool(process.env.TEAMS_GITLAB_APPROVE_REBASE_ENABLED) !== false : rawApprove.rebase_enabled !== false,
     base_url: (getString(rawApprove.base_url) || process.env.TEAMS_GITLAB_APPROVE_BASE_URL || '').trim(),
     // Lifetime of a link in seconds (default 24 h); the server bounds it to 60 s .. 7 d.
     link_ttl_seconds: Number(rawApprove.link_ttl_seconds ?? process.env.TEAMS_GITLAB_APPROVE_LINK_TTL_SECONDS ?? 86400),
