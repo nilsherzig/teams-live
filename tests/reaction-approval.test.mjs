@@ -388,3 +388,35 @@ test('/unapprove says so when the bot has no approval to withdraw', async () => 
   await withStubbedTransport(() => watcher.executeUnapproveCommand({ conversationId: '19:t@thread.v2', messageId: '1', from: 'Alice Example' }, []));
   assert.equal(revoked, false);
 });
+
+test('the approver is mentioned only when the GitLab username is certain: mapping, else one exact-name match, never a derived guess', async () => {
+  const { watcher } = createWatcher();
+  // Known from Teams only: the directory derives "alice" from the name, but that is a guess.
+  watcher.userDirectory.addUser({ mri: '8:orgid:00000000-0000-4000-8000-00000000000b', displayName: 'Alice Example' });
+  assert.equal(await watcher.approverLabel({ name: 'Alice Example', mri: '8:orgid:00000000-0000-4000-8000-00000000000b' }), '**Alice Example**');
+  // GitLab knows exactly one active account with that name: that username, whatever the guess was.
+  watcher.gitlab.findUsernameByName = async (name) => (name === 'Alice Example' ? 'a.example' : '');
+  assert.equal(await watcher.approverLabel({ name: 'Alice Example', mri: '8:orgid:00000000-0000-4000-8000-00000000000b' }), '@a.example (Alice Example)');
+  // An explicit mapping wins over the lookup.
+  watcher.userDirectory.addUser({ displayName: 'Alice Example', gitlabUsernames: ['mapped'] });
+  assert.equal(await watcher.approverLabel({ name: 'Alice Example' }), '@mapped (Alice Example)');
+});
+
+test('findUsernameByName takes a single exact, active match only and caches it', async () => {
+  const { GitLabClient } = await import('../src/gitlab.mjs');
+  const client = Object.create(GitLabClient.prototype);
+  let calls = 0;
+  let answer = [];
+  client.request = async () => {
+    calls++;
+    return answer;
+  };
+  answer = [{ username: 'a.example', name: 'Álice Example', state: 'active' }, { username: 'alice2', name: 'Alice Example Jr', state: 'active' }];
+  assert.equal(await client.findUsernameByName('Alice Example'), 'a.example');
+  assert.equal(await client.findUsernameByName('alice  example'), 'a.example');
+  assert.equal(calls, 1, 'cached');
+  answer = [{ username: 'x', name: 'Bob Example', state: 'active' }, { username: 'y', name: 'Bob Example', state: 'active' }];
+  assert.equal(await client.findUsernameByName('Bob Example'), '', 'two matches: not certain');
+  answer = [{ username: 'z', name: 'Carol Example', state: 'blocked' }];
+  assert.equal(await client.findUsernameByName('Carol Example'), '', 'inactive accounts do not count');
+});

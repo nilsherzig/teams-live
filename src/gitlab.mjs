@@ -625,6 +625,29 @@ export class GitLabClient {
     );
   }
 
+  /**
+   * The GitLab username of a person, found by their exact display name (accents and case ignored).
+   * Only a single active match counts: a guess could mention a stranger. Cached; '' when unknown.
+   */
+  async findUsernameByName(name) {
+    const norm = (v) => String(v ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const wanted = norm(name);
+    if (!wanted) return '';
+    this.usernameCache ??= new Map();
+    const hit = this.usernameCache.get(wanted);
+    if (hit && Date.now() - hit.at < (hit.username ? 3600_000 : 300_000)) return hit.username;
+    let username = '';
+    try {
+      const users = await this.request(`users?search=${encodeURIComponent(String(name).trim())}&per_page=20`);
+      const matches = (Array.isArray(users) ? users : []).filter((u) => u?.state === 'active' && norm(u.name) === wanted);
+      if (matches.length === 1 && /^[A-Za-z0-9_.-]+$/.test(matches[0].username || '')) username = matches[0].username;
+    } catch {
+      return ''; // not cached: the next approval tries again
+    }
+    this.usernameCache.set(wanted, { username, at: Date.now() });
+    return username;
+  }
+
   /** Withdraws the approval of the account the bot approves as. Approvals of other people stay. */
   async unapproveMr(project, iid, { tokenIndex = null } = {}) {
     return await this.writeAs(

@@ -4176,14 +4176,18 @@ export class MergeRequestWatcher {
   }
 
   /**
-   * Who approved from Teams, for the comment on the merge request: the person's GitLab username as an
-   * explicit mention (@user) when the directory knows it, followed by their name; else the name in bold
-   * (never a guessed mention).
+   * Who approved from Teams, for the comment on the merge request: an explicit mention (@user) followed
+   * by their name when their GitLab username is certain (the configured mapping, else one exact-name
+   * match in GitLab); otherwise the name in bold. The usernames the directory derives from names are
+   * guesses and never used: a wrong mention would notify a stranger.
    */
-  approverLabel({ name = '', mri = '' } = {}) {
+  async approverLabel({ name = '', mri = '' } = {}) {
     const user = (mri && this.userDirectory.findUser(mri)) || (name && this.userDirectory.findUser(name)) || null;
-    const gitlabUser = user ? [...(user.gitlabUsernames || [])][0] : null;
     const display = String(name || user?.displayName || '').replace(/[@\r\n`*_[\]<>]/g, '').trim() || 'someone';
+    let gitlabUser = user ? [...(user.explicitGitlabUsernames || [])][0] : null;
+    if (!gitlabUser && typeof this.gitlab?.findUsernameByName === 'function') {
+      gitlabUser = await this.gitlab.findUsernameByName(name || user?.displayName).catch(() => '');
+    }
     return gitlabUser ? `@${gitlabUser} (${display})` : `**${display}**`;
   }
 
@@ -4197,7 +4201,7 @@ export class MergeRequestWatcher {
     try {
       const link = teamsMessageLink(conversationId, messageId);
       const trigger = link ? `[${via}](${link})` : via;
-      await this.gitlab.addMrNote(project, iid, `${action === 'revoked' ? '↩️ Approval revoked' : '👍 Approved'} via Microsoft Teams by ${this.approverLabel({ name, mri })}: ${trigger}.`);
+      await this.gitlab.addMrNote(project, iid, `${action === 'revoked' ? '↩️ Approval revoked' : '👍 Approved'} via Microsoft Teams by ${await this.approverLabel({ name, mri })}: ${trigger}.`);
     } catch (err) {
       log.warn(`Could not comment the approver on ${project}!${iid}: ${err.message}`);
     }

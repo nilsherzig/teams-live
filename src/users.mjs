@@ -196,6 +196,8 @@ export class UserDirectory {
         companyName: userData.companyName || userData.tenantName || '',
         userType: userData.userType || '',
         gitlabUsernames: new Set(),
+        // Only what the configuration says; `gitlabUsernames` also holds guesses derived from names.
+        explicitGitlabUsernames: new Set(),
         jiraUsernames: new Set(),
       };
       this.users.set(mri, user);
@@ -219,7 +221,9 @@ export class UserDirectory {
     // Add explicit usernames
     if (Array.isArray(userData.gitlabUsernames)) {
       for (const u of userData.gitlabUsernames) {
-        if (u) user.gitlabUsernames.add(u.toLowerCase());
+        if (!u) continue;
+        user.gitlabUsernames.add(u.toLowerCase());
+        user.explicitGitlabUsernames?.add(u.toLowerCase());
       }
     }
     if (Array.isArray(userData.jiraUsernames)) {
