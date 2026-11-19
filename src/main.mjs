@@ -307,6 +307,8 @@ async function main() {
   }
 
   // Start polling GitLab
+  // Who the bot's GitLab accounts are, so MR cards can show who an approval was made for.
+  watcher.refreshBotNames().catch(() => {});
   watcher.startPolling();
 
   // Startup announcement (self-chat only)

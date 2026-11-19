@@ -17,7 +17,7 @@
  */
 
 import { assembleCard, str, textBlock } from './cards.mjs';
-import { isImageDataUri } from './card-user-row.mjs';
+import { gapColumn, isImageDataUri } from './card-user-row.mjs';
 
 export const LEADERBOARD_MAX_ENTRIES = 8;
 export const PODIUM_SIZE = 3;
@@ -103,9 +103,11 @@ function row({ entry, rank, share, leaderCount, podium, withPictures }) {
     },
   ];
   if (withPictures) columns.push(pictureCell(entry.name, entry.avatar, px));
+  if (withPictures) columns.push(gapColumn());
   columns.push({
     type: 'Column',
     width: 'stretch',
+    ...(withPictures ? { spacing: 'None' } : {}),
     verticalContentAlignment: 'Center',
     items: [
       textBlock(entry.name, { weight: 'Bolder', spacing: 'None' }),

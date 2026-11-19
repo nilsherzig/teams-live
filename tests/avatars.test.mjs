@@ -10,6 +10,8 @@ import {
   AVATAR_PX,
   MAX_AVATAR_CHARS_PER_CARD,
   MAX_PILL_PX,
+  NAME_GAP_PX,
+  PICTURE_GAP,
   collectCardPeople,
   pillSize,
   isImageDataUri,
@@ -17,6 +19,7 @@ import {
 } from '../src/card-user-row.mjs';
 import { buildJiraIssueCard, buildMergeRequestCard, buildOpsGenieAlertCard, MAX_CARD_BYTES } from '../src/cards.mjs';
 import { PLACEHOLDER_AVATAR } from '../src/placeholder-avatar.mjs';
+import { initialsAvatar } from '../src/initials-avatar.mjs';
 import { makeRichMessage, richMessageWireBytes } from '../src/teams.mjs';
 
 // All people, ids and pictures below are generic fixtures.
@@ -553,7 +556,8 @@ const isPersonLine = (line) => line.type === 'ColumnSet' && line.columns.some((c
 const valueOf = (row) => row.columns[1].items.flatMap((i) => (i.type === 'Container' ? i.items : [i]));
 const rows = (card) => items(card).filter((i) => i.type === 'ColumnSet' && i.columns[1]?.items && valueOf(i).some(isPersonLine));
 const linesOf = (row) => valueOf(row).filter((l) => l.type === 'ColumnSet');
-const lineTexts = (line) => line.columns.map((c) => c.items[0].text ?? c.items[0].altText);
+// The gap column between a picture and a name has no text.
+const lineTexts = (line) => line.columns.map((c) => c.items[0].text ?? c.items[0].altText).filter((t) => t !== '');
 // Profile pictures only: the service icon in the header is an Image too.
 const images = (card) => JSON.stringify(card).match(/"type":"Image"[^}]*"style":"Person"/g)?.length ?? 0;
 
@@ -579,7 +583,7 @@ test('jira assignee gets a round 18px picture next to the name', () => {
   const [row] = rows(card);
   assert.ok(row);
   const [label, value] = row.columns;
-  const [avatar, name] = linesOf(row)[0].columns.filter((c) => c.items[0].text !== '\u00A0');
+  const [avatar, name] = linesOf(row)[0].columns.filter((c) => c.items[0].text !== '\u00A0' && c.items[0].text !== '');
   assert.equal(label.items[0].text, 'Assignee');
   assert.equal(value.width, 'stretch');
   assert.deepEqual(
@@ -687,12 +691,12 @@ test('person rows wrap only their name: one stretch value column, a picture cell
     for (const line of linesOf(row)) {
       // [picture] [name]: the picture never wraps, the name does; no fixed lead column eats the name width.
       // [lead text] [picture] [name]: the picture is always directly left of the name.
-      assert.ok(line.columns.length <= 3, 'lead, picture and name only');
+      assert.ok(line.columns.length <= 4, 'lead, picture, gap and name only');
       const name = line.columns.at(-1);
       assert.ok(['TextBlock', 'Image'].includes(name.items[0].type));
       if (name.items[0].type === 'TextBlock') assert.equal(name.items[0].wrap, true);
-      const beforeName = line.columns.at(-2);
-      if (beforeName) assert.equal(beforeName.items[0].type === 'Image' || beforeName.items[0].text === '\u{1F500} Enabled by', true);
+      const beforeGap = line.columns.at(-3);
+      if (beforeGap) assert.equal(beforeGap.items[0].type === 'Image' || beforeGap.items[0].text === '\u{1F500} Enabled by', true);
     }
   }
   // The approval pill replaces the "By" lead; the auto-merge lead stays.
@@ -711,14 +715,14 @@ test('userRow flows several people in one value column; a name without a picture
   assert.equal(flow.layouts[0].horizontalItemsAlignment, 'Left', 'left aligned like every other value');
   const lines = flow.items;
   assert.equal(lines.length, 3, 'no extra line for the lead');
-  assert.deepEqual(lines.map((l) => l.columns.length), [3, 2, 2], 'lead, picture and name; everybody has a picture, a placeholder when there is no photo');
+  assert.deepEqual(lines.map((l) => l.columns.length), [4, 3, 3], 'lead, picture and name; everybody has a picture, a placeholder when there is no photo');
   assert.deepEqual(lines.map((l) => l.columns.at(-1).items[0].text), ['Alice Example', 'Bob Example', 'Carol Example']);
   assert.equal(lines[0].columns[0].items[0].text, '\u{1F44D} By', 'the lead comes before the picture, never between picture and name');
   assert.equal(lines[1].columns[0].items[0].url, PLACEHOLDER_AVATAR);
   assert.equal(lines[0].columns.at(-1).width, 'auto', 'inside the flow a name sizes to its text and wraps when needed');
   assert.equal(row.columns[0].verticalContentAlignment, 'Top', 'the label stays with the first line');
   const single = userRow('Author', [{ name: 'Alice Example', avatar: URI }], { labelWidth: '112px' });
-  assert.deepEqual(single.row.columns[1].items[0].columns.map((c) => c.width), [`${AVATAR_PX}px`, 'stretch'], 'one person: a compact line, no flow');
+  assert.deepEqual(single.row.columns[1].items[0].columns.map((c) => c.width), [`${AVATAR_PX}px`, `${NAME_GAP_PX}px`, 'stretch'], 'one person: a compact line, no flow');
   assert.equal(single.row.columns[0].verticalContentAlignment, 'Center');
 });
 
@@ -805,7 +809,7 @@ test('a single approver is one compact line: picture, then the lead and the name
   const longName = 'Alexandra Maximiliane Example-Longname';
   const { row } = userRow('Approval', [{ name: longName, avatar: URI }], { headline: '\u{1F44D} By', labelWidth: '112px' });
   assert.equal(row.columns[1].items.length, 1, 'one line, no headline row');
-  const [lead, picture, name] = row.columns[1].items[0].columns;
+  const [lead, picture, , name] = row.columns[1].items[0].columns;
   assert.equal(lead.items[0].text, '\u{1F44D} By');
   assert.deepEqual([picture.width, name.width], [`${AVATAR_PX}px`, 'stretch']);
   assert.equal(name.items[0].text, longName);
@@ -820,15 +824,15 @@ test('a status pill and the people flow in one container, the pill first, left a
   const [pillItem, first, second] = row.columns[1].items[0].items;
   assert.equal(row.columns[1].items[0].layouts[0].type, 'Layout.Flow');
   assert.deepEqual({ type: pillItem.type, alt: pillItem.altText, w: pillItem.width, h: pillItem.height }, { type: 'Image', alt: 'Approved', w: '80px', h: '20px' });
-  assert.deepEqual(first.columns.map((c) => c.width), ['auto', 'auto']);
-  assert.deepEqual(second.columns.map((c) => c.width), ['auto', 'auto']);
+  assert.deepEqual(first.columns.map((c) => c.width), ['auto', `${NAME_GAP_PX}px`, 'auto']);
+  assert.deepEqual(second.columns.map((c) => c.width), ['auto', `${NAME_GAP_PX}px`, 'auto']);
   assert.equal(makeRichMessage('x', buildMergeRequestCard({ ...MR, avatars: { 'Alice Example': URI } })).card.version, '1.5', 'a card with a flow declares 1.5');
   assert.equal(makeRichMessage('x', buildJiraIssueCard({ ...JIRA })).card.version, '1.4', 'every other card stays on 1.4');
   assert.equal(row.columns[0].verticalContentAlignment, 'Top');
   for (const bad of [{ ...pill, url: 'https://example.com/p.png' }, { ...pill, width: 0 }, { ...pill, height: NaN }, null]) {
     const r = userRow('Approval', [{ name: 'Alice Example', avatar: URI }], { pill: bad, labelWidth: '112px' }).row;
     assert.equal(r.columns[1].items.length, 1, 'an unusable pill is left out');
-    assert.equal(r.columns[1].items[0].columns.length, 2);
+    assert.equal(r.columns[1].items[0].columns.length, 3, 'picture, gap, name');
   }
 });
 
@@ -957,8 +961,55 @@ test('everybody on a card gets a picture: heavy photos never starve a bot or ser
 test('every person is `<picture> <name>`: the lead text comes before the picture, never between picture and name', () => {
   const card = buildMergeRequestCard({ ...MR, avatars: { 'Carol Example': URI } });
   const row = rows(card).find((r) => r.columns[0].items[0].text === 'Auto-merge');
-  const [lead, picture, name] = row.columns[1].items[0].columns;
+  const [lead, picture, , name] = row.columns[1].items[0].columns;
   assert.equal(lead.items[0].text, '\u{1F500} Enabled by');
   assert.equal(picture.items[0].type, 'Image');
   assert.equal(name.items[0].text, 'Carol Example');
+});
+
+// ── approvals the MS Teams bot made on somebody's behalf ──────────────────────
+
+// A picture the badge can be drawn on (the fake URI of the other tests is not an image).
+const BADGEABLE = initialsAvatar('Alice Example');
+
+test('a bot approval shows the requester with the Teams badge; the other approvers stay plain', () => {
+  const card = buildMergeRequestCard({
+    ...MR,
+    approved: true,
+    approvedBy: ['Alice Example'],
+    approvedVia: ['Alice Example'],
+    avatars: { 'Alice Example': BADGEABLE },
+  });
+  const approval = items(card).find((i) => i.type === 'ColumnSet' && i.columns[0]?.items?.[0]?.text === 'Approval');
+  const [flow] = approval.columns[1].items;
+  const picture = JSON.stringify(flow).match(/"altText":"Alice Example \(approved via the MS Teams bot\)"/);
+  assert.ok(picture, 'the badged picture');
+  assert.ok(!JSON.stringify(flow).includes('"style":"Person"'), 'a badged picture is not cropped');
+
+  const several = buildMergeRequestCard({
+    ...MR,
+    approved: true,
+    approvedBy: ['Alice Example', 'Bob Example'],
+    approvedVia: ['Alice Example'],
+    avatars: { 'Alice Example': BADGEABLE, 'Bob Example': BADGEABLE },
+  });
+  const text = JSON.stringify(items(several).find((i) => i.type === 'ColumnSet' && i.columns[0]?.items?.[0]?.text === 'Approval'));
+  assert.equal((text.match(/approved via the MS Teams bot/g) || []).length, 1, 'only the bot-approved person is marked');
+  assert.ok(text.includes('"altText":"Bob Example","style":"Person"'), 'Bob stays plain');
+});
+
+test('every picture is followed by the same gap before a name: a 6px spacer column, and a small gap between pictures', () => {
+  const { row } = userRow('Approval', [{ name: 'Alice Example', avatar: URI }], { labelWidth: '112px' });
+  const [picture, gap, name] = row.columns[1].items[0].columns;
+  assert.equal(picture.items[0].type, 'Image');
+  assert.equal(gap.width, `${NAME_GAP_PX}px`);
+  assert.equal(gap.spacing, 'None', 'no card column spacing in front of the gap');
+  assert.equal(name.items[0].text, 'Alice Example');
+  assert.equal(name.spacing, 'None');
+  const flowRow = userRow('Approval', [{ name: 'Alice Example', avatar: URI }, { name: 'Bob Example', avatar: URI }], { labelWidth: '112px' }).row;
+  assert.equal(flowRow.columns[1].items[0].layouts[0].columnSpacing, PICTURE_GAP);
+  for (const person of flowRow.columns[1].items[0].items) assert.equal(person.columns[1].width, `${NAME_GAP_PX}px`);
+  // A badged picture carries about 2px of margin of its own, so its gap is smaller by that.
+  const badged = userRow('Approval', [{ name: 'Alice Example', avatar: BADGEABLE, viaBot: true }], { labelWidth: '112px' }).row.columns[1].items[0].columns;
+  assert.equal(badged[1].width, `${NAME_GAP_PX - 2}px`);
 });

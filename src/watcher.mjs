@@ -90,6 +90,9 @@ import { createLogger } from './logger.mjs';
 
 const log = createLogger('watcher');
 
+// How many "the bot approved for X" records are kept (the newest).
+const TEAMS_APPROVALS_KEEP = 500;
+
 // Longest wait before a watched Jira issue we cannot read (403/404) is checked again.
 const JIRA_ISSUE_DENIED_MAX_DELAY_MS = 6 * 60 * 60 * 1000;
 const HEADSUP_PREFIX = 'headsup: ';
@@ -1146,6 +1149,10 @@ export class MergeRequestWatcher {
     this.tokenExpiryCheckTimer = null;
     this.webhookSetupStatus = null;
     this.lastWebhookEvent = null;
+    // Who the bot approved for (an approval from Teams is made by the bot's GitLab account): `project!iid` -> {name, mri, at}.
+    this.teamsApprovals = new Map();
+    // Display names and usernames of the bot's GitLab accounts, lowercase (filled by refreshBotNames).
+    this.botNames = new Set();
     this.loadState();
   }
 
@@ -1154,6 +1161,11 @@ export class MergeRequestWatcher {
       if (fs.existsSync(this.stateFile)) {
         const raw = fs.readFileSync(this.stateFile, 'utf8');
         const data = JSON.parse(raw);
+        if (data.teamsApprovals && typeof data.teamsApprovals === 'object') {
+          for (const [k, v] of Object.entries(data.teamsApprovals)) {
+            if (v?.name) this.teamsApprovals.set(k, { name: String(v.name), mri: String(v.mri || ''), at: Number(v.at) || 0 });
+          }
+        }
         if (Array.isArray(data.completedMessages)) {
           this.completedMessages = new Set(data.completedMessages);
         }
@@ -1371,6 +1383,7 @@ export class MergeRequestWatcher {
         entries: entriesObj,
         userInteractions: interactionsObj,
         bannedUsers: bannedObj,
+        teamsApprovals: Object.fromEntries([...this.teamsApprovals].sort((a, b) => b[1].at - a[1].at).slice(0, TEAMS_APPROVALS_KEEP)),
         pendingTokenRenewalMessageIds: Array.from(this.pendingTokenRenewalMessageIds || []),
         lastGitLabExpiryWarningAt: this.lastGitLabExpiryWarningAt || 0,
         lastWebhookEvent: this.lastWebhookEvent || null,
@@ -2623,6 +2636,7 @@ export class MergeRequestWatcher {
    * embed them. Missing pictures simply mean names only. No-op outside rich mode.
    */
   async prefetchAvatars(data) {
+    if (this.botNames.size === 0) await this.refreshBotNames();
     if (!this.avatarService) return;
     try {
       await this.avatarService.avatarsFor(collectCardPeople(data));
@@ -2651,6 +2665,39 @@ export class MergeRequestWatcher {
     return author || (mr?.lastAuthor ?? '');
   }
 
+  /** Fills `botNames` with the names of the GitLab accounts the bot acts as (cached by the client). */
+  async refreshBotNames() {
+    if (!this.gitlab?.getCurrentUser || !this.gitlab?.tokenIndices) return;
+    try {
+      const names = new Set();
+      for (const index of this.gitlab.tokenIndices()) {
+        const user = await this.gitlab.getCurrentUser({ tokenIndex: index });
+        for (const value of [user?.name, user?.username]) if (value) names.add(String(value).toLowerCase());
+      }
+      if (names.size > 0) this.botNames = names;
+    } catch (err) {
+      log.debug(`Could not read the bot accounts: ${err.message}`);
+    }
+  }
+
+  /**
+   * The approvers a merge request card shows. When the approval was made by the bot's own account on
+   * somebody's behalf (see noteTeamsApproval), that person is shown instead of the bot, marked as
+   * approved via the bot. Everything else is unchanged. Returns `{approvedBy, approvedVia}` where
+   * `approvedVia` lists the names to mark.
+   */
+  resolveApprovers(project, iid, approvedBy) {
+    const names = Array.isArray(approvedBy) ? approvedBy.filter(Boolean) : [];
+    const record = project && iid !== undefined ? this.teamsApprovals.get(`${project}!${iid}`.toLowerCase()) : null;
+    if (!record || this.botNames.size === 0) return { approvedBy: names, approvedVia: [] };
+    const at = names.findIndex((n) => this.botNames.has(String(n).toLowerCase()));
+    if (at < 0) return { approvedBy: names, approvedVia: [] };
+    const resolved = names.slice();
+    resolved[at] = record.name;
+    // The requester may have approved directly as well: keep one entry, marked.
+    return { approvedBy: resolved.filter((n, i) => resolved.findIndex((m) => m.toLowerCase() === n.toLowerCase()) === i), approvedVia: [record.name] };
+  }
+
   /** The names an MR card shows people for: the author, approvers (live or last reported) and the auto-merge user. */
   mrCardPeopleData(mr, mrDetails) {
     const approvedBy = Array.isArray(mrDetails?.approvedBy)
@@ -2658,7 +2705,8 @@ export class MergeRequestWatcher {
       : mr?.lastReportedApprovedBy
         ? String(mr.lastReportedApprovedBy).split(', ')
         : [];
-    return { author: this.mrCardAuthor(mr, mrDetails), approvedBy, autoMergeUser: mrDetails?.autoMergeUser };
+    const resolved = this.resolveApprovers(mr?.project, mr?.iid, approvedBy);
+    return { author: this.mrCardAuthor(mr, mrDetails), approvedBy: resolved.approvedBy, autoMergeUser: mrDetails?.autoMergeUser };
   }
 
   /**
@@ -2685,6 +2733,7 @@ export class MergeRequestWatcher {
     } else if (mr.lastDiffStats && mr.lastDiffStats.sha === (mrDetails?.sha ?? null)) {
       diffStats = mr.lastDiffStats;
     }
+    const resolvedApprovers = this.resolveApprovers(mr.project, mr.iid, approvedBy);
     return buildMergeRequestCard({
       state,
       diffStats,
@@ -2697,7 +2746,8 @@ export class MergeRequestWatcher {
       url: mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid),
       targetBranch: mrDetails?.target_branch,
       approved,
-      approvedBy,
+      approvedBy: approved === true ? resolvedApprovers.approvedBy : approvedBy,
+      approvedVia: approved === true ? resolvedApprovers.approvedVia : [],
       // GitLab's own counts for the pending approval badge (null when it requires none).
       approvalsGiven: mrDetails?.approvalsGiven ?? null,
       approvalsRequired: mrDetails?.approvalsRequired ?? null,
@@ -4196,6 +4246,11 @@ export class MergeRequestWatcher {
    * sent; best effort in that it never fails the approval.
    */
   async noteTeamsApproval(project, iid, { name, mri, via, conversationId, messageId, action = 'approved' }) {
+    // Remember who asked, so the MR card can show them (with the bot mark) instead of the bot.
+    const key = `${project}!${iid}`.toLowerCase();
+    if (action === 'revoked') this.teamsApprovals.delete(key);
+    else if (name) this.teamsApprovals.set(key, { name: String(name), mri: String(mri || ''), at: Date.now() });
+    this.saveState();
     if (!this.gitlab?.addMrNote) return;
     try {
       const requester = await this.approvalRequester({ name, mri });

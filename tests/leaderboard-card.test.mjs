@@ -119,7 +119,7 @@ test('pictures: bigger on the podium, smaller below, a spacer keeps names aligne
   assert.ok(imgs.every((i) => i.style === 'Person'));
   const columnCounts = [];
   walkAll(card, (n) => n.type === 'ColumnSet' && n.columns.length >= 3 && columnCounts.push(n.columns.length));
-  assert.ok(columnCounts.every((c) => c === columnCounts[0] || c === columnCounts[0] + 1 || c === columnCounts[0] - 1));
+  assert.ok(columnCounts.every((c) => c === columnCounts[0] || Math.abs(c - columnCounts[0]) <= 2));
 });
 
 test('no pictures at all: no picture column, still a valid card', () => {

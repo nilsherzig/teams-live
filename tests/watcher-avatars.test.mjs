@@ -204,7 +204,7 @@ test('MR card prefetches and shows the author with the picture, fetching it once
   assert.equal(row.columns[1].width, 'stretch', 'one stretch value column');
   const [line, ...more] = row.columns[1].items;
   assert.equal(more.length, 0, 'one person, one line');
-  assert.deepEqual(line.columns.map((c) => c.items[0].text ?? c.items[0].altText), ['Alice Example', 'Alice Example']);
+  assert.deepEqual(line.columns.map((c) => c.items[0].text ?? c.items[0].altText).filter((t) => t !== ''), ['Alice Example', 'Alice Example']);
   assert.match(line.columns[0].items[0].url, /^data:image\/jpeg;base64,/);
 });
 
@@ -229,7 +229,7 @@ test('MR card author without a picture (unknown person, regular mode) is a plain
   const card = watcher.buildMrCard(mr, details);
   assert.equal(personImages(card).length, 0);
   assert.equal(placeholderImages(card).length, 1, 'an unresolved author gets the placeholder, never a looked-up photo');
-  assert.deepEqual(authorOf(card).columns[1].items.flatMap((l) => l.columns.map((c) => c.items[0].text ?? c.items[0].altText)), ['Zed Nobody', 'Zed Nobody']);
+  assert.deepEqual(authorOf(card).columns[1].items.flatMap((l) => l.columns.map((c) => c.items[0].text ?? c.items[0].altText).filter((t) => t !== '')), ['Zed Nobody', 'Zed Nobody']);
 
   const fetched = [];
   const regular = richWatcher({}, { fetched });

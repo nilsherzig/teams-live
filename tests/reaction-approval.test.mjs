@@ -425,3 +425,23 @@ test('findUsernameByName takes a single exact, active match only and caches it',
   answer = [{ username: 'z', name: 'Carol Example', state: 'blocked' }];
   assert.equal(await client.findUsernameByName('Carol Example'), '', 'inactive accounts do not count');
 });
+
+test('an approval from Teams is remembered, so the MR card shows the requester instead of the bot', async () => {
+  const { watcher } = createWatcher();
+  watcher.botNames = new Set(['ms teams bot', 'sa_teams_live']);
+  // Nothing known yet: the card is unchanged.
+  assert.deepEqual(watcher.resolveApprovers('group/app', 42, ['MS Teams bot']), { approvedBy: ['MS Teams bot'], approvedVia: [] });
+  await watcher.noteTeamsApproval('group/app', 42, { name: 'Alice Example', mri: '8:orgid:x', via: '👍 reaction' });
+  // The bot's entry becomes the requester, marked; other approvers stay as they are.
+  assert.deepEqual(watcher.resolveApprovers('group/app', 42, ['MS Teams bot']), { approvedBy: ['Alice Example'], approvedVia: ['Alice Example'] });
+  assert.deepEqual(watcher.resolveApprovers('group/app', 42, ['Bob Example', 'MS Teams bot']), { approvedBy: ['Bob Example', 'Alice Example'], approvedVia: ['Alice Example'] });
+  assert.deepEqual(watcher.resolveApprovers('group/app', 42, ['Bob Example']), { approvedBy: ['Bob Example'], approvedVia: [] }, 'the bot did not approve: nothing to replace');
+  assert.deepEqual(watcher.resolveApprovers('group/other', 7, ['MS Teams bot']), { approvedBy: ['MS Teams bot'], approvedVia: [] }, 'another MR');
+  // Without the bot's account names there is nothing to recognise: unchanged.
+  watcher.botNames = new Set();
+  assert.deepEqual(watcher.resolveApprovers('group/app', 42, ['MS Teams bot']), { approvedBy: ['MS Teams bot'], approvedVia: [] });
+  // A revoke forgets it.
+  watcher.botNames = new Set(['ms teams bot']);
+  await watcher.noteTeamsApproval('group/app', 42, { name: 'Alice Example', via: '/revoke', action: 'revoked' });
+  assert.deepEqual(watcher.resolveApprovers('group/app', 42, ['MS Teams bot']), { approvedBy: ['MS Teams bot'], approvedVia: [] });
+});

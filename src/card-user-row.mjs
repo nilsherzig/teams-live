@@ -10,6 +10,7 @@
 
 import { PLACEHOLDER_AVATAR } from './placeholder-avatar.mjs';
 import { initialsAvatar, nameInitials } from './initials-avatar.mjs';
+import { badgeAvatar, badgedDisplayPx } from './badge-avatar.mjs';
 
 export const AVATAR_PX = 18;
 // Total size of the embedded pictures per card (characters of the data URIs).
@@ -25,21 +26,51 @@ export function isImageDataUri(value) {
 
 const text = (value) => (value === undefined || value === null ? '' : String(value).trim());
 
-function textColumn(content, extra = {}, width = 'auto') {
+// The one gap between a picture and a name: an exact spacer column, because the card spacing presets
+// are either too wide or too tight. Between pictures the flow uses PICTURE_GAP (a preset, about 4px).
+export const PICTURE_GAP = 'Small';
+export const NAME_GAP_PX = 6;
+// A badged picture has a transparent margin of about 2px on each side, so it needs that much less.
+const BADGE_MARGIN_PX = 2;
+
+/** An empty column of fixed width: the gap between a picture and its name. */
+export function gapColumn(px = NAME_GAP_PX) {
+  // `spacing: None`: otherwise the card adds its own column spacing in front of it.
+  return { type: 'Column', width: `${px}px`, spacing: 'None', verticalContentAlignment: 'Center', items: [{ type: 'TextBlock', text: '', wrap: false, size: 'Small', spacing: 'None' }] };
+}
+
+function textColumn(content, extra = {}, width = 'auto', spacing = undefined) {
   return {
     type: 'Column',
     width,
+    ...(spacing ? { spacing } : {}),
     verticalContentAlignment: 'Center',
     items: [{ type: 'TextBlock', text: content, wrap: true, ...extra }],
   };
 }
 
-export function avatarColumn(name, dataUri, width = 'auto') {
+/**
+ * A person's picture as a card item. With `badged` (the person's approval was made by the MS Teams bot
+ * on their behalf) the picture carries the Teams badge: a pre-rendered round PNG with a transparent
+ * margin for the badge, shown without the card's circular crop and larger by that margin, so the
+ * picture itself keeps the size of every other picture.
+ */
+export function pictureItem(name, dataUri, { badged = false } = {}) {
+  const badgedUri = badged ? badgeAvatar(dataUri) : null;
+  if (badgedUri) {
+    const px = `${badgedDisplayPx(AVATAR_PX)}px`;
+    return { type: 'Image', url: badgedUri, altText: `${name} (approved via the MS Teams bot)`, width: px, height: px };
+  }
+  return { type: 'Image', url: dataUri, altText: name, style: 'Person', width: `${AVATAR_PX}px`, height: `${AVATAR_PX}px` };
+}
+
+export function avatarColumn(name, dataUri, width = 'auto', { badged = false, spacing = undefined } = {}) {
   return {
     type: 'Column',
     width,
+    ...(spacing ? { spacing } : {}),
     verticalContentAlignment: 'Center',
-    items: [{ type: 'Image', url: dataUri, altText: name, style: 'Person', width: `${AVATAR_PX}px`, height: `${AVATAR_PX}px` }],
+    items: [pictureItem(name, dataUri, { badged })],
   };
 }
 
@@ -72,13 +103,18 @@ function pictureSpacer() {
  * BEFORE the pair, so it never separates a picture from its name. In compact
  * mode only the picture is shown, with initials inside placeholder pictures.
  */
-export function personChip({ name, avatar }, { lead = '', compact = false, stretch = false, textStyle = {} } = {}) {
+export function personChip({ name, avatar, viaBot = false }, { lead = '', compact = false, stretch = false, textStyle = {} } = {}) {
   const columns = [];
   if (lead) columns.push(textColumn(lead, textStyle, 'auto'));
-  if (avatar) columns.push(avatarColumn(name, avatar, stretch ? `${AVATAR_PX}px` : 'auto'));
+  if (avatar) columns.push(avatarColumn(name, avatar, stretch ? `${viaBot ? badgedDisplayPx(AVATAR_PX) : AVATAR_PX}px` : 'auto', { badged: viaBot }));
   else if (!compact) columns.push(pictureSpacer());
-  if (!compact) columns.push(textColumn(name, textStyle, stretch ? 'stretch' : 'auto'));
-  else if (!avatar || avatar === PLACEHOLDER_AVATAR) columns.push(textColumn(nameInitials(name), textStyle, 'auto'));
+  if (!compact) {
+    columns.push(gapColumn(avatar && viaBot ? NAME_GAP_PX - BADGE_MARGIN_PX : NAME_GAP_PX));
+    columns.push(textColumn(name, textStyle, stretch ? 'stretch' : 'auto', 'None'));
+  } else if (!avatar || avatar === PLACEHOLDER_AVATAR) {
+    columns.push(gapColumn());
+    columns.push(textColumn(nameInitials(name), textStyle, 'auto', 'None'));
+  }
   return { type: 'ColumnSet', columns };
 }
 
@@ -177,7 +213,7 @@ export function planCardAvatars(people, budget = MAX_AVATAR_CHARS_PER_CARD) {
 export function userRow(label, people, { headline = '', pill = null, compact = false, charBudget = MAX_AVATAR_CHARS_PER_CARD, labelWidth = 'auto', avatarPlan = null } = {}) {
   const validPeople = (people || []).filter((person) => text(person?.name));
   const selectAvatar = avatarPlan || planCardAvatars(validPeople.map((person) => ({ ...person, compact })), charBudget);
-  const entries = validPeople.map((person) => ({ name: text(person.name), avatar: selectAvatar(person.name) }));
+  const entries = validPeople.map((person) => ({ name: text(person.name), avatar: selectAvatar(person.name), viaBot: person.viaBot === true }));
   const used = entries.reduce((total, entry) => total + (entry.avatar?.length || 0), 0);
   if (!entries.some((entry) => entry.avatar) && !compact) return null;
   const lead = text(headline);
@@ -192,7 +228,7 @@ export function userRow(label, people, { headline = '', pill = null, compact = f
     valueItems = [
       {
         type: 'Container',
-        layouts: [{ type: 'Layout.Flow', horizontalItemsAlignment: 'Left', verticalItemsAlignment: 'Center', columnSpacing: 'Medium', rowSpacing: 'Small' }],
+        layouts: [{ type: 'Layout.Flow', horizontalItemsAlignment: 'Left', verticalItemsAlignment: 'Center', columnSpacing: PICTURE_GAP, rowSpacing: 'Small' }],
         items: hasPill ? [pillImage(pill), ...people] : people,
       },
     ];

@@ -57,13 +57,14 @@ function factSet(facts) {
  * `factBlocks` can render a picture row. `avatars` maps a name to a data URI.
  * Compact rows also render placeholder pictures when no photo is available.
  */
-function personFact(title, text, names, avatars, headline = '', pill = null, compact = false) {
+function personFact(title, text, names, avatars, headline = '', pill = null, compact = false, viaBot = []) {
+  const marked = new Set((viaBot || []).map((n) => String(n).toLowerCase()));
   const has = (name) => avatars && Object.hasOwn(avatars, name) && avatars[name];
   if (!compact && !names.some(has)) {
     // Nobody has a picture: the pill is still shown, as a badge row with the names as text after it.
     return pill ? [title, text, { badge: pill, trail: names.join(', ') }] : [title, text];
   }
-  return [title, text, { headline, pill, compact, people: names.map((name) => ({ name, avatar: has(name) ? avatars[name] : undefined })) }];
+  return [title, text, { headline, pill, compact, people: names.map((name) => ({ name, avatar: has(name) ? avatars[name] : undefined, viaBot: marked.has(String(name).toLowerCase()) })) }];
 }
 
 /**
@@ -679,7 +680,7 @@ export function buildMergeRequestCard(mr) {
       author ? personFact('Author', author, [author], mr.avatars) : ['Author', ''],
       approved === true && approvers.length > 0
         ? // With the pill, the "👍 By" lead is not needed: the pill says what the people did.
-          personFact('Approval', approval, approvers.map(str), mr.avatars, approvalPill ? '' : '👍 By', approvalPill, approvers.length > 1)
+          personFact('Approval', approval, approvers.map(str), mr.avatars, approvalPill ? '' : '👍 By', approvalPill, approvers.length > 1, mr.approvedVia)
         : approvalPill
           ? ['Approval', approval, { badge: approvalPill, trail: '' }]
           : ['Approval', approval],
