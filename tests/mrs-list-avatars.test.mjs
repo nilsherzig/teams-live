@@ -140,7 +140,8 @@ test('/mrs list: every fact of the plain list card is kept, pictures only add a 
       Object.values(n).forEach(walk);
     };
     walk(card);
-    return out.join(' ').replace(/\s+/g, ' ').replace(/ ·/g, ' ·').trim();
+    // The author now leads the meta line, so compare the words, not their order.
+    return out.join(' ').split(/[\s·]+/).filter(Boolean).sort().join(' ');
   };
   assert.equal(words(cardOf(withPictures)), words(cardOf(without)));
   const flowNames = [];
@@ -448,4 +449,21 @@ test('/mrs list: pictures are cached, so a later list is built without new reque
   assert.equal(personsIn(cached).length, 2);
   await w.getOrFetchMrsText({ force: true });
   assert.equal(fetched.length, before);
+});
+
+test('/mrs list: a list that needs several cards is split by section, humans first, bots after', async () => {
+  const w = newWatcher({ photo: false });
+  const humans = Array.from({ length: 14 }, (_, i) => mr(100 + i, i % 2 ? BOB_GL : ALICE_GL));
+  const bots = Array.from({ length: 14 }, (_, i) => mr(200 + i, { name: 'Renovate Bot', username: 'renovate-bot' }, `chore(deps): update dependency number ${i}`));
+  w.getOrFetchMrsData = async () => [...humans, ...bots];
+  const message = await w.getOrFetchMrsText({ mode: 'all' });
+  const parts = partsOf(message);
+  assert.ok(parts.length >= 2);
+  const kinds = parts.map((part) => {
+    const refs = refsOf(part);
+    return new Set(refs.map((ref) => (ref >= 200 ? 'bot' : 'human')));
+  });
+  for (const k of kinds) assert.equal(k.size, 1, 'a card never mixes humans and bots');
+  assert.equal(kinds[0].has('human'), true);
+  assert.equal(kinds.at(-1).has('bot'), true);
 });

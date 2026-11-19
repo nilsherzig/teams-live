@@ -5566,22 +5566,29 @@ export class MergeRequestWatcher {
       return Boolean(message) && richMessageWireBytes(message) <= MAX_CARD_BYTES;
     };
     try {
-      const chunks = [];
-      let current = [];
-      for (const item of items) {
-        if (fits([...current, item])) {
-          current.push(item);
-          continue;
+      // One card when everything fits. Otherwise split along the sections (humans, then bots) first, and
+      // only a section that is too large for one card on its own is split further.
+      const pack = (breakAtSections) => {
+        const out = [];
+        let current = [];
+        for (const item of items) {
+          const newSection = breakAtSections && current.length > 0 && current.at(-1).index !== item.index;
+          if (!newSection && fits([...current, item])) {
+            current.push(item);
+            continue;
+          }
+          if (current.length > 0) out.push(current);
+          current = [item];
+          if (!fits(current) && item.row.avatar && item.row.avatar !== PLACEHOLDER_AVATAR) {
+            item.row.avatar = PLACEHOLDER_AVATAR;
+          }
+          if (!fits(current) || out.length >= MRS_LIST_MAX_CARDS) return null;
         }
-        if (current.length > 0) chunks.push(current);
-        current = [item];
-        if (!fits(current) && item.row.avatar && item.row.avatar !== PLACEHOLDER_AVATAR) {
-          item.row.avatar = PLACEHOLDER_AVATAR;
-        }
-        if (!fits(current) || chunks.length >= MRS_LIST_MAX_CARDS) return null;
-      }
-      if (current.length > 0) chunks.push(current);
-      if (chunks.length === 0 || chunks.length > MRS_LIST_MAX_CARDS) return null;
+        if (current.length > 0) out.push(current);
+        return out;
+      };
+      let chunks = pack(false);
+      if (chunks && chunks.length > 1) chunks = pack(true) || chunks;
       const total = chunks.length;
       const messages = chunks.map((chunk, i) => build(chunk, total > 1 ? [i + 1, total] : null));
       if (messages.some((message) => !message || richMessageWireBytes(message) > MAX_CARD_BYTES)) return null;

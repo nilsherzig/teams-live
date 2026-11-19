@@ -1270,14 +1270,13 @@ function listIconColumn(glyph, { images, emoji }) {
 function mrListMetaLine({ before, ci, after, ciStatus, ciIcons, authorChip = null }) {
   const small = { size: 'Small', isSubtle: true, spacing: 'None' };
   if (authorChip) {
-    // The author is `<picture> <name>` (see personChip) inside the meta line, so the picture sits next to the name.
+    // The author leads the line as `<picture> <name>` (flat items, so rows stay small on the wire and the
+    // picture can never be stranded from the name by a long trail), then the CI status and the rest.
     const icon = ciIcons && ci ? ciStatusIcon(ciStatus) : null;
-    const pre = [icon && ci, ...before.slice(0, -1)].filter(Boolean).join(' \u00b7 ');
-    const post = [!icon && ci && `${ciStatusEmoji(ciStatus)} ${ci}`, ...after].filter(Boolean).join(' \u00b7 ');
-    const items = [];
+    const rest = [ci && (icon ? ci : `${ciStatusEmoji(ciStatus)} ${ci}`), ...before.slice(0, -1), ...after].filter(Boolean).join(' \u00b7 ');
+    const items = personChipItems(authorChip, { textStyle: small, trail: '\u00b7' });
     if (icon) items.push({ type: 'Image', url: icon.url, altText: icon.alt, width: LIST_ICON_PX, height: LIST_ICON_PX });
-    if (pre) items.push(textBlock(`${pre} \u00b7`, { ...small, wrap: false }));
-    items.push(...personChipItems(authorChip, { textStyle: small, trail: post && `\u00b7 ${post}` }));
+    if (rest) items.push(textBlock(rest, small));
     return {
       type: 'Container',
       spacing: 'None',

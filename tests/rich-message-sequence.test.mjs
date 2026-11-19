@@ -8,6 +8,7 @@ import {
   prepareRichMessages,
   richMessageWireBytes,
   sendReply,
+  updateReply,
   setRichMessages,
   transport,
 } from '../src/teams.mjs';
@@ -87,4 +88,13 @@ test('sendReply posts every card of a sequence, in order', async () => {
   assert.ok(sent[0].includes('first list card'));
   assert.ok(sent[1].includes('second list card'));
   assert.ok(sent[2].includes('third list card'));
+});
+
+test('a refresh edits the follow-up cards of the first reply in place instead of posting them again', async () => {
+  const first = await sendReply(CONV, ORIGINAL, makeRichMessageSequence([card('one'), card('two')]));
+  assert.equal(calls.sent.length, 2);
+  const headId = first.value.timestamp;
+  await updateReply(CONV, headId, ORIGINAL, makeRichMessageSequence([card('one!'), card('two!')]));
+  assert.equal(calls.sent.length, 2, 'no second copy of the follow-up card');
+  assert.ok(calls.edited.length >= 2, 'the head and the follow-up are both edited');
 });

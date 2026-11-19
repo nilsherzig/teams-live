@@ -666,6 +666,16 @@ export async function sendReply(conversationId, originalMessage, replyMarkdown, 
     });
     if (!first) first = result;
     if (!result.ok) return result;
+    // Remember the follow-up cards under the first card's id, so a later in-place update edits them
+    // instead of posting them a second time.
+    if (index > 0) {
+      const headId = first.value?.timestamp ?? first.value?.messageId;
+      const id = result.value?.timestamp ?? result.value?.messageId;
+      if (headId && id) {
+        const entries = trackOverflow(`${conversationId}\n${headId}`);
+        entries[index - 1] = { id: String(id), signature: messageSignature(part) };
+      }
+    }
   }
   return first;
 }
