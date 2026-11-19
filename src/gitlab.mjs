@@ -985,12 +985,14 @@ export class GitLabClient {
     let approved = false;
     let approvedBy = [];
     let status = state;
-    // true only when the approvals were retrieved; merged/closed merge requests
-    // and failed lookups are unknown, not "not approved".
+    // true only when the approvals were retrieved; a failed lookup is unknown, not "not approved".
+    // GitLab keeps answering for merged and closed merge requests, so their approvers are fetched too
+    // (a card for an already merged merge request would otherwise never show who approved it).
     let approvalKnown = false;
     let approvalCounts = { approvalsGiven: null, approvalsRequired: null };
+    const finished = state === 'merged' || state === 'closed';
 
-    if (state !== 'merged' && state !== 'closed') {
+    {
       try {
         const approvals = await this.getApprovals(project, iid);
         if (Array.isArray(approvals.approved_by)) {
@@ -1001,11 +1003,11 @@ export class GitLabClient {
         const approvalsRequired =
           typeof approvals.approvals_required === 'number' ? approvals.approvals_required : 0;
         approved = approvalsRequired > 0 ? Boolean(approvals.approved) : approvedBy.length > 0;
-        status = approved ? 'approved' : 'pending';
+        if (!finished) status = approved ? 'approved' : 'pending';
         approvalKnown = true;
         approvalCounts = approvalCountsOf(approvals, approvedBy.length);
       } catch {
-        status = 'pending';
+        if (!finished) status = 'pending';
       }
     }
 
