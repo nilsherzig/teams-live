@@ -118,7 +118,7 @@ test('approves MR when self reacts with thumbs-up to bot status comment', async 
   assert.deepEqual(approvedCalls[0], { project: 'group/app', iid: '42' });
   assert.equal(noteCalls.length, 1, 'the approval is commented on the merge request');
   assert.match(noteCalls[0].body, /^\*\*Approved via Microsoft Teams\*\*/);
-  assert.match(noteCalls[0].body, /\*\*Requested by:\*\* \[Alice Example\]\(https:\/\/teams\.microsoft\.com\/l\/chat\/0\/0\?users=8:orgid:/);
+  assert.match(noteCalls[0].body, /\*\*Requested by:\*\* \[🗨️ Alice Example\]\(https:\/\/teams\.microsoft\.com\/l\/chat\/0\/0\?users=8:orgid:/);
   assert.match(noteCalls[0].body, /\*\*Trigger:\*\* 👍 reaction on \[this Teams message\]\(https:\/\/teams\.microsoft\.com\/l\/message\/19%3Ateam%40thread\.v2\/1770000000000\)/);
 });
 
@@ -346,7 +346,7 @@ test('the approval comment mentions the approver by GitLab username when known, 
     messageId: '1700000000000',
   });
   assert.equal(notes.length, 1);
-  assert.match(notes[0].body, /\*\*Requested by:\*\* @alice \(\[Alice Example\]\(https:\/\/teams\.microsoft\.com\/l\/chat\/0\/0\?users=8:orgid:00000000-0000-4000-8000-00000000000a\)\)/);
+  assert.match(notes[0].body, /\*\*Requested by:\*\* @alice \(\[🗨️ Alice Example\]\(https:\/\/teams\.microsoft\.com\/l\/chat\/0\/0\?users=8:orgid:00000000-0000-4000-8000-00000000000a\)\)/);
   assert.match(notes[0].body, /\*\*Trigger:\*\* Command `\/approve` in \[this Teams message\]\(https:\/\/teams\.microsoft\.com\/l\/message\/19%3Ax%40thread\.v2\/1700000000000\)/);
   // A failing comment never fails the approval.
   watcher.gitlab.addMrNote = async () => {
