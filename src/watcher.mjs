@@ -4190,6 +4190,20 @@ export class MergeRequestWatcher {
     }
   }
 
+  /** The merge requests a watched message stands for (its card, CI or rebase reply) in a conversation; [] when none. */
+  watchedMrsOfMessage(conversationId, messageId) {
+    const id = String(messageId || '');
+    if (!id) return [];
+    for (const entry of this.watched.values()) {
+      if (entry.conversationId !== conversationId || !Array.isArray(entry.mrs)) continue;
+      const hit =
+        String(entry.messageId) === id ||
+        entry.mrs.some((m) => String(m.ciMessageServerId) === id || String(m.rebaseMessageServerId) === id);
+      if (hit) return entry.mrs.filter((m) => m.project && m.iid).map((m) => ({ project: m.project, iid: m.iid, title: m.title }));
+    }
+    return [];
+  }
+
   async findTargetMrsForCommand(event, args) {
     // 1. Direct MR links in the command arguments (e.g. "/approve https://..."):
     const directText = stripTruncatedUrlText(args.join(' '), event);
@@ -4211,14 +4225,36 @@ export class MergeRequestWatcher {
       return htmlLinks;
     }
 
+    // 2b. A quote of a watched merge request message (its card has no link in the quoted text).
+    const quotedId = (event.rawHtml || '').match(/itemid=["']?(\d+)["']?/i)?.[1];
+    const quotedMrs = quotedId ? deduplicateMrs(this.watchedMrsOfMessage(event.conversationId, quotedId)) : [];
+    if (quotedMrs.length > 0) {
+      quotedMrs.source = 'quote';
+      quotedMrs.sourceMessageId = quotedId;
+      quotedMrs.isDirectReply = args.length === 0 && quotedMrs.length === 1;
+      return quotedMrs;
+    }
+
     // 3. Fallback: Search conversation history for the most recent message from another user with an MR link
     try {
-      const thread = await getThreadMessages(event.conversationId, { limit: 15 });
+      const thread = await (this.threadMessages || getThreadMessages)(event.conversationId, { limit: 15 });
       if (thread.ok && Array.isArray(thread.value?.messages)) {
         const msgs = [...thread.value.messages].sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
         let interveningHumanMessages = 0;
         for (const msg of msgs) {
           if (String(msg.id) === String(event.messageId)) continue;
+          // A watched merge request message (the posted link, edited into its card, or a CI or rebase
+          // reply) is the bot's own, but it IS the merge request the command is about. Without this the
+          // search skips the card just above the command and lands on an older merge request.
+          const watchedMrs = this.watchedMrsOfMessage(event.conversationId, msg.id);
+          if (watchedMrs.length > 0) {
+            const links = deduplicateMrs(watchedMrs);
+            links.source = 'preceding';
+            links.sourceMessageId = String(msg.id);
+            links.interveningHumanMessages = interveningHumanMessages;
+            links.isDirectReply = args.length === 0 && links.length === 1 && interveningHumanMessages === 0;
+            return links;
+          }
           if (botSentMessageIds.has(String(msg.id))) continue;
           const senderMri = msg.sender?.mri?.split('/contacts/').pop();
           if (this.isOwnMessage(senderMri, msg.content, msg.id, msg.clientMessageId, msg.content)) continue;
