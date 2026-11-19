@@ -81,7 +81,7 @@ import { AvatarService, loadAvatarOverrides } from './avatars.mjs';
 import { BUILTIN_AVATAR_OVERRIDES } from './bot-avatars.mjs';
 import { createAvatarFallbacks } from './avatar-sources.mjs';
 import { PLACEHOLDER_AVATAR } from './placeholder-avatar.mjs';
-import { collectCardPeople, isImageDataUri } from './card-user-row.mjs';
+import { collectCardPeople, fallbackAvatar, isImageDataUri } from './card-user-row.mjs';
 import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
 import { fallbackTokenPendingPath, persistFallbackToken, persistGitLabToken } from './config.mjs';
@@ -5774,7 +5774,7 @@ export class MergeRequestWatcher {
       for (const row of rows) {
         if (!row.avatarSlot) continue;
         const photo = row.authorPerson ? this.avatarService.peek(row.authorPerson, { size: MRS_LIST_AVATAR_SIZE }) : null;
-        row.avatar = isImageDataUri(photo) ? photo : PLACEHOLDER_AVATAR;
+        row.avatar = isImageDataUri(photo) ? photo : fallbackAvatar(row.authorPerson?.name ?? row.authorPerson);
       }
     }
     // Rows in display order: a card groups the rows of a section by project, so do the same here.
@@ -5824,8 +5824,9 @@ export class MergeRequestWatcher {
           }
           if (current.length > 0) out.push(current);
           current = [item];
-          if (!fits(current) && item.row.avatar && item.row.avatar !== PLACEHOLDER_AVATAR) {
-            item.row.avatar = PLACEHOLDER_AVATAR;
+          const fallback = fallbackAvatar(item.row.authorPerson?.name ?? item.row.authorPerson);
+          if (!fits(current) && item.row.avatar && item.row.avatar !== fallback) {
+            item.row.avatar = fallback;
           }
           if (!fits(current) || out.length >= MRS_LIST_MAX_CARDS) return null;
         }

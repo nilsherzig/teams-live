@@ -5,6 +5,10 @@ import { MAX_CARD_BYTES } from '../src/cards.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 import { AvatarService } from '../src/avatars.mjs';
 import { PLACEHOLDER_AVATAR } from '../src/placeholder-avatar.mjs';
+import { fallbackAvatar } from '../src/card-user-row.mjs';
+
+// A picture a person without a photo gets: their initials (or the silhouette for a name that cannot be drawn).
+const isFallback = (image) => image.url === PLACEHOLDER_AVATAR || image.url === fallbackAvatar(image.altText);
 
 // Watcher wiring of profile pictures. All people, images and URLs are generic fakes.
 
@@ -60,8 +64,8 @@ const allPersonImages = (card) => {
   return found;
 };
 // Real photos only; the neutral placeholder of people without a photo is counted apart.
-const personImages = (card) => allPersonImages(card).filter((i) => i.url !== PLACEHOLDER_AVATAR);
-const placeholderImages = (card) => allPersonImages(card).filter((i) => i.url === PLACEHOLDER_AVATAR);
+const personImages = (card) => allPersonImages(card).filter((i) => !isFallback(i));
+const placeholderImages = (card) => allPersonImages(card).filter((i) => isFallback(i));
 
 const jiraIssue = {
   key: 'EX-1',
@@ -143,7 +147,9 @@ test('MR cards show the pictures of the approvers once they are prefetched', asy
   const watcher = richWatcher(undefined, { fetched });
   const mr = { project: 'group/app', iid: 7, title: 'Example' };
   const details = { title: 'Example', approved: true, approvedBy: ['Alice Example', 'Bob Example'] };
-  assert.equal(personImages(watcher.buildMrCard(mr, details)).length, 2, 'initials placeholders before prefetch');
+  const before = watcher.buildMrCard(mr, details);
+  assert.equal(allPersonImages(before).length, 2, 'a picture each before the prefetch');
+  assert.equal(personImages(before).length, 0, 'initials, no photos yet');
   assert.deepEqual(fetched, []);
   await watcher.prefetchAvatars(watcher.mrCardPeopleData(mr, details));
   assert.deepEqual(fetched.sort(), [ALICE, BOB]);

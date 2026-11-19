@@ -162,6 +162,15 @@ const usablePill = (pill) =>
   pill && isImageDataUri(pill.url) && Number.isFinite(pill.width) && pill.width > 0 && Number.isFinite(pill.height) && pill.height > 0;
 
 /**
+ * The picture of a person who has no photo: their initials on a round ground, else (a name it cannot draw)
+ * the neutral silhouette. One rule for every card, so nobody is shown with a generic picture when initials
+ * would say more.
+ */
+export function fallbackAvatar(name) {
+  return initialsAvatar(text(name)) || PLACEHOLDER_AVATAR;
+}
+
+/**
  * Select one image per person for every occurrence on a card, accounting for each copy on the wire.
  * Once any person on the card has a picture, EVERYONE named gets one: a photo when it fits the
  * budget, else a placeholder. Placeholders do not use the photo budget, so a heavy photo can never
@@ -184,7 +193,7 @@ export function planCardAvatars(people, budget = MAX_AVATAR_CHARS_PER_CARD) {
   const selected = new Map();
   // Pass 1: the cheap fallback for everybody. Placeholders are tiny and never count against the photo budget.
   for (const [key, group] of groups) {
-    const fallback = inPlay ? (group.compact ? initialsAvatar(group.name) || PLACEHOLDER_AVATAR : PLACEHOLDER_AVATAR) : null;
+    const fallback = inPlay ? fallbackAvatar(group.name) : null;
     group.fallback = fallback;
     selected.set(key, fallback);
   }

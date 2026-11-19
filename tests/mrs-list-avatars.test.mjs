@@ -5,6 +5,10 @@ import { MergeRequestWatcher } from '../src/watcher.mjs';
 import { MAX_CARD_BYTES } from '../src/cards.mjs';
 import { AvatarService } from '../src/avatars.mjs';
 import { PLACEHOLDER_AVATAR } from '../src/placeholder-avatar.mjs';
+import { fallbackAvatar } from '../src/card-user-row.mjs';
+
+// A picture a person without a photo gets: their initials (or the silhouette for a name that cannot be drawn).
+const isFallback = (image) => image.url === PLACEHOLDER_AVATAR || image.url === fallbackAvatar(image.altText);
 import { CI_STATUS_ICONS } from '../src/ci-icons.mjs';
 
 // Author pictures on the /mrs list card. All people, images and URLs are generic fakes.
@@ -81,8 +85,8 @@ const personsIn = (message) => {
   return found;
 };
 // Real photos only; the neutral placeholder of authors without a photo is counted apart.
-const photosIn = (message) => personsIn(message).filter((i) => i.url !== PLACEHOLDER_AVATAR);
-const placeholdersIn = (message) => personsIn(message).filter((i) => i.url === PLACEHOLDER_AVATAR);
+const photosIn = (message) => personsIn(message).filter((i) => !isFallback(i));
+const placeholdersIn = (message) => personsIn(message).filter((i) => isFallback(i));
 // The same list as the service-less (no picture at all) card.
 const noPictures = (mrs) => {
   const w = newWatcher({ photo: false });

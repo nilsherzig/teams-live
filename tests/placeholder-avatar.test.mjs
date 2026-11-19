@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { setRichMessages } from '../src/teams.mjs';
 import { AvatarService } from '../src/avatars.mjs';
 import { PLACEHOLDER_AVATAR } from '../src/placeholder-avatar.mjs';
+import { fallbackAvatar } from '../src/card-user-row.mjs';
+
+// A picture a person without a photo gets: their initials (or the silhouette for a name that cannot be drawn).
+const isFallback = (image) => image.url === PLACEHOLDER_AVATAR || image.url === fallbackAvatar(image.altText);
 import { AVATAR_PX, userRow } from '../src/card-user-row.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 
@@ -76,7 +80,7 @@ test('an MR card shows the placeholder for author and approver without a photo',
   const images = imagesOf(watcher.buildMrCard(mr, details));
   assert.deepEqual(images.map((i) => i.altText).sort(), ['Alice Example', 'Zed Nobody']);
   for (const image of images) {
-    assert.equal(image.url, PLACEHOLDER_AVATAR);
+    assert.ok(isFallback(image), image.altText);
     assert.deepEqual([image.width, image.height], ['18px', '18px']);
   }
 });
@@ -88,7 +92,7 @@ test('a real photo wins over the placeholder; people without one sit beside it',
   await watcher.prefetchAvatars(watcher.mrCardPeopleData(mr, details));
   const urls = Object.fromEntries(imagesOf(watcher.buildMrCard(mr, details)).map((i) => [i.altText, i.url]));
   assert.match(urls['Alice Example'], /^data:image\/jpeg;base64,/);
-  assert.equal(urls['Zed Nobody'], PLACEHOLDER_AVATAR);
+  assert.equal(urls['Zed Nobody'], fallbackAvatar('Zed Nobody'));
 });
 
 test('no placeholder in regular mode, with the avatars suppressed, or without a service', async () => {
@@ -114,11 +118,11 @@ test('userRow: placeholders only take what real photos leave, and count against 
     { name: 'Carol Example', avatar: PHOTO },
   ];
   const row = userRow('Approvers', people);
-  const urls = imagesOf(row).map((i) => [i.altText, i.url === PLACEHOLDER_AVATAR ? 'placeholder' : 'photo']);
+  const urls = imagesOf(row).map((i) => [i.altText, isFallback(i) ? 'placeholder' : 'photo']);
   assert.deepEqual(urls.map(([, kind]) => kind), ['placeholder', 'placeholder', 'photo', 'photo', 'photo']);
 
   const tight = userRow('Approvers', people, { charBudget: PHOTO.length + PLACEHOLDER_AVATAR.length });
-  const kinds = (row2) => imagesOf(row2).map((i) => (i.url === PLACEHOLDER_AVATAR ? 'placeholder' : 'photo'));
+  const kinds = (row2) => imagesOf(row2).map((i) => (isFallback(i) ? 'placeholder' : 'photo'));
   assert.equal(kinds(tight).length, 5, 'everybody keeps a picture');
   assert.equal(kinds(tight).filter((k) => k === 'photo').length, 1, 'photos only take the budget');
   const none = userRow('Approvers', people, { charBudget: 10 });

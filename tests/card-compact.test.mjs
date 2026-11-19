@@ -136,3 +136,16 @@ test('an approver without a photo gets an initials picture in the compact card, 
     assert.equal(pictures[0].url, initialsAvatar('Lena Muster'));
   }
 });
+
+test('everywhere, a person without a photo gets initials: classic card, lists and rows use one fallback', async () => {
+  const { PLACEHOLDER_AVATAR } = await import('../src/placeholder-avatar.mjs');
+  const { fallbackAvatar } = await import('../src/card-user-row.mjs');
+  assert.equal(fallbackAvatar('Lena Muster'), initialsAvatar('Lena Muster'));
+  assert.notEqual(fallbackAvatar('Lena Muster'), PLACEHOLDER_AVATAR);
+  assert.equal(fallbackAvatar(''), PLACEHOLDER_AVATAR, 'a name it cannot draw keeps the silhouette');
+  // The watcher hands over the silhouette for a person without a photo; the card swaps it for initials.
+  const classic = buildMergeRequestCard({ ...MR, approvedBy: ['Lena Muster'], approvalsGiven: 1, avatars: { 'Alice Example': initialsAvatar('Alice Example'), 'Lena Muster': PLACEHOLDER_AVATAR } });
+  const urls = JSON.stringify(classic);
+  assert.ok(urls.includes(initialsAvatar('Lena Muster')), 'initials for the single approver');
+  assert.equal(urls.includes(PLACEHOLDER_AVATAR), false, 'no silhouette');
+});

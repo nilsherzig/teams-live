@@ -19,6 +19,7 @@ import {
 } from '../src/card-user-row.mjs';
 import { buildJiraIssueCard, buildMergeRequestCard, buildOpsGenieAlertCard, MAX_CARD_BYTES } from '../src/cards.mjs';
 import { PLACEHOLDER_AVATAR } from '../src/placeholder-avatar.mjs';
+import { fallbackAvatar } from '../src/card-user-row.mjs';
 import { initialsAvatar } from '../src/initials-avatar.mjs';
 import { makeRichMessage, richMessageWireBytes } from '../src/teams.mjs';
 
@@ -714,7 +715,7 @@ test('userRow flows several people in one value column; a name without a picture
   assert.deepEqual(lines.map((l) => l.columns.length), [4, 3, 3], 'lead, picture and name; everybody has a picture, a placeholder when there is no photo');
   assert.deepEqual(lines.map((l) => l.columns.at(-1).items[0].text), ['Alice Example', 'Bob Example', 'Carol Example']);
   assert.equal(lines[0].columns[0].items[0].text, '\u{1F44D} By', 'the lead comes before the picture, never between picture and name');
-  assert.equal(lines[1].columns[0].items[0].url, PLACEHOLDER_AVATAR);
+  assert.equal(lines[1].columns[0].items[0].url, fallbackAvatar(lines[1].columns[0].items[0].altText));
   assert.equal(lines[0].columns.at(-1).width, 'auto', 'inside the flow a name sizes to its text and wraps when needed');
   assert.equal(row.columns[0].verticalContentAlignment, 'Top', 'the label stays with the first line');
   const single = userRow('Author', [{ name: 'Alice Example', avatar: URI }], { labelWidth: '112px' });
