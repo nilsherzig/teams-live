@@ -142,7 +142,7 @@ test('an in-place refresh keeps the last known totals of the same head commit wh
 
 test('the merge request title is one size larger than other cards and is a wrapping click target', () => {
   const card = buildMergeRequestCard({ ...base, diffStats: { additions: 42, deletions: 7 } });
-  const [head, titleBox, subtitle] = card.body[0].items;
+  const [head, titleBox] = card.body[0].items;
   // Plain text in a clickable container: no Markdown link, so no underline.
   assert.equal(titleBox.type, 'Container');
   assert.deepEqual(titleBox.selectAction, { type: 'Action.OpenUrl', url: 'https://gitlab.example.com/x' });
@@ -151,8 +151,6 @@ test('the merge request title is one size larger than other cards and is a wrapp
   assert.equal(title.weight, 'Bolder');
   assert.equal(title.wrap, true);
   assert.equal(title.text, 'Example');
-  assert.equal(subtitle.text, 'group/app');
-  assert.equal(subtitle.size, 'Small', 'the project subtitle keeps its hierarchy');
   assert.equal(head.type, 'ColumnSet', 'the header, with its counts, is untouched');
   assert.equal(texts(headerBlock(card)), 'GitLab · Merge request  +42 −7');
   const job = buildJobCard({ name: 'build', project: 'group/app', url: 'https://gitlab.example.com/j', status: 'success' });

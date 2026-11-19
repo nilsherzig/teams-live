@@ -59,14 +59,14 @@ function factSet(facts) {
  * `factBlocks` can render a picture row. `avatars` maps a name to a data URI.
  * Compact rows also render placeholder pictures when no photo is available.
  */
-function personFact(title, text, names, avatars, headline = '', pill = null, compact = false, viaBot = []) {
+function personFact(title, text, names, avatars, headline = '', pill = null, compact = false, viaBot = [], profiles = null) {
   const marked = new Set((viaBot || []).map((n) => String(n).toLowerCase()));
   const has = (name) => avatars && Object.hasOwn(avatars, name) && avatars[name];
   if (!compact && !names.some(has)) {
     // Nobody has a picture: the pill is still shown, as a badge row with the names as text after it.
     return pill ? [title, text, { badge: pill, trail: names.join(', ') }] : [title, text];
   }
-  return [title, text, { headline, pill, compact, people: names.map((name) => ({ name, avatar: has(name) ? avatars[name] : undefined, viaBot: marked.has(String(name).toLowerCase()) })) }];
+  return [title, text, { headline, pill, compact, people: names.map((name) => ({ name, avatar: has(name) ? avatars[name] : undefined, viaBot: marked.has(String(name).toLowerCase()), profile: profiles?.[name] || null })) }];
 }
 
 /**
@@ -676,8 +676,8 @@ export function buildMergeRequestCard(mr, { compact = false } = {}) {
     titleSize: 'Large',
     titleAsAction: true,
     ref: numericReference('!', mr.iid, mr.url),
-    // The compact card has no project line: the repository icon in the header links to the project.
-    subtitle: compact ? null : mr.project,
+    // No project line under the title: the repository icon in the header links to the project.
+    subtitle: null,
     subtitleUrl: projectUrlOf(mr.url),
     // Both cards: a repository icon in the header, linking to the project.
     headerExtra: [repoIconColumn(projectUrlOf(mr.url))].filter(Boolean),
@@ -685,10 +685,10 @@ export function buildMergeRequestCard(mr, { compact = false } = {}) {
     stats: mr.diffStats,
     facts: [
       ['Status', statusLabel, { badge, trail }],
-      author ? personFact('Author', author, [author], mr.avatars) : ['Author', ''],
+      author ? personFact('Author', author, [author], mr.avatars, '', null, false, [], mr.profiles) : ['Author', ''],
       approved === true && approvers.length > 0
         ? // With the pill, the "👍 By" lead is not needed: the pill says what the people did.
-          personFact('Approval', approval, approvers.map(str), mr.avatars, approvalPill ? '' : '👍 By', approvalPill, approvers.length > 1, mr.approvedVia)
+          personFact('Approval', approval, approvers.map(str), mr.avatars, approvalPill ? '' : '👍 By', approvalPill, approvers.length > 1, mr.approvedVia, mr.profiles)
         : approvalPill
           ? ['Approval', approval, { badge: approvalPill, trail: '' }]
           : ['Approval', approval],
@@ -812,7 +812,7 @@ export function buildJiraIssueCard(issue) {
     facts: [
       ['Status', status ? `${jiraStatusIcon(status, category)} ${status}` : ''],
       ['Priority', `${jiraPriorityIcon(issue.priority)} ${priority}`],
-      personFact('Assignee', issue.assignee || 'Unassigned', issue.assignee ? [str(issue.assignee)] : [], issue.avatars),
+      personFact('Assignee', issue.assignee || 'Unassigned', issue.assignee ? [str(issue.assignee)] : [], issue.avatars, '', null, false, [], issue.profiles),
     ],
     fallbackText: issue.fallbackText,
   });
@@ -866,7 +866,7 @@ export function buildOpsGenieAlertCard(alert) {
     facts: [
       ['Priority', `${OPSGENIE_PRIORITY_ICONS[priority.toUpperCase()] || '⚠️'} ${priority}`],
       ['Status', `${statusIcon} ${alert.status || 'open'} (${alert.acknowledged ? 'acknowledged' : 'unacknowledged'})`],
-      personFact('Owner', alert.owner || 'Unassigned', alert.owner ? [str(alert.owner)] : [], alert.avatars),
+      personFact('Owner', alert.owner || 'Unassigned', alert.owner ? [str(alert.owner)] : [], alert.avatars, '', null, false, [], alert.profiles),
     ],
     fallbackText: alert.fallbackText,
   });

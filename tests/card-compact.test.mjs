@@ -26,10 +26,10 @@ const items = (card) => card.body[0].items;
 const labels = (card) => JSON.stringify(card).match(/"text":"(Status|Author|Approval|Pipeline|Merge|Ticket|Rebase|Auto-merge)"/g)?.map((m) => m.slice(8, -1)) ?? [];
 const images = (card, alt) => JSON.stringify(card).split(`"altText":"${alt}"`).length - 1;
 
-test('the regular card keeps its rows and project line, with the repository icon and the auto-merge icon', () => {
+test('the regular card keeps its rows, with the repository icon, no project line and the auto-merge icon', () => {
   const card = buildMergeRequestCard(MR);
   assert.deepEqual(labels(card), ['Status', 'Author', 'Approval', 'Pipeline', 'Auto-merge', 'Ticket']);
-  assert.ok(JSON.stringify(card).includes('"text":"example-group/example-project"'), 'the project line stays');
+  assert.equal(JSON.stringify(card).includes('"text":"example-group/example-project"'), false, 'no project line');
   assert.equal(images(card, 'Repository'), 1);
   assert.equal(images(card, 'Auto-merge enabled'), 1);
   assert.equal(images(buildMergeRequestCard({ ...MR, autoMerge: false }), 'Auto-merge disabled'), 1);
@@ -115,8 +115,9 @@ test('the watcher builds the compact card only when teams.compact_cards is true'
     );
     return watcher.buildMrCard({ project: 'group/app', iid: 7, title: 'Example' }, { title: 'Example', author: 'Alice Example', approved: false, autoMerge: false });
   };
-  const projectLine = (card) => JSON.stringify(card).includes('"text":"group/app"');
-  assert.equal(projectLine(build({ rich_messages: true, compact_cards: true })), false);
-  assert.equal(projectLine(build({ rich_messages: true })), true, 'the classic card without the setting (the default comes from the config loader)');
-  assert.equal(projectLine(build({ rich_messages: true, compact_cards: false })), true);
+  // The compact grid is one ColumnSet whose columns hold the fact rows; the classic card's rows hold a label and a value.
+  const compactGrid = (card) => card.body[0].items[2].columns?.[0]?.items?.[0]?.type === 'ColumnSet';
+  assert.equal(compactGrid(build({ rich_messages: true, compact_cards: true })), true);
+  assert.equal(compactGrid(build({ rich_messages: true })), false, 'the classic card without the setting (the default comes from the config loader)');
+  assert.equal(compactGrid(build({ rich_messages: true, compact_cards: false })), false);
 });

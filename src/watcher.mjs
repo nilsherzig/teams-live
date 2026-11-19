@@ -38,7 +38,7 @@ import {
   stripTruncatedUrlText,
   teamsMessageLink,
 } from './message-links.mjs';
-import { buildApprovalNote } from './approval-note.mjs';
+import { buildApprovalNote, teamsUserLink } from './approval-note.mjs';
 import {
   buildMergeRequestCard,
   buildJobCard,
@@ -2664,6 +2664,32 @@ export class MergeRequestWatcher {
     }
   }
 
+  /**
+   * Where a click on a person's picture goes and what hovering shows, by name: the Teams chat with the person
+   * when the directory knows them, else their GitLab profile. The hover text is their name, job title,
+   * department, e-mail address and GitLab user name, as far as the directory has them. Nobody the directory does
+   * not know (a bot) gets an entry.
+   */
+  cardProfiles(data) {
+    const profiles = {};
+    if (!this.userDirectory || this.suppressAvatars) return profiles;
+    for (const name of collectCardPeople(data)) {
+      let user = null;
+      try {
+        user = this.userDirectory.findUser(name);
+      } catch {
+        user = null;
+      }
+      if (!user) continue;
+      const gitlabUser = [...(user.explicitGitlabUsernames || [])][0] || '';
+      const url = teamsUserLink(user.mri) || (gitlabUser && this.gitlab?.host ? `https://${this.gitlab.host}/${encodeURIComponent(gitlabUser)}` : '');
+      if (!url) continue;
+      const lines = [user.displayName || name, user.jobTitle, user.department, user.email, gitlabUser ? `@${gitlabUser}` : ''].filter(Boolean);
+      profiles[name] = { url, tooltip: [...new Set(lines)].join('\n') };
+    }
+    return profiles;
+  }
+
   /** Pictures already fetched for the people in `data` (never starts a request), by name. */
   cardAvatars(data) {
     const avatars = {};
@@ -2778,6 +2804,7 @@ export class MergeRequestWatcher {
       autoMergeUser: mrDetails?.autoMergeUser,
       author: this.mrCardAuthor(mr, mrDetails),
       avatars: this.cardAvatars(this.mrCardPeopleData(mr, mrDetails)),
+      profiles: this.cardProfiles(this.mrCardPeopleData(mr, mrDetails)),
       pipeline,
       // "none"/"unknown" only when this card's details are the ones that found no pipeline.
       pipelineKnown:
@@ -3507,7 +3534,7 @@ export class MergeRequestWatcher {
   async handleJiraIssueComment(entry, issue, issueData) {
     await this.prefetchAvatars(issueData);
     const msg = this.richMessage(this.formatJiraIssueMessage(issueData), () =>
-      buildJiraIssueCard({ ...issueData, avatars: this.cardAvatars(issueData) })
+      buildJiraIssueCard({ ...issueData, avatars: this.cardAvatars(issueData), profiles: this.cardProfiles(issueData) })
     );
     const issueUrl = issueData?.url || issue?.url;
 
@@ -3544,7 +3571,7 @@ export class MergeRequestWatcher {
     const alertCard = { ...alertData, owner: this.opsGenieOwnerText(alertData) };
     await this.prefetchAvatars(alertCard);
     const msg = this.richMessage(this.formatOpsGenieAlertMessage(alertData), () =>
-      buildOpsGenieAlertCard({ ...alertCard, avatars: this.cardAvatars(alertCard) })
+      buildOpsGenieAlertCard({ ...alertCard, avatars: this.cardAvatars(alertCard), profiles: this.cardProfiles(alertCard) })
     );
     const alertUrl = alertData?.url || alert?.url;
 
@@ -7344,7 +7371,7 @@ export class MergeRequestWatcher {
       const issue = await this.jira.getIssue(key);
       await this.prefetchAvatars(issue);
       const text = this.richMessage(this.formatJiraIssueMessage(issue), () =>
-        buildJiraIssueCard({ ...issue, avatars: this.cardAvatars(issue) })
+        buildJiraIssueCard({ ...issue, avatars: this.cardAvatars(issue), profiles: this.cardProfiles(issue) })
       );
       await sendReply(event.conversationId, event, text);
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});

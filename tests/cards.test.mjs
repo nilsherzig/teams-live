@@ -358,7 +358,7 @@ test('cards never contain empty facts', () => {
 
 test('every card has a compact branded header: logo plus "Service - kind"', () => {
   const cases = [
-    [buildMergeRequestCard({ ...baseMr, state: 'open' }), 'GitLab', 'GitLab \u00b7 Merge request', 'group/project'],
+    [buildMergeRequestCard({ ...baseMr, state: 'open' }), 'GitLab', 'GitLab \u00b7 Merge request', undefined],
     [buildJobCard({ id: 5, name: 'build', status: 'failed', project: 'group/project' }), 'GitLab', 'GitLab \u00b7 CI job', 'group/project'],
     [buildPipelineCard({ id: 9, status: 'success', project: 'group/project' }), 'GitLab', 'GitLab \u00b7 Pipeline', undefined],
     [buildJiraIssueCard({ key: 'EX-1', summary: 'S', issueType: 'Story', status: 'Open' }), 'Jira', 'Jira \u00b7 \u{1F4D6} Story', undefined],
@@ -860,7 +860,7 @@ test('header identifier slot: large bold right-aligned linked reference per enti
 
 test('header identifier slot: semantic context stays when the repeated identifier subtitle goes', () => {
   const mr = buildMergeRequestCard({ ...baseMr, state: 'open', targetBranch: 'main', pipeline: { id: 7, status: 'success' } });
-  assert.equal(subtitle(mr), 'group/project');
+  assert.equal(subtitle(mr), undefined, 'no project line: the header icon links to the project');
   assert.equal(facts(mr).Target, undefined);
   assert.equal(facts(mr).Pipeline, 'Passed (#7)');
   const job = buildJobCard({ id: 5, name: 'build', status: 'failed', project: 'group/project', stage: 'test', ref: 'main' });
@@ -1006,26 +1006,23 @@ test('merge request titles are click targets, not underlined Markdown links', ()
   assert.equal(titleNode(buildJiraIssueCard({ key: 'EX-1', summary: 'Broken', url: 'https://jira.example.com/browse/EX-1' })).type, 'TextBlock');
 });
 
-test('merge request title is accent coloured and the project name is a click target that looks the same', () => {
+test('merge request title is accent coloured; the project is a repository icon in the header, not a line', () => {
   const mrUrl = 'https://gitlab.example.com/group/project/-/merge_requests/7';
   const card = buildMergeRequestCard({ ...baseMr, url: mrUrl, project: 'group/project' });
   assertValidCard(card);
-  const [, title, sub] = items(card);
+  const [head, title, next] = items(card);
   assert.equal(title.items[0].color, 'Accent');
   assert.equal(title.items[0].weight, 'Bolder');
-  // The project line: a container with the project page, around the unchanged subtle small block.
-  assert.equal(sub.type, 'Container');
-  assert.deepEqual(sub.selectAction, { type: 'Action.OpenUrl', url: 'https://gitlab.example.com/group/project' });
-  assert.equal(sub.spacing, 'None', 'the container takes the spacing');
-  assert.deepEqual(sub.items, [{ type: 'TextBlock', text: 'group/project', wrap: true, isSubtle: true, size: 'Small' }]);
+  assert.equal(JSON.stringify([title, next]).includes('"text":"group/project"'), false, 'no project line under the title');
+  const repo = head.columns.find((c) => c.items?.[0]?.altText === 'Repository');
+  assert.deepEqual(repo.selectAction, { type: 'Action.OpenUrl', url: 'https://gitlab.example.com/group/project' });
   // Nested groups and a sub-path instance keep their full project path.
   const nested = buildMergeRequestCard({ ...baseMr, url: 'https://gitlab.example.com/gitlab/group/sub/app/-/merge_requests/3?x=1#note_2' });
-  assert.equal(items(nested)[2].selectAction.url, 'https://gitlab.example.com/gitlab/group/sub/app');
-  // No project URL can be derived: the subtitle stays the plain block it was.
+  assert.equal(items(nested)[0].columns.find((c) => c.items?.[0]?.altText === 'Repository').selectAction.url, 'https://gitlab.example.com/gitlab/group/sub/app');
+  // No project URL can be derived: no repository icon.
   for (const url of [undefined, 'https://gitlab.example.com/x', 'javascript:alert(1)', 'https://gitlab.example.com/group/project/-/issues/1']) {
-    const plain = items(buildMergeRequestCard({ ...baseMr, url, project: 'group/project' }))[2];
-    assert.equal(plain.type, 'TextBlock', String(url));
-    assert.equal(plain.spacing, 'None');
+    const plain = items(buildMergeRequestCard({ ...baseMr, url, project: 'group/project' }))[0];
+    assert.equal(plain.columns.some((c) => c.items?.[0]?.altText === 'Repository'), false, String(url));
   }
   // Other cards keep their plain subtitles.
   assert.equal(items(buildJobCard({ name: 'j', status: 'failed', project: 'group/project', url: 'https://gitlab.example.com/-/jobs/5' }))[2].type, 'TextBlock');

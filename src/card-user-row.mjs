@@ -52,22 +52,36 @@ function textColumn(content, extra = {}, width = 'auto', spacing = undefined) {
  * margin for the badge, shown without the card's circular crop and larger by that margin, so the
  * picture itself keeps the size of every other picture.
  */
-export function pictureItem(name, dataUri, { badged = false } = {}) {
+export function pictureItem(name, dataUri, { badged = false, profile = null } = {}) {
   const badgedUri = badged ? badgeAvatar(dataUri) : null;
+  // A click opens the person's profile; the tooltip is what the client shows on hover. Neither changes how the picture looks.
+  const action = profileAction(profile);
   if (badgedUri) {
     const px = `${badgedDisplayPx(AVATAR_PX)}px`;
-    return { type: 'Image', url: badgedUri, altText: `${name} (approved via the MS Teams bot)`, width: px, height: px };
+    return { type: 'Image', url: badgedUri, altText: `${name} (approved via the MS Teams bot)`, width: px, height: px, ...action };
   }
-  return { type: 'Image', url: dataUri, altText: name, style: 'Person', width: `${AVATAR_PX}px`, height: `${AVATAR_PX}px` };
+  return { type: 'Image', url: dataUri, altText: name, style: 'Person', width: `${AVATAR_PX}px`, height: `${AVATAR_PX}px`, ...action };
 }
 
-export function avatarColumn(name, dataUri, width = 'auto', { badged = false, spacing = undefined } = {}) {
+/** `{ selectAction }` for a profile `{ url, tooltip }` with an http(s) URL; nothing otherwise. */
+function profileAction(profile) {
+  let url = '';
+  try {
+    const parsed = new URL(String(profile?.url ?? ''));
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') url = parsed.href;
+  } catch {}
+  if (!url) return {};
+  const tooltip = text(profile.tooltip);
+  return { selectAction: { type: 'Action.OpenUrl', url, ...(tooltip ? { tooltip } : {}) } };
+}
+
+export function avatarColumn(name, dataUri, width = 'auto', { badged = false, spacing = undefined, profile = null } = {}) {
   return {
     type: 'Column',
     width,
     ...(spacing ? { spacing } : {}),
     verticalContentAlignment: 'Center',
-    items: [pictureItem(name, dataUri, { badged })],
+    items: [pictureItem(name, dataUri, { badged, profile })],
   };
 }
 
@@ -100,10 +114,10 @@ function pictureSpacer() {
  * BEFORE the pair, so it never separates a picture from its name. In compact
  * mode only the picture is shown, with initials inside placeholder pictures.
  */
-export function personChip({ name, avatar, viaBot = false }, { lead = '', compact = false, stretch = false, textStyle = {} } = {}) {
+export function personChip({ name, avatar, viaBot = false, profile = null }, { lead = '', compact = false, stretch = false, textStyle = {} } = {}) {
   const columns = [];
   if (lead) columns.push(textColumn(lead, textStyle, 'auto'));
-  if (avatar) columns.push(avatarColumn(name, avatar, stretch ? `${viaBot ? badgedDisplayPx(AVATAR_PX) : AVATAR_PX}px` : 'auto', { badged: viaBot }));
+  if (avatar) columns.push(avatarColumn(name, avatar, stretch ? `${viaBot ? badgedDisplayPx(AVATAR_PX) : AVATAR_PX}px` : 'auto', { badged: viaBot, profile }));
   else if (!compact) columns.push(pictureSpacer());
   if (!compact) {
     columns.push(gapColumn(avatar && viaBot ? NAME_GAP_PX - BADGE_MARGIN_PX : NAME_GAP_PX));
@@ -112,7 +126,8 @@ export function personChip({ name, avatar, viaBot = false }, { lead = '', compac
     columns.push(gapColumn());
     columns.push(textColumn(nameInitials(name), textStyle, 'auto', 'None'));
   }
-  return { type: 'ColumnSet', columns };
+  // The whole chip (picture and name, or just the picture when no name is shown) opens the profile and hovers.
+  return { type: 'ColumnSet', columns, ...profileAction(profile) };
 }
 
 /**
@@ -210,7 +225,7 @@ export function planCardAvatars(people, budget = MAX_AVATAR_CHARS_PER_CARD) {
 export function userRow(label, people, { headline = '', pill = null, compact = false, charBudget = MAX_AVATAR_CHARS_PER_CARD, labelWidth = 'auto', avatarPlan = null } = {}) {
   const validPeople = (people || []).filter((person) => text(person?.name));
   const selectAvatar = avatarPlan || planCardAvatars(validPeople.map((person) => ({ ...person, compact })), charBudget);
-  const entries = validPeople.map((person) => ({ name: text(person.name), avatar: selectAvatar(person.name), viaBot: person.viaBot === true }));
+  const entries = validPeople.map((person) => ({ name: text(person.name), avatar: selectAvatar(person.name), viaBot: person.viaBot === true, profile: person.profile || null }));
   const used = entries.reduce((total, entry) => total + (entry.avatar?.length || 0), 0);
   if (!entries.some((entry) => entry.avatar) && !compact) return null;
   const lead = text(headline);
