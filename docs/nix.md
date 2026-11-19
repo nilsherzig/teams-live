@@ -375,6 +375,8 @@ order:
    spaces; the file must be a PNG or JPEG of at most 2400 bytes and 128 px (a 32 px PNG is
    about 2 KB). It is read
    once at start; an unreadable or oversized file is skipped with a warning.
+   Renovate's account ("Renovate Service User", "Renovate Bot") has a built-in
+   picture, the Renovate logo; a configured picture for the same name replaces it.
 5. **Placeholder**: a neutral silhouette.
 
 Fallback and configured pictures are held to 2400 bytes because a card has one
