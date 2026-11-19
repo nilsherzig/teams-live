@@ -159,7 +159,7 @@ test('MR status card: in-place updates carry the new approval, auto-merge and re
   const [required, resolved] = calls.map((c) => cardOf(c.args[4]));
   assert.equal(calls[0].args[1], '1700000000005');
   // Rebase required: the line states the reason and the GitLab status.
-  assert.equal(factsOf(required).Rebase, '⚠️ Required: merge conflicts (status: need_rebase)');
+  assert.equal(factsOf(required).Rebase, '⚠️ Required: merge conflicts');
   // Resolved: the line is gone, approval and auto-merge changed in place.
   const f = factsOf(resolved);
   assert.equal(f.Rebase, undefined);
@@ -181,7 +181,7 @@ test('MR rebase comment: required keeps the reason, resolved is conflict-free an
   assert.deepEqual(calls.map((c) => c.kind), ['send', 'edit']);
   const [required, resolved] = [cardOf(calls[0].args[2]), cardOf(calls[1].args[4])];
   assert.equal(factsOf(required).Status, 'Open ⚠️ Rebase required');
-  assert.equal(factsOf(required).Rebase, '⚠️ Required: behind target branch (status: need_rebase)');
+  assert.equal(factsOf(required).Rebase, '⚠️ Required: behind target branch');
   assert.equal(factsOf(resolved).Status, 'Open ✅ Rebased, up to date and conflict-free');
   assert.equal(factsOf(resolved).Rebase, undefined);
   assert.equal(factsOf(resolved).Approval, 'Approved');

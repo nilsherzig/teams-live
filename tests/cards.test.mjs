@@ -584,7 +584,7 @@ test('merge request card: rebase line only when required, with its reason and st
   assert.equal(facts(buildMergeRequestCard({ ...baseMr, state: 'open' })).Rebase, undefined);
 
   const behind = facts(buildMergeRequestCard({ ...baseMr, state: 'open', needsRebase: true, detailedMergeStatus: 'need_rebase' }));
-  assert.equal(behind.Rebase, '\u26a0\ufe0f Required: behind target branch (status: need_rebase)');
+  assert.equal(behind.Rebase, '\u26a0\ufe0f Required: behind target branch');
   const conflicts = facts(buildMergeRequestCard({ ...baseMr, state: 'open', needsRebase: true, hasConflicts: true }));
   assert.equal(conflicts.Rebase, '\u26a0\ufe0f Required: merge conflicts');
 

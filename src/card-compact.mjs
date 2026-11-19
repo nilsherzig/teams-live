@@ -92,7 +92,8 @@ export function compactMrFacts(blocks) {
   });
   const known = new Set(['Status', 'Approval', 'Pipeline', 'Author', 'Merge', 'Ticket', 'Rebase']);
   const rebase = rowOf(blocks, 'Rebase');
-  const rebaseText = rebase?.columns?.[1]?.items?.[0]?.text;
+  // The line has no label of its own, so it names the rebase: "⚠️ Rebase required: behind target branch".
+  const rebaseText = rebase?.columns?.[1]?.items?.[0]?.text?.replace('Required:', 'Rebase required:');
   const rest = blocks.filter((b) => !(b?.type === 'ColumnSet' && known.has(b.columns?.[0]?.items?.[0]?.text)));
   return [
     { type: 'ColumnSet', spacing: 'Medium', columns: [column(['Status', 'Approval', 'Pipeline']), column(['Author', 'Merge', 'Ticket'])] },

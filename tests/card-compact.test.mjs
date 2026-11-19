@@ -91,7 +91,8 @@ test('the rebase warning is a line of its own and only when needed', () => {
   const behind = buildMergeRequestCard({ ...MR, needsRebase: true }, { compact: true });
   const warning = items(behind)[3];
   assert.equal(warning.type, 'TextBlock');
-  assert.match(warning.text, /Required: behind target branch/);
+  assert.equal(warning.text, '\u26a0\ufe0f Rebase required: behind target branch');
+  assert.equal(JSON.stringify(behind).includes('status:'), false, 'the merge status is not repeated');
 });
 
 test('merged and closed cards stay valid and keep their buttons rules', () => {

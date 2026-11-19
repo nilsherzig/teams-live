@@ -656,7 +656,8 @@ export function buildMergeRequestCard(mr, { compact = false } = {}) {
 
   let rebase = '';
   if (rebaseRequired && state !== 'merged') {
-    rebase = `⚠️ Required: ${reason}${mr.detailedMergeStatus ? ` (status: ${mr.detailedMergeStatus})` : ''}`;
+    // The merge status is not repeated: the status row already says where the merge request stands.
+    rebase = `⚠️ Required: ${reason}`;
   }
 
   const author = str(mr.author);
