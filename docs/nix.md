@@ -485,7 +485,7 @@ OAuth sign-in and learns the verified GitLab user name (scope `read_user`,
 authorization code with PKCE; the page never sees a password). The user is
 bound into the session and the confirmation form, may be limited with
 `allowed_users`, cannot be the author of the merge request, and is named in the
-merge request comment (`@user (signed in with GitLab)`). The action itself is
+merge request comment (`@user (signed in with GitLab)`). After the first sign-in a signed, HttpOnly cookie (30 days) remembers the user, so later links skip the sign-in; without it the confirmation page redirects straight to GitLab. The action itself is
 still made by the configured account.
 
 Set it up once: in GitLab, add an application (your profile, Applications; or a

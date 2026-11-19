@@ -64,11 +64,32 @@ const signIn = async ({ base, cookie }) => {
   return { start, location, back };
 };
 
-test('without a sign-in the page asks for one and offers no approval', async () => {
+test('without a sign-in the confirmation page sends the visitor straight to the sign-in', async () => {
   await withFlow({}, async (ctx) => {
-    const html = await (await fetch(`${ctx.base}/approve/confirm`, { headers: { Cookie: ctx.cookie } })).text();
-    assert.match(html, /Sign in with GitLab/);
-    assert.doesNotMatch(html, /name="csrf"/);
+    const res = await fetch(`${ctx.base}/approve/confirm`, { headers: { Cookie: ctx.cookie }, redirect: 'manual' });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), `${ORIGIN}/approve/oauth/start`);
+  });
+});
+
+test('a signed-in visitor stays signed in for the next link, and a forged cookie does not count', async () => {
+  await withFlow({}, async (ctx) => {
+    const { back } = await signIn(ctx);
+    const who = /tl_who=[^;]+/.exec(back.headers.get('set-cookie') || '')?.[0];
+    assert.ok(who, 'the sign-in leaves a remembered-user cookie');
+    assert.match(back.headers.get('set-cookie'), /HttpOnly/);
+    const open = async (extra) => {
+      const { token } = ctx.server.store.linkFor({ project: 'group/app', iid: 8, sha: SHA, action: 'approve' });
+      const boot = await fetch(`${ctx.base}/approve/session`, { method: 'POST', headers: { ...FORM, Origin: ORIGIN, ...(extra ? { Cookie: extra } : {}) }, body: new URLSearchParams({ token }).toString() });
+      return /tl_approve=[^;]+/.exec(boot.headers.get('set-cookie'))[0];
+    };
+    const next = await open(who);
+    const page = await (await fetch(`${ctx.base}/approve/confirm`, { headers: { Cookie: next } })).text();
+    assert.match(page, /Signed in with GitLab as <code>alice<\/code>/);
+    const forged = who.replace(/.$/, (c) => (c === 'A' ? 'B' : 'A'));
+    const other = await open(forged);
+    const res = await fetch(`${ctx.base}/approve/confirm`, { headers: { Cookie: other }, redirect: 'manual' });
+    assert.equal(res.status, 302);
   });
 });
 

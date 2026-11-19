@@ -84,6 +84,8 @@ const APPROVED_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const REFRESH_TIMEOUT_MS = 15_000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const COOKIE_NAME = 'tl_approve';
+const WHO_COOKIE = 'tl_who';
+const WHO_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const ACTIONS = ['approve', 'reopen', 'merge'];
 const LIVE_CACHE_MS = 3000;
 const MERGE_POLL_MS = 2000;
@@ -893,6 +895,9 @@ export class ApproveServer {
     if (record.status !== 'open') return reply(410, 'used or superseded');
     if (!this.allowBootstrap(record)) return reply(429, 'too many attempts', { 'Retry-After': '60' });
     const { sid, maxAge } = this.openSession(record);
+    // A signed-in visitor stays signed in for the next links: the signed cookie of an earlier sign-in.
+    const remembered = this.rememberedUser(req);
+    if (remembered) this.sessions.get(sha256Hex(sid)).user = remembered;
     return reply(200, 'ok', { 'Set-Cookie': this.cookie(sid, maxAge) });
   }
 
@@ -1093,10 +1098,38 @@ export class ApproveServer {
     return '';
   }
 
-  signInPage(res, record) {
-    const kind = kindOf(record);
-    const body = `<p>To continue, sign in with GitLab. The page only learns your GitLab user name; it never sees your password.</p><p class="links"><a class="btn" href="${escapeHtml(`${this.origin}${this.basePath}/oauth/start`)}">Sign in with GitLab</a></p>`;
-    return this.send(res, 200, this.page('Sign in with GitLab', body, { tone: 'neutral', kind }));
+  /** No identity yet: straight on to GitLab (it skips its own prompts for a signed-in, authorized user). */
+  signInPage(res) {
+    res.writeHead(302, this.headers({ Location: `${this.origin}${this.basePath}/oauth/start` }));
+    res.end();
+  }
+
+  whoKey() {
+    return crypto.createHmac('sha256', 'teams-live approve identity').update(this.oauth.clientSecret).digest();
+  }
+
+  /** The signed 30-day cookie that remembers who signed in: `<payload>.<mac>`, payload base64url JSON. */
+  whoCookie(user) {
+    const payload = Buffer.from(JSON.stringify({ id: user.id, u: user.username, n: user.name, e: this.now() + WHO_TTL_MS })).toString('base64url');
+    const mac = crypto.createHmac('sha256', this.whoKey()).update(payload).digest('base64url');
+    return `${WHO_COOKIE}=${payload}.${mac}; Path=${this.basePath || '/'}; Max-Age=${Math.floor(WHO_TTL_MS / 1000)}; HttpOnly; SameSite=Strict${this.secure ? '; Secure' : ''}`;
+  }
+
+  /** The user of a valid remembered sign-in, or null. */
+  rememberedUser(req) {
+    if (!this.oauth) return null;
+    const raw = parseCookies(req.headers.cookie)[WHO_COOKIE];
+    const [payload, mac] = typeof raw === 'string' ? raw.split('.') : [];
+    if (!payload || !mac) return null;
+    const want = crypto.createHmac('sha256', this.whoKey()).update(payload).digest('base64url');
+    if (!safeEqual(mac, want)) return null;
+    try {
+      const d = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+      if (!d?.id || typeof d.u !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(d.u) || !(d.e > this.now())) return null;
+      return { id: d.id, username: d.u, name: typeof d.n === 'string' ? d.n : d.u };
+    } catch {
+      return null;
+    }
   }
 
   oauthRedirectUri() {
@@ -1152,7 +1185,7 @@ export class ApproveServer {
     }
     session.user = user;
     const next = `${this.basePath}/confirm`;
-    return this.send(res, 200, this.page('Signed in', `<meta http-equiv="refresh" content="0;url=${escapeHtml(next)}"><p>Signed in as <code>${escapeHtml(user.username)}</code>.</p><p class="links"><a class="btn" href="${escapeHtml(next)}">Continue</a></p>`, { tone: 'ok' }));
+    return this.send(res, 200, this.page('Signed in', `<meta http-equiv="refresh" content="0;url=${escapeHtml(next)}"><p>Signed in as <code>${escapeHtml(user.username)}</code>.</p><p class="links"><a class="btn" href="${escapeHtml(next)}">Continue</a></p>`, { tone: 'ok' }), { extra: { 'Set-Cookie': this.whoCookie(user) } });
   }
 
   /** Trades the code for a token and reads the user it belongs to. The token is dropped right away. */
@@ -1267,7 +1300,7 @@ export class ApproveServer {
 
   async showConfirmation(res, session) {
     const { sid, record } = session;
-    if (this.oauth && !session.user) return this.signInPage(res, record);
+    if (this.oauth && !session.user) return this.signInPage(res);
     const result = await this.evaluateCached(record);
     await this.refreshApprovals(record);
     if (result.status === 'used') {
