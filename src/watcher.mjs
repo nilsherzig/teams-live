@@ -1887,6 +1887,18 @@ export class MergeRequestWatcher {
     this.approveFlow = flow || null;
   }
 
+  /** The picture of a person for the approval pages: the cached photo, else their initials (as on the cards). */
+  webAvatarOf(name) {
+    const photo = this.avatarService && !this.suppressAvatars ? this.avatarService.peek(name) : null;
+    return isImageDataUri(photo) && photo !== PLACEHOLDER_AVATAR ? photo : fallbackAvatar(name);
+  }
+
+  /** Loads the photos of the people an approval page shows (bounded by the picture service). */
+  async webAvatarWarm(names) {
+    if (!this.avatarService || this.suppressAvatars) return;
+    await this.avatarService.avatarsFor(names);
+  }
+
   /**
    * Link to the approval confirmation page, or null when the button must not
    * be shown: flow disabled, rich mode off, not a live open merge request,

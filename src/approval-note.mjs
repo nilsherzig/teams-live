@@ -17,7 +17,8 @@ const clean = (value) => String(value ?? '').replace(/[@\r\n`*_[\]<>]/g, '').tri
 
 /**
  * @param {object} p
- * @param {'approved'|'revoked'} [p.action]
+ * @param {'approved'|'revoked'|'merged'|'rebased'|'reopened'} [p.action]
+ * @param {string} [p.button] the button's name for the trigger line ("Approve" by default; "Merge", "Rebase", "Reopen")
  * @param {{name?: string, gitlabUser?: string, mri?: string}} [p.requester] who asked, as far as known
  * @param {string} [p.requesterNote] replaces the requester when no person is known ("the card's Approve link ...")
  * @param {string} p.trigger  how: '/approve', '/approve all', '/revoke', '👍 reaction' or 'button'
@@ -26,9 +27,17 @@ const clean = (value) => String(value ?? '').replace(/[@\r\n`*_[\]<>]/g, '').tri
  * @param {string} [p.ip] the address the request came from, when it is known (the button's web page)
  * @param {string} [p.place] where that address is, as text (see geoip.mjs formatPlace), when it is known
  */
-export function buildApprovalNote({ action = 'approved', requester = {}, requesterNote = '', trigger, message = {}, ip = '', place = '' }) {
-  const revoked = action === 'revoked';
-  const title = revoked ? 'Approval revoked via Microsoft Teams' : 'Approved via Microsoft Teams';
+const WORDING = {
+  approved: { title: 'Approved via Microsoft Teams', footer: 'The approval was submitted' },
+  revoked: { title: 'Approval revoked via Microsoft Teams', footer: 'The approval was withdrawn' },
+  merged: { title: 'Merged via Microsoft Teams', footer: 'The merge was submitted' },
+  rebased: { title: 'Rebase requested via Microsoft Teams', footer: 'The rebase was requested' },
+  reopened: { title: 'Reopened via Microsoft Teams', footer: 'The merge request was reopened' },
+};
+
+export function buildApprovalNote({ action = 'approved', button = 'Approve', requester = {}, requesterNote = '', trigger, message = {}, ip = '', place = '' }) {
+  const wording = WORDING[action] || WORDING.approved;
+  const title = wording.title;
 
   const name = clean(requester.name) || 'someone';
   const chat = teamsUserLink(requester.mri);
@@ -39,7 +48,7 @@ export function buildApprovalNote({ action = 'approved', requester = {}, request
   const link = teamsMessageLink(message.conversationId, message.messageId);
   const where = link ? ` on [this Teams message](${link})` : '';
   let how;
-  if (trigger === 'button') how = link ? `Approve button on [this Teams card](${link})` : 'Approve button on a Teams card';
+  if (trigger === 'button') how = link ? `${clean(button) || 'Approve'} button on [this Teams card](${link})` : `${clean(button) || 'Approve'} button on a Teams card`;
   else if (trigger.startsWith('/')) how = `Command \`${trigger}\`${link ? ` in [this Teams message](${link})` : ''}`;
   else how = `${trigger}${where}`;
 
@@ -50,6 +59,6 @@ export function buildApprovalNote({ action = 'approved', requester = {}, request
     `- **Trigger:** ${how}`,
     ...(isIP(String(ip || '')) ? [`- **IP address:** \`${ip}\`${place ? ` · ${clean(place)}` : ''}`] : []),
     '',
-    `_The ${revoked ? 'approval was withdrawn' : 'approval was submitted'} by the MS Teams bot on the requester's behalf._`,
+    `_${wording.footer} by the MS Teams bot on the requester's behalf._`,
   ].join('\n');
 }

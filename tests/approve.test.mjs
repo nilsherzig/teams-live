@@ -255,7 +255,7 @@ test('the confirmation page needs a session, shows the account honestly and neve
     const res = await ctx.page(cookie);
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.match(html, /<form method="post" action="https:\/\/approve\.example\.com\/approve\/confirm"/);
+    assert.match(html, /<form method="post" data-act action="https:\/\/approve\.example\.com\/approve\/confirm"/);
     assert.match(html, /configured GitLab account/);
     assert.match(html, /not as you personally/);
     assert.equal(res.headers.get('cache-control'), 'no-store');
@@ -280,21 +280,22 @@ test('the pages are styled self-contained: state pills, tones, dark mode, no ext
     const res = await ctx.page(cookie);
     const html = await res.text();
     assert.match(html, /<main class="panel tone-neutral">/);
-    assert.match(html, /<span class="pill pill-open"><i aria-hidden="true"><\/i>Open<\/span>/);
-    assert.match(html, /<button class="btn" type="submit">Approve merge request<\/button>/);
+    assert.match(html, /<span class="pill pill-open"><img class="ic" src="data:image\/png;base64,[^"]+" alt="" width="16" height="16">Open<\/span>/, 'the GitLab state icon, then the state');
+    assert.match(html, /<button class="btn" type="submit" data-busy="Approving…">Approve merge request<\/button>/);
     assert.match(html, /prefers-color-scheme:dark/);
     assert.match(html, /<title>Approve merge request \u00b7 teams-live<\/title>/);
     assert.match(html, /Nothing here is GitLab itself/);
     // The merge request title is escaped, never markup.
-    assert.doesNotMatch(html, /<img/);
+    assert.equal(html.includes('<img src=x'), false, 'no markup from the title (the only images are the embedded icons)');
     assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; &amp; &quot;quoted&quot;/);
     // Nothing external: the only script is the live-status one (same origin, allowed by its hash), no src, link or import.
     assert.equal((html.match(/<script/g) || []).length, 1, 'one script');
     assert.match(html, /<script>\(function\(\)\{var U="\/approve\/state"/);
-    assert.doesNotMatch(html.replace(/<script>[\s\S]*?<\/script>/, ''), /<script|<[a-z][^>]*\ssrc=|<link|@import|url\(/);
+    // Pictures are embedded data URIs only (the CSP allows img-src data: and nothing else).
+    assert.doesNotMatch(html.replace(/<script>[\s\S]*?<\/script>/, '').replace(/<img [^>]*src="data:image\/[a-z]+;base64,[A-Za-z0-9+/=]+"[^>]*>/g, ''), /<script|<[a-z][^>]*\ssrc=|<link|@import|url\(/);
     assert.deepEqual(html.match(/https?:\/\/[^\s"'<>)]+/g), ['https://approve.example.com/approve/confirm']);
     const csp = res.headers.get('content-security-policy');
-    assert.match(csp, /default-src 'none'/);
+    assert.match(csp, /default-src 'none'; img-src data:;/);
     assert.match(csp, /script-src 'sha256-[A-Za-z0-9+/=]+'; connect-src 'self'/);
 
     // Drafts, closed and merged merge requests show their own pill (closed and merged burn the
@@ -1123,7 +1124,7 @@ test('a confirmed POST reopens a closed merge request once, uses the link up and
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.match(html, /<title>Reopen merge request · teams-live<\/title>/);
-    assert.match(html, /<button class="btn" type="submit">Reopen merge request<\/button>/);
+    assert.match(html, /<button class="btn" type="submit" data-busy="Reopening…">Reopen merge request<\/button>/);
     assert.match(html, /Reopen this merge request\?/);
     assert.match(html, /pill-closed/);
     assert.match(html, /not as you personally/);
@@ -1581,7 +1582,7 @@ test('a confirmed POST merges once, with only the head sha, uses the link up and
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.match(html, /<title>Merge merge request · teams-live<\/title>/);
-    assert.match(html, /<button class="btn" type="submit">Merge merge request<\/button>/);
+    assert.match(html, /<button class="btn" type="submit" data-busy="Merging…">Merge merge request<\/button>/);
     assert.match(html, /Merge this merge request\?/);
     assert.match(html, /configured GitLab account <code>owner<\/code>, not as you personally/);
     assert.match(html, /not bypassed/);
@@ -2307,7 +2308,7 @@ test('the page shows the merge request like GitLab does and links to it: title, 
     assert.ok(html.includes('href="https://git.example.com/group/app/-/pipelines/42"'), 'pipeline');
     assert.ok(html.includes(`href="https://git.example.com/group/app/-/commit/${SHA}"`), 'head commit');
     assert.match(html, /Running #42/);
-    assert.match(html, /1 of 1 required by MS Teams bot/);
+    assert.match(html, /1 of 1 required by <span class="person"><img class="av" src="data:image\/png;base64,[^"]+" alt="MS Teams bot" width="20" height="20">MS Teams bot<\/span>/, 'the approver with a picture (initials without a photo)');
     assert.match(html, /Pipeline running/);
   } finally {
     await ctx.server.stop();

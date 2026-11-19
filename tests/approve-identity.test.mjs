@@ -157,7 +157,9 @@ test('a fallback-only merge request is reopened and merged as the fallback accou
       const res = await confirm();
       assert.equal(res.status, 200);
       assert.match(res.html, /Reopened in GitLab/);
-      assert.deepEqual(writes(log).map((c) => c.token), ['second']);
+      // The reopen, then the comment about it: both as the fallback account.
+      assert.deepEqual(writes(log).map((c) => c.token), ['second', 'second']);
+      assert.deepEqual(writes(log).map((c) => c.method), ['PUT', 'POST']);
     } finally {
       globalThis.fetch = original;
     }

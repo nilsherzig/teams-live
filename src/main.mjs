@@ -293,6 +293,8 @@ async function main() {
         linkTtlSeconds: apCfg.link_ttl_seconds,
         mergeEnabled: apCfg.merge_enabled === true,
         rebaseEnabled: apCfg.rebase_enabled !== false,
+        avatarOf: (name) => watcher.webAvatarOf(name),
+        avatarWarm: (names) => watcher.webAvatarWarm(names),
         stateFile: path.join(config.gitlab.state_dir, 'approve-links.json'),
         refreshCards: (project, iid) => watcher.refreshMrCards(project, iid),
         locateCard: (project, iid) => watcher.mrCardMessage(project, iid),

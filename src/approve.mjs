@@ -112,6 +112,7 @@ const COPY = {
     footer: 'approvals are sent through the configured account.',
     question: 'Approve this merge request?',
     button: 'Approve merge request',
+    busy: 'Approving…',
   },
   reopen: {
     title: 'Reopen merge request',
@@ -120,6 +121,7 @@ const COPY = {
     footer: 'the reopen is sent through the configured account.',
     question: 'Reopen this merge request?',
     button: 'Reopen merge request',
+    busy: 'Reopening…',
   },
   merge: {
     title: 'Merge merge request',
@@ -128,6 +130,7 @@ const COPY = {
     footer: 'the merge is sent through the configured account.',
     question: 'Merge this merge request?',
     button: 'Merge merge request',
+    busy: 'Merging…',
   },
   rebase: {
     title: 'Rebase merge request',
@@ -136,6 +139,7 @@ const COPY = {
     footer: 'the rebase is sent through the configured account.',
     question: 'Rebase this merge request onto its target branch?',
     button: 'Rebase merge request',
+    busy: 'Rebasing…',
   },
   generic: { kicker: 'GitLab', footer: 'actions are sent through the configured account.' },
 };
@@ -568,6 +572,8 @@ export class ApproveServer {
     now = Date.now,
     mergeEnabled = false,
     rebaseEnabled = true,
+    avatarOf = null,
+    avatarWarm = null,
     mergePollMs = MERGE_POLL_MS,
     mergePollAttempts = MERGE_POLL_ATTEMPTS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -607,6 +613,9 @@ export class ApproveServer {
     this.mergeEnabled = mergeEnabled === true;
     // On unless switched off: a rebase rewrites no history the author did not already own, so it needs no opt-in.
     this.rebaseEnabled = rebaseEnabled !== false;
+    // (name) => picture data URI for a person, and (names) => Promise that loads their photos: from the watcher.
+    this.avatarOf = typeof avatarOf === 'function' ? avatarOf : null;
+    this.avatarWarm = typeof avatarWarm === 'function' ? avatarWarm : null;
     this.mergePollMs = mergePollMs;
     this.mergePollAttempts = Math.max(1, Number(mergePollAttempts) || 1);
     this.rebasePollMs = mergePollMs === MERGE_POLL_MS ? REBASE_POLL_MS : mergePollMs;
@@ -723,7 +732,8 @@ export class ApproveServer {
       'X-Frame-Options': 'DENY',
       'Referrer-Policy': 'same-origin',
       'Cross-Origin-Opener-Policy': 'same-origin',
-      'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; ${script ? `script-src '${script === 'live' ? this.liveHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
+      // img-src data: only: the pictures are embedded (card icons, profile pictures), never fetched.
+      'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'unsafe-inline'; ${script ? `script-src '${script === 'live' ? this.liveHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
       ...extra,
     };
   }
@@ -1134,7 +1144,8 @@ export class ApproveServer {
 
   summary(record, mr, user) {
     const kind = kindOf(record);
-    const lines = [renderSummary({ record, mr, approvals: this.lastApprovals.get(record.id) ?? null, host: this.gitlabHost, kind })];
+    const approvals = this.lastApprovals.get(record.id) ?? null;
+    const lines = [renderSummary({ record, mr, approvals, host: this.gitlabHost, kind, avatars: this.avatarsFor(mr, approvals) })];
     if (user) {
       const who = escapeHtml(user.username || user.name || user.id);
       lines.push(
@@ -1306,6 +1317,37 @@ export class ApproveServer {
     return promise;
   }
 
+  /** The people a page shows: the merge request's author and the approvers. */
+  peopleOf(mr, approvals) {
+    const names = [mr?.author?.name || mr?.author?.username, ...(Array.isArray(approvals?.approvedBy) ? approvals.approvedBy : [])];
+    return [...new Set(names.filter((n) => typeof n === 'string' && n.trim()))];
+  }
+
+  /** Pictures already known for those people (never starts a request); the page falls back to initials. */
+  avatarsFor(mr, approvals) {
+    const out = {};
+    if (!this.avatarOf) return out;
+    for (const name of this.peopleOf(mr, approvals)) {
+      try {
+        const uri = this.avatarOf(name);
+        if (uri) out[name] = uri;
+      } catch {
+        // a picture is a nicety
+      }
+    }
+    return out;
+  }
+
+  /** Loads the photos of those people (bounded by the picture service), before a page is drawn. */
+  async warmAvatars(mr, approvals) {
+    if (!this.avatarWarm) return;
+    try {
+      await this.avatarWarm(this.peopleOf(mr, approvals));
+    } catch {
+      // a picture is a nicety
+    }
+  }
+
   /** A JSON answer with the same hardening headers as the pages. */
   json(res, status, data) {
     const body = JSON.stringify(data);
@@ -1326,7 +1368,8 @@ export class ApproveServer {
       const { mr } = await this.readMr(record);
       const approvals = await this.refreshApprovals(record);
       const kind = kindOf(record);
-      return { slots: liveSlots({ kind, mr, approvals, host: this.gitlabHost }), actionable: liveState(kind, mr).actionable };
+      await this.warmAvatars(mr, approvals);
+      return { slots: liveSlots({ kind, mr, approvals, host: this.gitlabHost, avatars: this.avatarsFor(mr, approvals) }), actionable: liveState(kind, mr).actionable };
     })();
     const entry = { at: now, promise };
     this.liveCache.set(record.id, entry);
@@ -1378,6 +1421,7 @@ export class ApproveServer {
     if (this.oauth && !session.user) return this.signInPage(res);
     const result = await this.evaluateCached(record);
     await this.refreshApprovals(record);
+    await this.warmAvatars(result.mr, this.lastApprovals.get(record.id));
     if (result.status === 'used') {
       const u = this.usedPage(record);
       return this.send(res, u.code, this.page(u.title, u.body, { tone: toneForCode(u.code) }));
@@ -1389,7 +1433,9 @@ export class ApproveServer {
     }
     if (result.status === 'already') {
       const [alreadyTitle, alreadyBody] = this.alreadyPage(record, result);
-      return this.send(res, 200, this.page(alreadyTitle, alreadyBody + this.followLinks(record), { tone: 'ok', kind }));
+      // Up to date after a rebase link: the approval is the next step.
+      const offer = kind === 'rebase' ? await this.approveFollowUp(session) : '';
+      return this.send(res, 200, this.page(alreadyTitle, alreadyBody + offer + this.followLinks(record), { tone: 'ok', kind }));
     }
     const actor = actorOf(result);
     if (!actor) {
@@ -1399,7 +1445,7 @@ export class ApproveServer {
     if (denied) return this.send(res, 403, this.page(copy.blocked, `${this.summary(record, result.mr, result.user)}<p>${escapeHtml(denied)}</p>`, { tone: 'warn', kind }));
     // The shown account and credential travel with the form and are bound into the CSRF token.
     const token = this.csrf.issue(sid, record.id, this.bindOf(actor, session.user));
-    const form = `<div class="actions" data-live-action><form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><input type="hidden" name="user" value="${escapeHtml(actor.user)}"><input type="hidden" name="cred" value="${escapeHtml(actor.cred)}"><p>${copy.question}</p>${kind === 'rebase' ? `<p class="note">GitLab rebases the source branch onto the target branch and rewrites its commits, without a merge commit. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}${kind === 'merge' ? `<p class="note">Merges exactly the head commit above. Source-branch removal and squash follow the merge request's own settings. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}<button class="btn" type="submit">${copy.button}</button></form></div>`;
+    const form = `<div class="actions" data-live-action><form method="post" data-act action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><input type="hidden" name="user" value="${escapeHtml(actor.user)}"><input type="hidden" name="cred" value="${escapeHtml(actor.cred)}"><p>${copy.question}</p>${kind === 'rebase' ? `<p class="note">GitLab rebases the source branch onto the target branch and rewrites its commits, without a merge commit. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}${kind === 'merge' ? `<p class="note">Merges exactly the head commit above. Source-branch removal and squash follow the merge request's own settings. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}<button class="btn" type="submit" data-busy="${escapeHtml(copy.busy)}">${copy.button}</button></form></div>`;
     return this.send(res, 200, this.page(copy.title, `${this.summary(record, result.mr, result.user)}${this.whoHtml(session.user)}${form}`, { tone: 'neutral', kind }));
   }
 
@@ -1436,9 +1482,13 @@ export class ApproveServer {
   }
 
   async approve(req, res, session) {
-    const { sid, record } = session;
-    const kind = kindOf(record);
-    const nothing = { reopen: 'Nothing was reopened.', merge: 'Nothing was merged.', rebase: 'Nothing was rebased.', approve: 'Nothing was approved.' }[kind];
+    const { sid } = session;
+    // The record and kind this POST acts on. After a rebase, the page offers the approval of the new head
+    // (`follow=approve`): the rebase link's session then acts on that approval instead.
+    let record = session.record;
+    let kind = kindOf(record);
+    const nothingOf = (k) => ({ reopen: 'Nothing was reopened.', merge: 'Nothing was merged.', rebase: 'Nothing was rebased.', approve: 'Nothing was approved.' })[k];
+    let nothing = nothingOf(kind);
     if (!this.originAllowed(req)) {
       this.send(res, 403, this.page('Not allowed', `<p>The request did not come from the confirmation page. ${nothing}</p>`, { tone: 'warn', kind }));
       return;
@@ -1454,9 +1504,23 @@ export class ApproveServer {
       return;
     }
     const shown = { user: parsed.form.get('user') ?? '', cred: parsed.form.get('cred') ?? '' };
-    if (!this.csrf.verify(parsed.form.get('csrf'), sid, record.id, this.bindOf(shown, session.user))) {
+    const follow = kind === 'rebase' && parsed.form.get('follow') === 'approve' ? String(parsed.form.get('sha') ?? '') : '';
+    const bind = follow ? `${this.bindOf(shown, session.user)};follow=${follow}` : this.bindOf(shown, session.user);
+    if (!this.csrf.verify(parsed.form.get('csrf'), sid, record.id, bind)) {
       this.send(res, 403, this.page('Page expired', `<p>This page expired. Open the link again and confirm. ${nothing}</p>`, { tone: 'warn', kind }));
       return;
+    }
+    if (follow) {
+      // The approval of exactly the head commit the page showed: a head that changed since is refused by the
+      // evaluation below (the record is pinned to it), and GitLab guards the approval with the same commit.
+      const link = /^[0-9a-f]{40,64}$/i.test(follow) ? this.store.linkFor({ project: record.project, iid: record.iid, sha: follow, action: 'approve' }) : null;
+      if (!link) {
+        this.send(res, 409, this.page('Nothing to approve', '<p>This merge request is already approved by the configured account, or the page is outdated. Nothing was approved.</p>', { tone: 'warn', kind: 'approve' }));
+        return;
+      }
+      record = link.record;
+      kind = 'approve';
+      nothing = nothingOf(kind);
     }
 
     const outcome = await this.withLock(keyOf(record.project, record.iid), async () => {
@@ -1486,11 +1550,51 @@ export class ApproveServer {
       if (actor.user !== shown.user || actor.cred !== shown.cred) {
         return this.identityChanged(this.summary(current, result.mr, result.user), { reopen: 'reopened', merge: 'merged', rebase: 'rebased', approve: 'approved' }[kind]);
       }
+      // Who asked, for the comment the action leaves on the merge request.
+      result.ctx = { ip: this.clientIp(req), signedIn: session.user };
       if (kind === 'reopen') return this.sendReopen(current, result);
       if (kind === 'rebase') return this.sendRebase(current, result);
-      return kind === 'merge' ? this.sendMerge(current, result) : this.sendApproval(current, result, { ip: this.clientIp(req), signedIn: session.user });
+      return kind === 'merge' ? this.sendMerge(current, result) : this.sendApproval(current, result, result.ctx);
     });
-    this.send(res, outcome.code, this.page(outcome.title, outcome.body + (outcome.code === 200 ? this.followLinks(record) : ''), { tone: outcome.tone || toneForCode(outcome.code), kind }));
+    // After a rebase: offer the approval of the new head right on the result page.
+    const offer = kind === 'rebase' && outcome.code === 200 ? await this.approveFollowUp(session) : '';
+    this.send(res, outcome.code, this.page(outcome.title, outcome.body + offer + (outcome.code === 200 ? this.followLinks(record) : ''), { tone: outcome.tone || toneForCode(outcome.code), kind }));
+  }
+
+  /**
+   * After a rebase, the Approve button for the new head commit: a form that acts through the rebase link's
+   * session (`follow=approve`, the head it shows and the account it names are bound into the CSRF token).
+   * Empty when there is nothing to approve: not open, still rebasing, no head, already approved by the account,
+   * not approvable, or the signed-in user may not approve it.
+   */
+  async approveFollowUp(session) {
+    const { sid, record } = session;
+    if (kindOf(record) !== 'rebase') return '';
+    let mr;
+    try {
+      ({ mr } = await this.readMr(record));
+    } catch {
+      return '';
+    }
+    if (mr?.state !== 'opened') return '';
+    if (mr.rebase_in_progress === true) return '<p class="note">GitLab is still rebasing. Reload this page in a moment to approve.</p>';
+    const head = mr.sha || mr.diff_refs?.head_sha || '';
+    if (!/^[0-9a-f]{40,64}$/i.test(head)) return '';
+    const link = this.store.linkFor({ project: record.project, iid: record.iid, sha: head, action: 'approve' });
+    if (!link) return '';
+    const result = await this.evaluate(link.record);
+    if (result.status !== 'ready') return '';
+    const actor = actorOf(result);
+    if (!actor || this.signInDenied(session.user, result.mr, 'approve')) return '';
+    const token = this.csrf.issue(sid, record.id, `${this.bindOf(actor, session.user)};follow=${head}`);
+    const who = escapeHtml(result.user?.username || result.user?.name || result.user?.id);
+    const field = (name, value) => `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`;
+    return (
+      `<div class="actions" data-live-action><form method="post" data-act action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}">` +
+      `${field('csrf', token)}${field('user', actor.user)}${field('cred', actor.cred)}${field('follow', 'approve')}${field('sha', head)}` +
+      `<p>Approve this merge request now (head <code>${escapeHtml(head.slice(0, 12))}</code>)? The approval is made with the configured GitLab account <code>${who}</code>.</p>` +
+      `<button class="btn" type="submit" data-busy="${escapeHtml(COPY.approve.busy)}">👍 Approve</button></form></div>`
+    );
   }
 
   /**
@@ -1515,7 +1619,7 @@ export class ApproveServer {
       }
       // No answer, or a server error: the request may have landed. Look before saying anything.
       const state = await this.readRebase(record, result);
-      if (state?.rebase_in_progress === true) return this.rebaseStarted(record, summary);
+      if (state?.rebase_in_progress === true) return this.rebaseStarted(record, summary, result);
       return { code: 502, title: 'Outcome unknown', body: `${summary}<p>GitLab did not give a clear answer. The merge request may or may not be rebased: check it in GitLab before retrying.</p>` };
     }
     this.store.markRebased(record.project, record.iid);
@@ -1528,8 +1632,8 @@ export class ApproveServer {
     if (state?.merge_error) {
       return { code: 409, title: 'Rebase failed', body: `${summary}<p>GitLab could not rebase the merge request: ${escapeHtml(String(state.merge_error).slice(0, 300))}</p>` };
     }
-    if (state && state.rebase_in_progress !== true) return this.rebased(record, summary);
-    return this.rebaseStarted(record, summary);
+    if (state && state.rebase_in_progress !== true) return this.rebased(record, summary, result);
+    return this.rebaseStarted(record, summary, result);
   }
 
   /** The merge request read back after a rebase request (null when it could not be read). */
@@ -1537,14 +1641,16 @@ export class ApproveServer {
     return await this.gitlab.getMr(record.project, record.iid, this.asToken(result?.tokenIndex)).catch(() => null);
   }
 
-  async rebased(record, summary) {
+  async rebased(record, summary, result = null) {
     this.store.markRebased(record.project, record.iid);
+    await this.noteAction(record, result, { action: 'rebased', button: 'Rebase', ...(result?.ctx || {}) });
     const refresh = await this.refresh(record);
     return { code: 200, title: 'Rebased', body: `${summary}<p>Rebased in GitLab.</p><p class="note">${escapeHtml(refresh)}</p>` };
   }
 
-  async rebaseStarted(record, summary) {
+  async rebaseStarted(record, summary, result = null) {
     this.store.markRebased(record.project, record.iid);
+    await this.noteAction(record, result, { action: 'rebased', button: 'Rebase', ...(result?.ctx || {}) });
     const refresh = await this.refresh(record);
     return { code: 200, title: 'Rebase started', body: `${summary}<p>GitLab accepted the rebase and is still working on it. The card updates when it is done.</p><p class="note">${escapeHtml(refresh)}</p>` };
   }
@@ -1575,7 +1681,7 @@ export class ApproveServer {
     }
     // Only an answer that says "opened" counts. Anything else (closed, merged,
     // an empty or odd body) is looked up again before a word is said.
-    if (response?.state === 'opened') return this.reopened(record, summary);
+    if (response?.state === 'opened') return this.reopened(record, summary, result);
     log(`Reopen of ${record.project}!${record.iid} answered with state ${JSON.stringify(response?.state ?? null)}`);
     return this.confirmReopen(record, summary, result);
   }
@@ -1586,7 +1692,7 @@ export class ApproveServer {
    */
   async confirmReopen(record, summary, result = null) {
     const mr = await this.gitlab.getMr(record.project, record.iid, this.asToken(result?.tokenIndex)).catch(() => null);
-    if (mr?.state === 'opened') return this.reopened(record, summary);
+    if (mr?.state === 'opened') return this.reopened(record, summary, result);
     if (mr?.state === 'merged') {
       this.store.invalidate(record.project, record.iid, 'reopen');
       return { code: 409, title: 'Reopen failed', body: `${summary}<p>This merge request is merged and cannot be reopened. Nothing was reopened.</p>` };
@@ -1600,8 +1706,9 @@ export class ApproveServer {
     return { code: 502, title: 'Outcome unknown', body: `${summary}<p>GitLab did not give a clear answer and the result could not be checked. The merge request may or may not be open again: check it in GitLab before retrying.</p>` };
   }
 
-  async reopened(record, summary) {
+  async reopened(record, summary, result = null) {
     this.store.markReopened(record.project, record.iid);
+    await this.noteAction(record, result, { action: 'reopened', button: 'Reopen', ...(result?.ctx || {}) });
     const refresh = await this.refresh(record);
     return { code: 200, title: 'Reopened', body: `${summary}<p>Reopened in GitLab.</p><p class="note">${escapeHtml(refresh)}</p>` };
   }
@@ -1625,7 +1732,7 @@ export class ApproveServer {
       return this.confirmMerge(record, summary, { status, result });
     }
     const head = response?.sha || response?.diff_refs?.head_sha || null;
-    if (response?.state === 'merged' && head === record.sha) return this.merged(record, summary);
+    if (response?.state === 'merged' && head === record.sha) return this.merged(record, summary, result);
     log(`Merge of ${record.project}!${record.iid} answered with state ${JSON.stringify(response?.state ?? null)}`);
     return this.confirmMerge(record, summary, { accepted: true, result });
   }
@@ -1651,7 +1758,7 @@ export class ApproveServer {
     }
     if (mr?.state === 'merged') {
       const head = mr.sha || mr.diff_refs?.head_sha || null;
-      if (head && head === record.sha) return this.merged(record, summary);
+      if (head && head === record.sha) return this.merged(record, summary, result);
       this.store.invalidate(record.project, record.iid, 'merge');
       return { code: 409, title: 'Merge not confirmed', body: `${summary}<p>The merge request is merged, but not at the head commit this link was made for. It was not recorded as merged by this link: check it in GitLab.</p>` };
     }
@@ -1686,8 +1793,9 @@ export class ApproveServer {
     return ' (its rules for this merge request are not met right now, or the merge request changed)';
   }
 
-  async merged(record, summary) {
+  async merged(record, summary, result = null) {
     this.store.markMerged(record.project, record.iid);
+    await this.noteAction(record, result, { action: 'merged', button: 'Merge', ...(result?.ctx || {}) });
     // The merge request is gone from the approvable states for good.
     this.store.invalidate(record.project, record.iid, 'approve');
     const refresh = await this.refresh(record);
@@ -1739,25 +1847,37 @@ export class ApproveServer {
       return { code: 409, title: 'Approval failed', body: `${summary}<p>GitLab rejected the approval (HTTP ${status}), for example because the merge request changed. Nothing was approved. Reload the page to review it again.</p>` };
     }
     // Always say how the approval came about: the bot's account approves, so GitLab alone would not tell.
-    // The button's page has no Teams identity, only the GitLab account it acted as. Best effort.
-    if (typeof this.gitlab.addMrNote === 'function') {
-      const account = String(result.user?.username || '').replace(/[^A-Za-z0-9_.-]/g, '');
-      // The button's page has no Teams identity, only the GitLab account it acted as.
+    await this.noteAction(record, result, { action: 'approved', button: 'Approve', ip, signedIn });
+    return this.approved(record, summary);
+  }
+
+  /**
+   * Leaves a comment on the merge request after a successful action (approve, merge, rebase, reopen): the
+   * configured account acts, so GitLab alone would not say who asked or how. Who asked is the signed-in GitLab user
+   * when there is one; only when that is not known the comment carries the address the request came from (and
+   * where it is). Best effort: a comment that cannot be left never fails the action.
+   */
+  async noteAction(record, result, { action, button, ip = '', signedIn = null }) {
+    if (typeof this.gitlab.addMrNote !== 'function') return;
+    try {
+      const account = String(result?.user?.username || '').replace(/[^A-Za-z0-9_.-]/g, '');
       const card = typeof this.locateCard === 'function' ? this.locateCard(record.project, record.iid) : null;
       const note = buildApprovalNote({
+        action,
+        button,
         trigger: 'button',
         requesterNote: signedIn
           ? `@${signedIn.username} (signed in with GitLab)`
-          : `someone with the card's Approve link${account ? ` (confirmed as @${account})` : ''}`,
+          : `someone with the card's ${button} link${account ? ` (confirmed as @${account})` : ''}`,
         message: card || {},
-        ip,
-        place: ip && this.geoip ? formatPlace(this.geoip.lookup(ip)) : '',
+        // The address only tells something when nobody signed in.
+        ip: signedIn ? '' : ip,
+        place: !signedIn && ip && this.geoip ? formatPlace(this.geoip.lookup(ip)) : '',
       });
-      await this.gitlab
-        .addMrNote(record.project, record.iid, note, this.asToken(result.tokenIndex))
-        .catch((err) => log(`Could not comment the approval on ${record.project}!${record.iid}: ${err.message}`));
+      await this.gitlab.addMrNote(record.project, record.iid, note, this.asToken(result?.tokenIndex));
+    } catch (err) {
+      log(`Could not comment the ${action} on ${record.project}!${record.iid}: ${err.message}`);
     }
-    return this.approved(record, summary);
   }
 
   /** The account that was shown is no longer the one that would act: nothing was sent. */

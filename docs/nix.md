@@ -493,6 +493,21 @@ The buttons of an open merge request card are, in this order, **🔁 Rebase**, *
   discussions all in order), so it never offers a merge that can only fail. The page still checks again when it
   is opened.
 
+#### The confirmation page
+
+- After a **rebase** the result page offers **👍 Approve** for the new head commit: one click approves exactly that
+  head (the head the page showed is bound into the form, and GitLab guards the approval with the same commit).
+  It is not offered while GitLab is still rebasing, when the account already approved, or when the signed-in user
+  may not approve.
+- The buttons run in the background: the button shows what is going on ("Rebasing…"), the answer replaces the page
+  in place, and a lost connection is reported, never answered with a second request. Without JavaScript the forms
+  are ordinary posts.
+- The page uses the same pictures as the cards: GitLab icons for the state, the pipeline and auto-merge, the
+  repository icon, and pictures for the author and the approvers (the Teams photo when known, else initials). They
+  are embedded; the page's CSP allows `img-src data:` and nothing else.
+- Every successful action (approve, merge, rebase, reopen) leaves a comment on the merge request. It names the
+  signed-in GitLab user; only when nobody signed in does it carry the address the request came from and where it is.
+
 #### Sign in with GitLab
 
 By default the link is a capability: whoever holds it can confirm. With
