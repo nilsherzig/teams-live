@@ -14,6 +14,7 @@ function createWatcher({
   mrStates = {},
 } = {}) {
   const approvedCalls = [];
+  const noteCalls = [];
   const repliedMessages = [];
 
   const gitlabMock = {
@@ -35,6 +36,10 @@ function createWatcher({
         mrStates[key].approved = true;
       }
       return { approved: true };
+    },
+    addMrNote: async (project, iid, body) => {
+      noteCalls.push({ project, iid, body });
+      return {};
     },
     mrLink: (project, iid) => `https://gitlab.example.com/${project}/-/merge_requests/${iid}`,
   };
@@ -62,7 +67,7 @@ function createWatcher({
 
   watcher.setSelfMri(selfMri);
 
-  return { watcher, approvedCalls, repliedMessages, selfMri, selfOid };
+  return { watcher, approvedCalls, noteCalls, repliedMessages, selfMri, selfOid };
 }
 
 test('approves MR when self reacts with thumbs-up to bot status comment', async () => {
@@ -70,7 +75,7 @@ test('approves MR when self reacts with thumbs-up to bot status comment', async 
   const botReplyId = '1770000000000';
   const originalMsgId = '1660000000000';
 
-  const { watcher, approvedCalls } = createWatcher({
+  const { watcher, approvedCalls, noteCalls } = createWatcher({
     messages: {
       [`${convId}/${botReplyId}`]: {
         id: botReplyId,
@@ -110,6 +115,8 @@ test('approves MR when self reacts with thumbs-up to bot status comment', async 
 
   assert.equal(approvedCalls.length, 1);
   assert.deepEqual(approvedCalls[0], { project: 'group/app', iid: '42' });
+  assert.equal(noteCalls.length, 1, 'the approval is commented on the merge request');
+  assert.match(noteCalls[0].body, /Approved via Microsoft Teams by \*\*Alice Example\*\*: \[👍 reaction\]\(https:\/\/teams\.microsoft\.com\/l\/message\/19%3Ateam%40thread\.v2\/1770000000000\)/);
 });
 
 test('approves MR when self reacts with 👍 emoji key on edited original bot message', async () => {
@@ -321,4 +328,25 @@ test('/rebase when MR is already up to date only sets checkmark reaction and tri
     key: '2705_whiteheavycheckmark',
   });
   assert.equal(checkedWatched, true);
+});
+
+test('the approval comment mentions the approver by GitLab username when known, with a link to the Teams message', async () => {
+  const { watcher } = createWatcher();
+  watcher.userDirectory.addUser({ mri: '8:orgid:00000000-0000-4000-8000-00000000000a', displayName: 'Alice Example', gitlabUsernames: ['alice'] });
+  const notes = [];
+  watcher.gitlab.addMrNote = async (project, iid, body) => notes.push({ project, iid, body });
+  await watcher.noteTeamsApproval('group/app', 7, {
+    name: 'Alice Example',
+    mri: '8:orgid:00000000-0000-4000-8000-00000000000a',
+    via: '/approve',
+    conversationId: '19:x@thread.v2',
+    messageId: '1700000000000',
+  });
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].body, /by @alice \(Alice Example\): \[\/approve\]\(https:\/\/teams\.microsoft\.com\/l\/message\/19%3Ax%40thread\.v2\/1700000000000\)/);
+  // A failing comment never fails the approval.
+  watcher.gitlab.addMrNote = async () => {
+    throw new Error('boom');
+  };
+  await watcher.noteTeamsApproval('group/app', 7, { name: 'Alice Example', via: '/approve' });
 });

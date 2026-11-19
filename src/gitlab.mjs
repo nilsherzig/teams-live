@@ -625,6 +625,15 @@ export class GitLabClient {
     );
   }
 
+  /** A comment on a merge request. Sent once (no retry): a duplicate comment is worse than a missing one. */
+  async addMrNote(project, iid, body, { tokenIndex = null } = {}) {
+    return await this.writeAs(
+      `projects/${encodeURIComponent(project)}/merge_requests/${iid}/notes`,
+      { method: 'POST', body: { body }, retry: false },
+      { tokenIndex }
+    );
+  }
+
   async mergeMr(project, iid, {
     shouldRemoveSourceBranch = true,
     mergeWhenPipelineSucceeds = true,

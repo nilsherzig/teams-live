@@ -84,7 +84,11 @@ test('the account shown is the account that approves when only the fallback cred
     assert.equal(res.status, 200);
     assert.match(res.html, /Approved in GitLab/);
     assert.match(res.html, /<code>fallback<\/code>/);
-    assert.deepEqual(writes(log), [{ token: 'second', method: 'POST', path: `projects/${encodeURIComponent(PROJECT)}/merge_requests/${IID}/approve` }]);
+    // The approval, then the comment saying how it came about, both as the same credential.
+    assert.deepEqual(writes(log), [
+      { token: 'second', method: 'POST', path: `projects/${encodeURIComponent(PROJECT)}/merge_requests/${IID}/approve` },
+      { token: 'second', method: 'POST', path: `projects/${encodeURIComponent(PROJECT)}/merge_requests/${IID}/notes` },
+    ]);
     assert.deepEqual(state.approvedBy, [2]);
   });
 });
@@ -94,7 +98,7 @@ test('the primary credential approves, and nothing else is asked, when it can se
     assert.match(confirmationHtml, /<code>primary<\/code>/);
     assert.equal((await confirm()).status, 200);
     assert.ok(!log.some((c) => c.token === 'second'), 'the fallback credential was never used');
-    assert.deepEqual(writes(log).map((c) => c.token), ['first']);
+    assert.deepEqual(writes(log).map((c) => c.token), ['first', 'first'], 'the approval and its comment');
   });
 });
 

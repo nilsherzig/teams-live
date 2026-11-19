@@ -323,7 +323,7 @@ test('/mrs list: several cards carry cached photos and placeholders on every hum
     ...Array.from({ length: 3 }, (_, i) => mr(950 + i, { name: 'Renovate Bot', username: 'renovate-bot' }, `chore(deps): update dependency number ${i}`)),
   ];
   w.getOrFetchMrsData = async () => mrs;
-  const message = await w.getOrFetchMrsText({});
+  const message = await w.getOrFetchMrsText({ mode: 'all' });
   const parts = partsOf(message);
   assert.ok(parts.length >= 2);
   parts.forEach((part) => assert.ok(richMessageWireBytes(part) <= MAX_CARD_BYTES));
@@ -334,7 +334,7 @@ test('/mrs list: several cards carry cached photos and placeholders on every hum
   assert.deepEqual(parts.flatMap(refsOf).sort((a, b) => a - b), mrs.map((m) => m.iid).sort((a, b) => a - b));
 });
 
-test('/mrs list: the cards keep the project grouping, repeat the heading and the headline, and put the note on the last card', async () => {
+test('/mrs list: the cards keep the project grouping, and repeat the section heading of a section that goes on', async () => {
   const w = newWatcher({ photo: false });
   const projects = ['alpha', 'beta', 'gamma'];
   const humans = Array.from({ length: 21 }, (_, i) => mrIn(projects[i % 3], 100 + i, i % 2 ? BOB_GL : ALICE_GL));
@@ -342,26 +342,25 @@ test('/mrs list: the cards keep the project grouping, repeat the heading and the
     mrIn('alpha', 300 + i, { name: 'Renovate Bot', username: 'renovate-bot' }, `chore(deps): update dependency number ${i}`)
   );
   w.getOrFetchMrsData = async () => [...humans, ...bots];
-  const message = await w.getOrFetchMrsText({});
+  const message = await w.getOrFetchMrsText({ mode: 'all' });
   const parts = partsOf(message);
   assert.ok(parts.length >= 2);
   // Display order of a card: by project (first appearance), then as listed.
-  const expected = [...projects.flatMap((p) => humans.filter((m) => m.references.full.includes(`/${p}!`))), ...bots.slice(0, 5)].map((m) => m.iid);
+  const expected = [...projects.flatMap((p) => humans.filter((m) => m.references.full.includes(`/${p}!`))), ...bots].map((m) => m.iid);
   const listed = parts.flatMap(refsOf);
   assert.equal(new Set(listed).size, listed.length, 'no row twice');
-  assert.deepEqual([...listed].sort((a, b) => a - b), [...expected].sort((a, b) => a - b), 'no row lost: the humans and the top 5 bots');
+  assert.deepEqual([...listed].sort((a, b) => a - b), [...expected].sort((a, b) => a - b), 'no row lost: the humans and all bots');
   const projectOf = (iid) => [...humans, ...bots].find((m) => m.iid === iid).references.full.split('/')[1].split('!')[0];
   const humanProjects = listed.filter((iid) => iid < 300).map(projectOf);
   assert.deepEqual(humanProjects, [...humanProjects].sort((a, b) => projects.indexOf(a) - projects.indexOf(b)), 'a project is never interleaved with another');
   for (const [i, part] of parts.entries()) {
     const text = textsOf(part).join('\n');
-    assert.ok(text.includes('Open Merge Requests'), `card ${i + 1} repeats the headline`);
+    assert.ok(!text.includes('Open Merge Requests'), `card ${i + 1} has no title of its own`);
     if (i === 0) assert.ok(!/continued/.test(text), 'the first card has the plain headings');
-    assert.equal(text.includes('and 3 more bot MRs'), i === parts.length - 1, `the note is on the last card only (card ${i + 1})`);
   }
   assert.ok(parts.slice(1).some((part) => /continued/.test(textsOf(part).join('\n'))), 'a section that goes on says so');
   // The markdown of the cards, joined, is every row of the regular list.
-  for (const m of [...humans, ...bots.slice(0, 5)]) assert.ok(messageMarkdown(message).includes(`!${m.iid}]`), `!${m.iid} in the fallback markdown`);
+  for (const m of [...humans, ...bots]) assert.ok(messageMarkdown(message).includes(`!${m.iid}]`), `!${m.iid} in the fallback markdown`);
 });
 
 test('/mrs list: a long list is a sequence the transport sends card by card, and a later change shows in the cache comparison', async () => {

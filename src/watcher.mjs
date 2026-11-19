@@ -36,6 +36,7 @@ import {
   collectCandidateUrlStrings,
   isOnlyUrlMessage,
   stripTruncatedUrlText,
+  teamsMessageLink,
 } from './message-links.mjs';
 import {
   buildMergeRequestCard,
@@ -4170,6 +4171,34 @@ export class MergeRequestWatcher {
     return [];
   }
 
+  /**
+   * Who approved from Teams, for the comment on the merge request: the person's GitLab username as an
+   * explicit mention (@user) when the directory knows it, followed by their name; else the name in bold
+   * (never a guessed mention).
+   */
+  approverLabel({ name = '', mri = '' } = {}) {
+    const user = (mri && this.userDirectory.findUser(mri)) || (name && this.userDirectory.findUser(name)) || null;
+    const gitlabUser = user ? [...(user.gitlabUsernames || [])][0] : null;
+    const display = String(name || user?.displayName || '').replace(/[@\r\n`*_[\]<>]/g, '').trim() || 'someone';
+    return gitlabUser ? `@${gitlabUser} (${display})` : `**${display}**`;
+  }
+
+  /**
+   * Leaves a comment on the merge request saying who approved it from Teams and linking the Teams
+   * message that triggered it (the approval itself is made by the bot's GitLab account, so GitLab
+   * alone would not say). Best effort: it never fails the approval.
+   */
+  async noteTeamsApproval(project, iid, { name, mri, via, conversationId, messageId }) {
+    if (!this.gitlab?.addMrNote) return;
+    try {
+      const link = teamsMessageLink(conversationId, messageId);
+      const trigger = link ? `[${via}](${link})` : via;
+      await this.gitlab.addMrNote(project, iid, `👍 Approved via Microsoft Teams by ${this.approverLabel({ name, mri })}: ${trigger}.`);
+    } catch (err) {
+      log.warn(`Could not comment the approver on ${project}!${iid}: ${err.message}`);
+    }
+  }
+
   async executeApproveCommand(event, args) {
     if (args.length > 0 && args[0].toLowerCase() === 'all') {
       return await this.executeApproveAllCommand(event, args.slice(1));
@@ -4224,6 +4253,7 @@ export class MergeRequestWatcher {
       log(`Approving ${mr.project}!${mr.iid} via GitLab API...`);
       await this.gitlab.approveMr(mr.project, mr.iid);
       log(`Approved ${mr.project}!${mr.iid} successfully`);
+      await this.noteTeamsApproval(mr.project, mr.iid, { name: event.from, mri: event.fromMri, via: '/approve', conversationId: event.conversationId, messageId: event.messageId });
 
       const isSimpleDirectReply = Boolean(
         allMrs.isDirectReply &&
@@ -4332,6 +4362,7 @@ export class MergeRequestWatcher {
           log(`Approving ${project}!${iid} as part of /approve all...`);
           await this.gitlab.approveMr(project, iid);
           log(`Approved ${project}!${iid}`);
+          await this.noteTeamsApproval(project, iid, { name: event.from, mri: event.fromMri, via: '/approve all', conversationId: event.conversationId, messageId: event.messageId });
           approved.push({
             mrRef,
             mrUrl,
@@ -5403,6 +5434,29 @@ export class MergeRequestWatcher {
       };
     }
 
+    if (mode === 'default') {
+      // Just the people's merge requests; the bot ones stay out unless asked for (`/mrs all`, `/mrs bots`).
+      if (humanMrs.length === 0) {
+        return {
+          text: botMrs.length > 0
+            ? `📋 No open human merge requests (${botMrs.length} bot MRs: use \`/mrs bots\` or \`/mrs all\`).`
+            : '📋 No open merge requests found.',
+        };
+      }
+      return {
+        headline: `📋 **Open Merge Requests** (${humanMrs.length} human):`,
+        // The card needs neither a title nor a section heading for a single group.
+        cardHeadline: '',
+        sections: [
+          {
+            heading: null,
+            rows: humanMrs.map(formatMrRow),
+            note: botMrs.length > 0 ? `_${botMrs.length} bot MRs not shown (use \`/mrs all\` or \`/mrs bots\`)_` : null,
+          },
+        ],
+      };
+    }
+
     const sections = [];
     if (humanMrs.length > 0) {
       sections.push({
@@ -5413,25 +5467,17 @@ export class MergeRequestWatcher {
     }
 
     if (botMrs.length > 0) {
-      if (mode === 'all' || botMrs.length <= 5) {
-        sections.push({
-          heading: `🤖 **Renovate / Bot Updates** (${botMrs.length}):`,
-          rows: botMrs.map(formatMrRow),
-          note: null,
-        });
-      } else {
-        const displayed = botMrs.slice(0, 5);
-        const remaining = botMrs.length - 5;
-        sections.push({
-          heading: `🤖 **Renovate / Bot Updates** (${botMrs.length}, showing top 5 ready/recent):`,
-          rows: displayed.map(formatMrRow),
-          note: `_...and ${remaining} more bot MRs (use \`/mrs all\` to view all, or \`/mrs bots\` for only bot MRs)_`,
-        });
-      }
+      sections.push({
+        heading: `🤖 **Renovate / Bot Updates** (${botMrs.length}):`,
+        rows: botMrs.map(formatMrRow),
+        note: null,
+      });
     }
 
     return {
       headline: `📋 **Open Merge Requests** (${mrs.length} total: ${humanMrs.length} human, ${botMrs.length} bot):`,
+      // The card's sections carry the counts; it needs no title of its own.
+      cardHeadline: '',
       sections,
     };
   }
@@ -5557,7 +5603,7 @@ export class MergeRequestWatcher {
         if (section.rows.includes(edges[section.index].last)) section.note = listing.sections[section.index].note;
       }
       const markdown = this.renderMrsListing({ headline: listing.headline, sections });
-      const card = buildMrListCard({ title: listing.headline, sections, images, ciIcons, avatars, part });
+      const card = buildMrListCard({ title: listing.cardHeadline ?? listing.headline, sections, images, ciIcons, avatars, part });
       return card ? makeRichMessage(markdown, card) : null;
     };
     // The card label ("2/3") is measured at its widest, so the final numbers cannot overflow.
@@ -7954,6 +8000,7 @@ export class MergeRequestWatcher {
         log(`👍 Thumb-up approval: approving ${mr.project}!${mr.iid} via GitLab API (reactor: ${reactorName})...`);
         await this.gitlab.approveMr(mr.project, mr.iid);
         log(`Approved ${mr.project}!${mr.iid} successfully via thumbs-up reaction`);
+        await this.noteTeamsApproval(mr.project, mr.iid, { name: selfThumb.user?.displayName, mri: selfThumb.user?.mri, via: '👍 reaction', conversationId: convId, messageId: msgId });
         anyApproved = true;
       } catch (err) {
         log(`Failed to approve ${mr.project}!${mr.iid} on thumbs-up: ${err.message}`);

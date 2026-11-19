@@ -28,7 +28,7 @@ Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, C
     - `/ci` (or `/pipeline`) `[link]`: Detailed CI pipeline status, stages, and failed jobs.
     - `/close [link]`: Closes the target MR.
     - `/merge [link]` (or `/accept`): Merges the target MR (or sets auto-merge if CI is currently running).
-    - `/mrs [all|bots|me|mine|<user>]`: Lists open merge requests (default hides extra bot MRs; filter by user or view all/bots).
+    - `/mrs [all|bots|me|mine|<user>]`: Lists open merge requests (default: only the human ones; `all` adds the bot ones, `bots` shows only those; or filter by user).
     - `/rebase [link]`: Triggers conflict-free GitLab MR rebase.
     - `/reopen [link]`: Reopens a closed target MR.
     - `/retry [link]`: Retries failed jobs on the latest GitLab pipeline for the target MR.

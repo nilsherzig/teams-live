@@ -205,3 +205,14 @@ export function isOnlyUrlMessage(targetUrl, { text = '', rawHtml = '', links = [
 
   return rest.replace(/&[a-z0-9#]+;/gi, ' ').trim().length === 0;
 }
+
+/**
+ * Deep link to one Teams message (opens it in Teams). Without a conversation or message id there
+ * is nothing to link to and the result is ''.
+ */
+export function teamsMessageLink(conversationId, messageId) {
+  const conversation = String(conversationId ?? '').trim();
+  const message = String(messageId ?? '').trim();
+  if (!conversation || !message) return '';
+  return `https://teams.microsoft.com/l/message/${encodeURIComponent(conversation)}/${encodeURIComponent(message)}`;
+}

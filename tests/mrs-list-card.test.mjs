@@ -91,7 +91,7 @@ test('mrListState: draft never masks merged or closed', () => {
 });
 
 test('/mrs card: projects are headings and their merge requests sit in an indented column', () => {
-  const message = rich(newWatcher(), [...humanMrs, ...botMrs(2)]);
+  const message = rich(newWatcher(), [...humanMrs, ...botMrs(2)], { mode: 'all' });
   const items = bodyItems(message);
   const headings = items.filter((i) => i.type === 'TextBlock').map((i) => i.text);
   assert.ok(headings.includes('**app**'));
@@ -221,28 +221,30 @@ test('/mrs card: every fact of the regular list is kept (links, title, author, C
   assert.ok(all.includes('\u{1F4A5} conflicts'));
   assert.ok(all.includes('✅ ready to merge'));
   // Count and sections.
-  assert.ok(all.includes('Open Merge Requests (5 total: 5 human, 0 bot)'));
-  assert.ok(all.includes('Human Merge Requests (5)'));
+  // The default view is the people's merge requests only: no title, no section heading (the counts are in the markdown).
+  assert.ok(!all.includes('Open Merge Requests'));
+  assert.ok(!all.includes('Human Merge Requests'));
+  assert.ok(messageMarkdown(message).includes('Open Merge Requests** (5 human)'));
   // No mention markup in the card; the markdown copy keeps the mention.
   assert.ok(!JSON.stringify(message.card).includes('8:orgid'));
   assert.ok(messageMarkdown(message).includes('@[Alice Example](8:orgid:0000)'));
 });
 
-test('/mrs card: bot truncation note and counts are kept', () => {
-  // With the author pictures the list may take several cards: the texts of all of them.
+test('/mrs card: by default only the human merge requests, with a note about the hidden bots; /mrs all has both sections', () => {
   const allTexts = (message) => {
     const { followUps = [], ...head } = message;
     return [head, ...followUps].flatMap((part) => texts(part)).join('\n');
   };
   const message = rich(newWatcher(), [...humanMrs, ...botMrs(8)]);
-  const all = allTexts(message);
-  assert.ok(all.includes('Renovate / Bot Updates (8, showing top 5 ready/recent)'));
-  assert.ok(all.includes('...and 3 more bot MRs (use /mrs all to view all, or /mrs bots for only bot MRs)'));
-  assert.ok(all.includes('[!104]'));
-  assert.ok(!all.includes('[!105]'));
-  // /mrs all lists them all.
+  const shown = allTexts(message);
+  assert.ok(shown.includes('8 bot MRs not shown (use /mrs all or /mrs bots)'));
+  assert.ok(!shown.includes('[!104]'), 'no bot rows by default');
+  assert.ok(!shown.includes('Human Merge Requests'), 'one group, no heading');
   const allMode = rich(newWatcher(), [...humanMrs, ...botMrs(8)], { mode: 'all' });
-  assert.ok(allTexts(allMode).includes('[!107]'));
+  const both = allTexts(allMode);
+  assert.ok(both.includes('[!107]'));
+  assert.ok(both.includes('Human Merge Requests (5)') && both.includes('Renovate / Bot Updates (8)'));
+  assert.ok(!both.includes('Open Merge Requests'), 'no card title, the headings carry the counts');
 });
 
 test('/mrs card: the user and bot views have their own headline and no sections heading', () => {
@@ -257,13 +259,17 @@ test('/mrs card: the user and bot views have their own headline and no sections 
 
 test('/mrs card: the markdown copy is the regular list, unchanged', () => {
   const w = newWatcher();
-  const message = rich(w, [...humanMrs, ...botMrs(8)]);
-  const regular = newWatcher({}).formatMrsMessage([...humanMrs, ...botMrs(8)], {});
+  const message = rich(w, [...humanMrs, ...botMrs(8)], { mode: 'all' });
+  const regular = newWatcher({}).formatMrsMessage([...humanMrs, ...botMrs(8)], { mode: 'all' });
   assert.equal(typeof regular, 'string');
   // The rich list adds the approval badges to the regular lines, nothing else changes.
-  assert.equal(messageMarkdown(message), w.formatMrsText([...humanMrs, ...botMrs(8)], { rich: true }));
+  // A list split into one card per section repeats the headline in the markdown, so compare line by line.
+  const md = messageMarkdown(message);
+  for (const line of w.formatMrsText([...humanMrs, ...botMrs(8)], { rich: true, mode: 'all' }).split('\n').filter(Boolean)) {
+    assert.ok(md.includes(line), `markdown keeps: ${line.slice(0, 60)}`);
+  }
   assert.ok(regular.startsWith('\u{1F4CB} **Open Merge Requests** (13 total: 5 human, 8 bot):\n\n\u{1F464} **Human Merge Requests** (5):\n\n- '));
-  assert.ok(regular.endsWith('_...and 3 more bot MRs (use `/mrs all` to view all, or `/mrs bots` for only bot MRs)_'));
+  assert.ok(regular.includes('Renovate / Bot Updates** (8)'));
 });
 
 test('/mrs card: a long list is split into several cards with the images, a very long one falls back to the full markdown', () => {
