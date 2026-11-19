@@ -478,6 +478,7 @@ authentication layer. The proxy may keep the path prefix or strip it.
 | `gitlab.approve.base_url` | Public https URL of the page, for example `https://<host>/approve`; no query or fragment. It is also the allowed Origin of the POSTs. Plain http is accepted only for loopback. |
 | `gitlab.approve.link_ttl_seconds` | Lifetime of a link (86400). |
 | `gitlab.approve.rebase_enabled` | The Rebase button (true; only an explicit `false` turns it off). |
+| `gitlab.reaction_approvers` | Who may approve a merge request with a 👍 reaction on its Teams message: `anyone` (default: whoever reacts, except the merge request's author, whose reaction is ignored; the reactor is named in the comment and shown on the card) or `self` (only the account teams-live runs as and configured admins). Note that with `anyone` any 👍 on a card approves it. |
 | `gitlab.approve.oauth.client_id`, `.client_secret` | Turns on [Sign in with GitLab](#sign-in-with-gitlab). Give the secret as `{ _secret = "/path"; }`. Off by default. |
 | `gitlab.approve.oauth.allowed_users` | Optional list of GitLab user names allowed to confirm. Empty: any user that signs in. |
 

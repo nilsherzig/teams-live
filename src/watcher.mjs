@@ -8209,31 +8209,31 @@ export class MergeRequestWatcher {
 
     if (targetMrs.length === 0) return;
 
-    const findSelfThumbUp = (reactions) => {
-      if (!reactions || !Array.isArray(reactions)) return null;
-      for (const r of reactions) {
+    // The 👍 reactions that may approve: this account's (and configured admins') always; with
+    // `gitlab.reaction_approvers = anyone` (the default) also everybody else's, except the author's own (see below).
+    const anyone = this.config.gitlab?.reaction_approvers === 'anyone';
+    const findThumbUps = (reactions) => {
+      if (!reactions || !Array.isArray(reactions)) return [];
+      return reactions.filter((r) => {
         const key = (r.key || '').toLowerCase();
         const isThumbUp = key === 'like' || key === '👍' || key.includes('thumb');
-        if (isThumbUp && this.isReactorSelf(r.user)) {
-          return r;
-        }
-      }
-      return null;
+        return isThumbUp && r.user && (anyone || this.isReactorSelf(r.user));
+      });
     };
 
-    let selfThumb = findSelfThumbUp(msgData.reactions);
-    if (!selfThumb) {
+    let thumbs = findThumbUps(msgData.reactions);
+    if (thumbs.length === 0) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       const retryData = await fetchMessageData();
       if (retryData?.reactions) {
         msgData = retryData;
-        selfThumb = findSelfThumbUp(msgData.reactions);
+        thumbs = findThumbUps(msgData.reactions);
       }
     }
 
-    if (!selfThumb) return;
+    if (thumbs.length === 0) return;
 
-    const reactorName = selfThumb.user?.displayName || 'self';
+    let selfThumb = null;
     let anyApproved = false;
 
     for (const mr of targetMrs) {
@@ -8255,6 +8255,22 @@ export class MergeRequestWatcher {
           continue;
         }
 
+        // This account's own thumbs up first; anybody else's only when they are not the author of the merge
+        // request (an author must not approve their own merge request through the bot).
+        selfThumb = thumbs.find((t) => this.isReactorSelf(t.user)) || null;
+        if (!selfThumb) {
+          for (const t of thumbs) {
+            if (!(await this.isReactorMrAuthor(t.user, mrState))) {
+              selfThumb = t;
+              break;
+            }
+          }
+        }
+        if (!selfThumb) {
+          log(`Thumb-up on ${mr.project}!${mr.iid} ignored: only the author reacted`);
+          continue;
+        }
+        const reactorName = selfThumb.user?.displayName || 'self';
         log(`👍 Thumb-up approval: approving ${mr.project}!${mr.iid} via GitLab API (reactor: ${reactorName})...`);
         await this.gitlab.approveMr(mr.project, mr.iid);
         log(`Approved ${mr.project}!${mr.iid} successfully via thumbs-up reaction`);
@@ -8276,6 +8292,23 @@ export class MergeRequestWatcher {
       this.checkAllWatched().catch((err) =>
         log(`Post-approval check failed: ${err.message}`)
       );
+    }
+  }
+
+  /**
+   * Whether the person who reacted is the author of the merge request: the same GitLab user name (the reactor's
+   * configured or exactly matched one), else the same display name. An approval must not come from the author.
+   */
+  async isReactorMrAuthor(user, mrState) {
+    const name = String(user?.displayName || '').trim().toLowerCase();
+    const author = String(mrState?.author || '').trim().toLowerCase();
+    if (name && author && name === author) return true;
+    try {
+      const requester = await this.approvalRequester({ name: user?.displayName, mri: user?.mri });
+      const username = String(requester.gitlabUser || '').toLowerCase();
+      return Boolean(username && mrState?.authorUsername && username === String(mrState.authorUsername).toLowerCase());
+    } catch {
+      return false;
     }
   }
 

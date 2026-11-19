@@ -13,6 +13,7 @@ function createWatcher({
   adminIds = [],
   messages = {},
   mrStates = {},
+  reactionApprovers = undefined,
 } = {}) {
   const approvedCalls = [];
   const noteCalls = [];
@@ -55,7 +56,7 @@ function createWatcher({
   const watcher = new MergeRequestWatcher({
     config: {
       conversations: [{ id: '19:team@thread.v2', name: 'team' }],
-      gitlab: {},
+      gitlab: { reaction_approvers: reactionApprovers },
       teams: {
         admin_ids: adminIds,
       },
@@ -445,3 +446,72 @@ test('an approval from Teams is remembered, so the MR card shows the requester i
   await watcher.noteTeamsApproval('group/app', 42, { name: 'Alice Example', via: '/revoke', action: 'revoked' });
   assert.deepEqual(watcher.resolveApprovers('group/app', 42, ['MS Teams bot']), { approvedBy: ['MS Teams bot'], approvedVia: [] });
 });
+
+const OTHER = { mri: '8:orgid:11111111-2222-3333-4444-555555555555', displayName: 'Other Person' };
+const AUTHOR = { mri: '8:orgid:99999999-8888-7777-6666-555555555555', displayName: 'Author Person' };
+
+async function react({ reactionApprovers, reactors, mrState = {} }) {
+  const convId = '19:team@thread.v2';
+  const cardId = '1770000009000';
+  const ctx = createWatcher({
+    reactionApprovers,
+    mrStates: { 'group/app!77': { status: 'pending', approved: false, title: 'MR', author: 'Author Person', authorUsername: 'author', ...mrState } },
+    messages: {
+      [`${convId}/${cardId}`]: {
+        id: cardId,
+        content: '🦊 [!77 (group/app)](https://gitlab.example.com/group/app/-/merge_requests/77)',
+        reactions: reactors.map((user) => ({ key: 'like', user })),
+      },
+    },
+  });
+  recordBotMessageId(cardId);
+  await ctx.watcher.handleIncomingEvent({ kind: 'MessageUpdate', conversationId: convId, messageId: cardId });
+  return ctx;
+}
+
+test('with reaction_approvers = anyone, a colleague approves with a thumbs up and is shown as the requester', async () => {
+  const { watcher, approvedCalls, noteCalls } = await react({ reactionApprovers: 'anyone', reactors: [OTHER] });
+  assert.equal(approvedCalls.length, 1);
+  assert.match(noteCalls[0].body, /Approved via Microsoft Teams/);
+  assert.match(noteCalls[0].body, /Other Person/);
+  assert.equal(watcher.teamsApprovals.get('group/app!77').name, 'Other Person', 'the card shows them, not the bot');
+});
+
+test('the author of the merge request cannot approve it with a thumbs up; a colleague next to them can', async () => {
+  const alone = await react({ reactionApprovers: 'anyone', reactors: [AUTHOR] });
+  assert.equal(alone.approvedCalls.length, 0, 'only the author reacted');
+  const both = await react({ reactionApprovers: 'anyone', reactors: [AUTHOR, OTHER] });
+  assert.equal(both.approvedCalls.length, 1);
+  assert.equal(both.watcher.teamsApprovals.get('group/app!77').name, 'Other Person', 'credited to the colleague, not the author');
+});
+
+test('the author is told apart by GitLab user name too, not only by display name', async () => {
+  const ctx = createWatcher({ reactionApprovers: 'anyone' });
+  ctx.watcher.userDirectory = { findUser: (q) => (q === 'Someone Else' ? { displayName: 'Someone Else', mri: AUTHOR.mri, explicitGitlabUsernames: new Set(['author']) } : null) };
+  assert.equal(await ctx.watcher.isReactorMrAuthor({ displayName: 'Someone Else', mri: AUTHOR.mri }, { author: 'Author Person', authorUsername: 'author' }), true);
+  assert.equal(await ctx.watcher.isReactorMrAuthor({ displayName: 'Other Person', mri: OTHER.mri }, { author: 'Author Person', authorUsername: 'author' }), false);
+});
+
+test('with reaction_approvers = self, a colleague\'s thumbs up does nothing, and this account\'s still approves', async () => {
+  const colleague = await react({ reactionApprovers: 'self', reactors: [OTHER] });
+  assert.equal(colleague.approvedCalls.length, 0);
+  const self = await react({ reactionApprovers: 'self', reactors: [OTHER, { mri: TEST_SELF_MRI, displayName: 'Alice Example' }] });
+  assert.equal(self.approvedCalls.length, 1);
+});
+
+test('the config loader defaults reaction_approvers to anyone and accepts only self as the other value', async () => {
+  const { loadConfig } = await import('../src/config.mjs');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-react-'));
+  const load = (gitlab) => {
+    const file = path.join(dir, `c-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(file, JSON.stringify({ conversations: [{ id: '48:notes', name: 'n' }], ...(gitlab ? { gitlab } : {}) }));
+    return loadConfig(file).gitlab.reaction_approvers;
+  };
+  assert.equal(load(), 'anyone');
+  assert.equal(load({ reaction_approvers: 'self' }), 'self');
+  assert.equal(load({ reaction_approvers: 'everybody' }), 'anyone');
+}
+);

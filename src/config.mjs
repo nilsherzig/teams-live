@@ -366,6 +366,9 @@ export function loadConfig(configPath) {
     }
   }
   gitlab.approve = approve;
+  // Who may approve with a 👍 reaction on a merge request message: `anyone` (the default: whoever reacts, except the
+  // author of the merge request) or `self` (only the account teams-live runs as, and configured admins).
+  gitlab.reaction_approvers = fileConfig.gitlab?.reaction_approvers === 'self' ? 'self' : 'anyone';
 
   const stateDir = process.env.XDG_STATE_HOME || path.join(process.cwd(), 'state');
   const homeDir = process.env.HOME;
