@@ -45,6 +45,7 @@
 // never resent. An answer that is not a plain "merged at the expected head" is
 // read back, and the link is used up only when that read confirms it.
 
+import { buildApprovalNote } from './approval-note.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -1375,9 +1376,13 @@ export class ApproveServer {
     // The button's page has no Teams identity, only the GitLab account it acted as. Best effort.
     if (typeof this.gitlab.addMrNote === 'function') {
       const account = String(result.user?.username || '').replace(/[^A-Za-z0-9_.-]/g, '');
-      const by = account ? ` (confirmed as @${account})` : '';
+      // The button's page has no Teams identity, only the GitLab account it acted as.
+      const note = buildApprovalNote({
+        trigger: 'button',
+        requesterNote: `someone with the card's Approve link${account ? ` (confirmed as @${account})` : ''}`,
+      });
       await this.gitlab
-        .addMrNote(record.project, record.iid, `👍 Approved via the Approve button on a Microsoft Teams card${by}.`, this.asToken(result.tokenIndex))
+        .addMrNote(record.project, record.iid, note, this.asToken(result.tokenIndex))
         .catch((err) => log(`Could not comment the approval on ${record.project}!${record.iid}: ${err.message}`));
     }
     return this.approved(record, summary);

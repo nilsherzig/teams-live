@@ -38,6 +38,7 @@ import {
   stripTruncatedUrlText,
   teamsMessageLink,
 } from './message-links.mjs';
+import { buildApprovalNote } from './approval-note.mjs';
 import {
   buildMergeRequestCard,
   buildJobCard,
@@ -4176,32 +4177,29 @@ export class MergeRequestWatcher {
   }
 
   /**
-   * Who approved from Teams, for the comment on the merge request: an explicit mention (@user) followed
-   * by their name when their GitLab username is certain (the configured mapping, else one exact-name
-   * match in GitLab); otherwise the name in bold. The usernames the directory derives from names are
-   * guesses and never used: a wrong mention would notify a stranger.
+   * Who asked for an approval from Teams: their name, MRI and, when it is certain, GitLab username
+   * (the configured mapping, else one exact-name match in GitLab). The usernames the directory derives
+   * from names are guesses and never used: a wrong mention would notify a stranger.
    */
-  async approverLabel({ name = '', mri = '' } = {}) {
+  async approvalRequester({ name = '', mri = '' } = {}) {
     const user = (mri && this.userDirectory.findUser(mri)) || (name && this.userDirectory.findUser(name)) || null;
-    const display = String(name || user?.displayName || '').replace(/[@\r\n`*_[\]<>]/g, '').trim() || 'someone';
     let gitlabUser = user ? [...(user.explicitGitlabUsernames || [])][0] : null;
     if (!gitlabUser && typeof this.gitlab?.findUsernameByName === 'function') {
       gitlabUser = await this.gitlab.findUsernameByName(name || user?.displayName).catch(() => '');
     }
-    return gitlabUser ? `@${gitlabUser} (${display})` : `**${display}**`;
+    return { name: name || user?.displayName || '', mri: mri || user?.mri || '', gitlabUser: gitlabUser || '' };
   }
 
   /**
-   * Leaves a comment on the merge request saying who approved it from Teams and linking the Teams
-   * message that triggered it (the approval itself is made by the bot's GitLab account, so GitLab
-   * alone would not say). Best effort: it never fails the approval.
+   * Leaves a comment on the merge request saying who approved (or revoked) from Teams and what
+   * triggered it, with links to the person and the Teams message (see approval-note.mjs). Always
+   * sent; best effort in that it never fails the approval.
    */
   async noteTeamsApproval(project, iid, { name, mri, via, conversationId, messageId, action = 'approved' }) {
     if (!this.gitlab?.addMrNote) return;
     try {
-      const link = teamsMessageLink(conversationId, messageId);
-      const trigger = link ? `[${via}](${link})` : via;
-      await this.gitlab.addMrNote(project, iid, `${action === 'revoked' ? '↩️ Approval revoked' : '👍 Approved'} via Microsoft Teams by ${await this.approverLabel({ name, mri })}: ${trigger}.`);
+      const requester = await this.approvalRequester({ name, mri });
+      await this.gitlab.addMrNote(project, iid, buildApprovalNote({ action, requester, trigger: via, message: { conversationId, messageId } }));
     } catch (err) {
       log.warn(`Could not comment the approver on ${project}!${iid}: ${err.message}`);
     }

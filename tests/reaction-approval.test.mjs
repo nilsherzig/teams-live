@@ -117,7 +117,9 @@ test('approves MR when self reacts with thumbs-up to bot status comment', async 
   assert.equal(approvedCalls.length, 1);
   assert.deepEqual(approvedCalls[0], { project: 'group/app', iid: '42' });
   assert.equal(noteCalls.length, 1, 'the approval is commented on the merge request');
-  assert.match(noteCalls[0].body, /Approved via Microsoft Teams by \*\*Alice Example\*\*: \[👍 reaction\]\(https:\/\/teams\.microsoft\.com\/l\/message\/19%3Ateam%40thread\.v2\/1770000000000\)/);
+  assert.match(noteCalls[0].body, /^\*\*Approved via Microsoft Teams\*\*/);
+  assert.match(noteCalls[0].body, /\*\*Requested by:\*\* \[Alice Example\]\(https:\/\/teams\.microsoft\.com\/l\/chat\/0\/0\?users=8:orgid:/);
+  assert.match(noteCalls[0].body, /\*\*Trigger:\*\* 👍 reaction on \[this Teams message\]\(https:\/\/teams\.microsoft\.com\/l\/message\/19%3Ateam%40thread\.v2\/1770000000000\)/);
 });
 
 test('approves MR when self reacts with 👍 emoji key on edited original bot message', async () => {
@@ -344,7 +346,8 @@ test('the approval comment mentions the approver by GitLab username when known, 
     messageId: '1700000000000',
   });
   assert.equal(notes.length, 1);
-  assert.match(notes[0].body, /by @alice \(Alice Example\): \[\/approve\]\(https:\/\/teams\.microsoft\.com\/l\/message\/19%3Ax%40thread\.v2\/1700000000000\)/);
+  assert.match(notes[0].body, /\*\*Requested by:\*\* @alice \(\[Alice Example\]\(https:\/\/teams\.microsoft\.com\/l\/chat\/0\/0\?users=8:orgid:00000000-0000-4000-8000-00000000000a\)\)/);
+  assert.match(notes[0].body, /\*\*Trigger:\*\* Command `\/approve` in \[this Teams message\]\(https:\/\/teams\.microsoft\.com\/l\/message\/19%3Ax%40thread\.v2\/1700000000000\)/);
   // A failing comment never fails the approval.
   watcher.gitlab.addMrNote = async () => {
     throw new Error('boom');
@@ -372,7 +375,8 @@ test('/unapprove (and its aliases) withdraws the approval and comments who asked
     );
     assert.deepEqual(unapproved, [{ project: 'group/app', iid: '42' }], command);
     assert.equal(notes.length, 1);
-    assert.match(notes[0].body, new RegExp(`Approval revoked via Microsoft Teams by \\*\\*Alice Example\\*\\*: \\[${command}\\]\\(https://teams\\.microsoft\\.com/l/message/`));
+    assert.match(notes[0].body, /^\*\*Approval revoked via Microsoft Teams\*\*/);
+    assert.ok(notes[0].body.includes(`Command \`${command}\``), command);
   }
 });
 
@@ -391,15 +395,16 @@ test('/unapprove says so when the bot has no approval to withdraw', async () => 
 
 test('the approver is mentioned only when the GitLab username is certain: mapping, else one exact-name match, never a derived guess', async () => {
   const { watcher } = createWatcher();
+  const mri = '8:orgid:00000000-0000-4000-8000-00000000000b';
   // Known from Teams only: the directory derives "alice" from the name, but that is a guess.
-  watcher.userDirectory.addUser({ mri: '8:orgid:00000000-0000-4000-8000-00000000000b', displayName: 'Alice Example' });
-  assert.equal(await watcher.approverLabel({ name: 'Alice Example', mri: '8:orgid:00000000-0000-4000-8000-00000000000b' }), '**Alice Example**');
+  watcher.userDirectory.addUser({ mri, displayName: 'Alice Example' });
+  assert.equal((await watcher.approvalRequester({ name: 'Alice Example', mri })).gitlabUser, '');
   // GitLab knows exactly one active account with that name: that username, whatever the guess was.
   watcher.gitlab.findUsernameByName = async (name) => (name === 'Alice Example' ? 'a.example' : '');
-  assert.equal(await watcher.approverLabel({ name: 'Alice Example', mri: '8:orgid:00000000-0000-4000-8000-00000000000b' }), '@a.example (Alice Example)');
+  assert.equal((await watcher.approvalRequester({ name: 'Alice Example', mri })).gitlabUser, 'a.example');
   // An explicit mapping wins over the lookup.
   watcher.userDirectory.addUser({ displayName: 'Alice Example', gitlabUsernames: ['mapped'] });
-  assert.equal(await watcher.approverLabel({ name: 'Alice Example' }), '@mapped (Alice Example)');
+  assert.equal((await watcher.approvalRequester({ name: 'Alice Example' })).gitlabUser, 'mapped');
 });
 
 test('findUsernameByName takes a single exact, active match only and caches it', async () => {
