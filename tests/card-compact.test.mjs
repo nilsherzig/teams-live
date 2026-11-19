@@ -121,3 +121,18 @@ test('the watcher builds the compact card only when teams.compact_cards is true'
   assert.equal(compactGrid(build({ rich_messages: true })), false, 'the classic card without the setting (the default comes from the config loader)');
   assert.equal(compactGrid(build({ rich_messages: true, compact_cards: false })), false);
 });
+
+test('an approver without a photo gets an initials picture in the compact card, not the generic silhouette', async () => {
+  const { PLACEHOLDER_AVATAR } = await import('../src/placeholder-avatar.mjs');
+  for (const approvedBy of [['Lena Muster'], ['Lena Muster', 'Max Mustermann']]) {
+    const card = buildMergeRequestCard({ ...MR, approvedBy, approvalsGiven: approvedBy.length, avatars: { 'Alice Example': initialsAvatar('Alice Example') } }, { compact: true });
+    const row = items(card)[2].columns[0].items.find((r) => r.columns[0].items[0].text === 'Approval');
+    const pictures = row.columns.map((c) => c.items?.[0]).filter((i) => i?.style === 'Person');
+    assert.equal(pictures.length, approvedBy.length);
+    for (const picture of pictures) {
+      assert.notEqual(picture.url, PLACEHOLDER_AVATAR, 'initials, not the silhouette');
+      assert.ok(approvedBy.includes(picture.altText));
+    }
+    assert.equal(pictures[0].url, initialsAvatar('Lena Muster'));
+  }
+});

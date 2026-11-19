@@ -688,7 +688,7 @@ export function buildMergeRequestCard(mr, { compact = false } = {}) {
       author ? personFact('Author', author, [author], mr.avatars, '', null, false, [], mr.profiles) : ['Author', ''],
       approved === true && approvers.length > 0
         ? // With the pill, the "👍 By" lead is not needed: the pill says what the people did.
-          personFact('Approval', approval, approvers.map(str), mr.avatars, approvalPill ? '' : '👍 By', approvalPill, approvers.length > 1, mr.approvedVia, mr.profiles)
+          personFact('Approval', approval, approvers.map(str), mr.avatars, approvalPill ? '' : '👍 By', approvalPill, compact || approvers.length > 1, mr.approvedVia, mr.profiles)
         : approvalPill
           ? ['Approval', approval, { badge: approvalPill, trail: '' }]
           : ['Approval', approval],
