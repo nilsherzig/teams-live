@@ -296,6 +296,7 @@ async function main() {
         refreshCards: (project, iid) => watcher.refreshMrCards(project, iid),
         locateCard: (project, iid) => watcher.mrCardMessage(project, iid),
         geoip,
+        oauth: apCfg.oauth?.client_id ? { clientId: apCfg.oauth.client_id, clientSecret: apCfg.oauth.client_secret, allowedUsers: apCfg.oauth.allowed_users } : null,
       });
       await approveServer.start();
       watcher.setApproveFlow(approveServer);

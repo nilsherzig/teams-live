@@ -26,6 +26,12 @@
 //   or merged. An uncertain outcome consumes nothing.
 // - The listener binds to loopback only and sits behind the reverse proxy.
 //
+// Optional "Sign in with GitLab" (`oauth`): before any confirmation the page sends the visitor through
+// GitLab's OAuth authorization-code flow (PKCE, scope read_user) and learns the verified GitLab user. That
+// user is bound into the session and the CSRF token, may be restricted to an allow-list, cannot be the
+// author of the merge request, and is named in the comment. The action itself is still made by the
+// configured account. Without `oauth` the links stay pure capability links.
+//
 // The same flow serves a second action, "Reopen", for CLOSED (never merged)
 // merge requests: a "🔄 Reopen" button on the closed card opens a link of the
 // kind `reopen`. It is separate from the approval links (its own records, never
@@ -82,6 +88,9 @@ const ACTIONS = ['approve', 'reopen', 'merge'];
 const LIVE_CACHE_MS = 3000;
 const MERGE_POLL_MS = 2000;
 const MERGE_POLL_ATTEMPTS = 8;
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const MAX_OAUTH_STATES = 500;
+const OAUTH_TIMEOUT_MS = 10_000;
 
 // Page copy per kind of link. `generic` is the entry page, which does not know
 // the action yet (the token that says so is still in the fragment).
@@ -526,6 +535,7 @@ export class ApproveServer {
     refreshCards = null,
     locateCard = null,
     geoip = null,
+    oauth = null,
     now = Date.now,
     mergeEnabled = false,
     mergePollMs = MERGE_POLL_MS,
@@ -557,6 +567,11 @@ export class ApproveServer {
     this.locateCard = locateCard;
     // {lookup(ip)} from geoip.mjs, or null: where an approving address is, for the comment on the MR.
     this.geoip = geoip;
+    // {clientId, clientSecret, allowedUsers?} or null: who confirms is learned by "Sign in with GitLab".
+    this.oauth = oauth?.clientId && oauth?.clientSecret
+      ? { clientId: String(oauth.clientId), clientSecret: String(oauth.clientSecret), allowedUsers: new Set((oauth.allowedUsers || []).map((u) => String(u).toLowerCase())) }
+      : null;
+    this.oauthStates = new Map();
     this.now = now;
     // Off unless asked for: merging from a card is a deliberate, separate opt-in.
     this.mergeEnabled = mergeEnabled === true;
@@ -715,7 +730,7 @@ export class ApproveServer {
     if (this.basePath && (pathname === this.basePath || pathname.startsWith(`${this.basePath}/`))) {
       pathname = pathname.slice(this.basePath.length) || '/';
     }
-    return ['/', '/session', '/confirm', '/state'].includes(pathname) ? pathname : null;
+    return ['/', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback'].includes(pathname) ? pathname : null;
   }
 
   readForm(req) {
@@ -770,7 +785,7 @@ export class ApproveServer {
     while (this.sessions.size >= MAX_SESSIONS) this.sessions.delete(this.sessions.keys().next().value);
     const sid = crypto.randomBytes(32).toString('base64url');
     const expiresAt = Math.min(now + SESSION_TTL_MS, record.expiresAt);
-    this.sessions.set(sha256Hex(sid), { recordId: record.id, expiresAt });
+    this.sessions.set(sha256Hex(sid), { recordId: record.id, expiresAt, user: null });
     return { sid, maxAge: Math.max(1, Math.floor((expiresAt - now) / 1000)) };
   }
 
@@ -793,7 +808,7 @@ export class ApproveServer {
     const s = this.sessions.get(sha256Hex(sid));
     if (!s || s.expiresAt <= this.now()) return null;
     const record = this.store.byId(s.recordId);
-    return record ? { sid, record } : null;
+    return record ? { sid, record, user: s.user || null } : null;
   }
 
   cookie(value, maxAge) {
@@ -841,6 +856,12 @@ export class ApproveServer {
     if (route === '/state') {
       if (method !== 'GET') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: 'GET' } });
       return this.state(req, res);
+    }
+    if (route === '/oauth/start' || route === '/oauth/callback') {
+      if (!this.oauth) return this.send(res, 404, this.page('Not found', '<p>Nothing here.</p>', { tone: 'warn' }));
+      if (method === 'POST') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: 'GET, HEAD' } });
+      if (method === 'HEAD') return this.send(res, 200, '', { head: true });
+      return route === '/oauth/start' ? this.oauthStart(req, res) : this.oauthCallback(req, res);
     }
     // /confirm
     if (method === 'HEAD') return this.send(res, 200, '', { head: true });
@@ -1041,13 +1062,116 @@ export class ApproveServer {
       const who = escapeHtml(user.username || user.name || user.id);
       lines.push(
         record.action === 'reopen'
-          ? `<p class="callout">The merge request is reopened with the configured GitLab account <code>${who}</code>, not as you personally. Anyone with this link can reopen it.</p>`
+          ? `<p class="callout">The merge request is reopened with the configured GitLab account <code>${who}</code>, not as you personally.${this.anyone('reopen')}</p>`
           : record.action === 'merge'
-            ? `<p class="callout">The merge is made with the configured GitLab account <code>${who}</code>, not as you personally. Anyone with this link can merge. GitLab's own rules (approvals, pipeline, protected branch) still apply and are not bypassed.</p>`
-            : `<p class="callout">The approval is made with the configured GitLab account <code>${who}</code>, not as you personally. Anyone with this link can approve.</p>`,
+            ? `<p class="callout">The merge is made with the configured GitLab account <code>${who}</code>, not as you personally.${this.anyone('merge')} GitLab's own rules (approvals, pipeline, protected branch) still apply and are not bypassed.</p>`
+            : `<p class="callout">The approval is made with the configured GitLab account <code>${who}</code>, not as you personally.${this.anyone('approve')}</p>`,
       );
     }
     return lines.join('');
+  }
+
+  anyone(verb) {
+    return this.oauth ? '' : ` Anyone with this link can ${verb}${verb === 'reopen' ? ' it' : ''}.`;
+  }
+
+  bindOf(actor, user) {
+    return `${actorBind(actor)}${this.oauth ? `;who=${user?.username || ''}` : ''}`;
+  }
+
+  whoHtml(user) {
+    return user ? `<p class="note">Signed in with GitLab as <code>${escapeHtml(user.username)}</code>.</p>` : '';
+  }
+
+  /** Why the signed-in user may not act on this merge request, or '' (also when sign-in is off). */
+  signInDenied(user, mr) {
+    if (!this.oauth) return '';
+    if (!user) return 'Sign in with GitLab first.';
+    const name = String(user.username).toLowerCase();
+    if (this.oauth.allowedUsers.size > 0 && !this.oauth.allowedUsers.has(name)) return `The GitLab user ${user.username} is not allowed to use this page.`;
+    if (mr?.author?.username && String(mr.author.username).toLowerCase() === name) return 'You are the author of this merge request and cannot confirm it yourself.';
+    return '';
+  }
+
+  signInPage(res, record) {
+    const kind = kindOf(record);
+    const body = `<p>To continue, sign in with GitLab. The page only learns your GitLab user name; it never sees your password.</p><p class="links"><a class="btn" href="${escapeHtml(`${this.origin}${this.basePath}/oauth/start`)}">Sign in with GitLab</a></p>`;
+    return this.send(res, 200, this.page('Sign in with GitLab', body, { tone: 'neutral', kind }));
+  }
+
+  oauthRedirectUri() {
+    return `${this.origin}${this.basePath}/oauth/callback`;
+  }
+
+  /** GET <base>/oauth/start: sends the visitor to GitLab. State and PKCE verifier stay on the server. */
+  oauthStart(req, res) {
+    const session = this.sessionOf(req);
+    if (!session) return this.send(res, 401, this.page('Link not opened', '<p>Open the link from the Teams card again. Nothing was changed.</p>', { tone: 'warn' }));
+    const now = this.now();
+    for (const [k, v] of this.oauthStates) if (v.exp <= now) this.oauthStates.delete(k);
+    while (this.oauthStates.size >= MAX_OAUTH_STATES) this.oauthStates.delete(this.oauthStates.keys().next().value);
+    const nonce = crypto.randomBytes(32).toString('base64url');
+    const verifier = crypto.randomBytes(48).toString('base64url');
+    this.oauthStates.set(nonce, { sid: sha256Hex(session.sid), verifier, exp: now + OAUTH_STATE_TTL_MS });
+    const url = new URL(`https://${this.gitlabHost}/oauth/authorize`);
+    url.search = new URLSearchParams({
+      client_id: this.oauth.clientId,
+      redirect_uri: this.oauthRedirectUri(),
+      response_type: 'code',
+      scope: 'read_user',
+      state: nonce,
+      code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url'),
+      code_challenge_method: 'S256',
+    }).toString();
+    res.writeHead(302, this.headers({ Location: url.href }));
+    res.end();
+  }
+
+  /**
+   * GET <base>/oauth/callback: GitLab sends the visitor back here, a cross-site navigation, so the
+   * SameSite=Strict session cookie is NOT sent. The one-time `state` (server side) names the session instead.
+   * The answer is a page that continues to /confirm by itself: that navigation starts on this origin, so
+   * the cookie is sent again.
+   */
+  async oauthCallback(req, res) {
+    const fail = (text) => this.send(res, 400, this.page('Sign-in failed', `<p>${escapeHtml(text)} Nothing was changed. Use the button on the Teams card to start again.</p>`, { tone: 'warn' }));
+    const params = new URL(req.url, 'http://localhost').searchParams;
+    const key = params.get('state') || '';
+    const state = this.oauthStates.get(key);
+    this.oauthStates.delete(key);
+    if (!state || state.exp <= this.now()) return fail('The sign-in expired or was not started here.');
+    const session = this.sessions.get(state.sid);
+    const code = params.get('code');
+    if (!session || session.expiresAt <= this.now() || !code) return fail(params.get('error') ? 'GitLab did not sign you in.' : 'The sign-in could not be completed.');
+    let user;
+    try {
+      user = await this.oauthUser(code, state.verifier);
+    } catch (err) {
+      log(`GitLab sign-in failed: ${err.message}`);
+      return fail('GitLab could not confirm who you are.');
+    }
+    session.user = user;
+    const next = `${this.basePath}/confirm`;
+    return this.send(res, 200, this.page('Signed in', `<meta http-equiv="refresh" content="0;url=${escapeHtml(next)}"><p>Signed in as <code>${escapeHtml(user.username)}</code>.</p><p class="links"><a class="btn" href="${escapeHtml(next)}">Continue</a></p>`, { tone: 'ok' }));
+  }
+
+  /** Trades the code for a token and reads the user it belongs to. The token is dropped right away. */
+  async oauthUser(code, verifier) {
+    const signal = () => AbortSignal.timeout(OAUTH_TIMEOUT_MS);
+    const tokenRes = await fetch(`https://${this.gitlabHost}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: new URLSearchParams({ client_id: this.oauth.clientId, client_secret: this.oauth.clientSecret, code, grant_type: 'authorization_code', redirect_uri: this.oauthRedirectUri(), code_verifier: verifier }).toString(),
+      signal: signal(),
+    });
+    if (!tokenRes.ok) throw new Error(`token endpoint answered HTTP ${tokenRes.status}`);
+    const accessToken = (await tokenRes.json())?.access_token;
+    if (typeof accessToken !== 'string' || !accessToken) throw new Error('no access token');
+    const userRes = await fetch(`https://${this.gitlabHost}/api/v4/user`, { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' }, signal: signal() });
+    if (!userRes.ok) throw new Error(`user endpoint answered HTTP ${userRes.status}`);
+    const u = await userRes.json();
+    if (!u?.id || typeof u.username !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(u.username)) throw new Error('unusable user');
+    return { id: u.id, username: u.username, name: typeof u.name === 'string' ? u.name : u.username };
   }
 
   usedPage(record) {
@@ -1141,7 +1265,9 @@ export class ApproveServer {
     return links.length ? `<p class="links">${links.join('')}</p>` : '';
   }
 
-  async showConfirmation(res, { sid, record }) {
+  async showConfirmation(res, session) {
+    const { sid, record } = session;
+    if (this.oauth && !session.user) return this.signInPage(res, record);
     const result = await this.evaluateCached(record);
     await this.refreshApprovals(record);
     if (result.status === 'used') {
@@ -1161,10 +1287,12 @@ export class ApproveServer {
     if (!actor) {
       return this.send(res, 409, this.page(copy.blocked, `${this.summary(record, result.mr, null)}<p>${escapeHtml(UNVERIFIED_ACCOUNT)}</p>`, { tone: 'warn', kind }));
     }
+    const denied = this.signInDenied(session.user, result.mr);
+    if (denied) return this.send(res, 403, this.page(copy.blocked, `${this.summary(record, result.mr, result.user)}<p>${escapeHtml(denied)}</p>`, { tone: 'warn', kind }));
     // The shown account and credential travel with the form and are bound into the CSRF token.
-    const token = this.csrf.issue(sid, record.id, actorBind(actor));
+    const token = this.csrf.issue(sid, record.id, this.bindOf(actor, session.user));
     const form = `<div class="actions" data-live-action><form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><input type="hidden" name="user" value="${escapeHtml(actor.user)}"><input type="hidden" name="cred" value="${escapeHtml(actor.cred)}"><p>${copy.question}</p>${kind === 'merge' ? `<p class="note">Merges exactly the head commit above. Source-branch removal and squash follow the merge request's own settings. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}<button class="btn" type="submit">${copy.button}</button></form></div>`;
-    return this.send(res, 200, this.page(copy.title, `${this.summary(record, result.mr, result.user)}${form}`, { tone: 'neutral', kind }));
+    return this.send(res, 200, this.page(copy.title, `${this.summary(record, result.mr, result.user)}${this.whoHtml(session.user)}${form}`, { tone: 'neutral', kind }));
   }
 
   /** `[title, body]` for a merge request that is already in the wanted state. */
@@ -1196,11 +1324,16 @@ export class ApproveServer {
     }
   }
 
-  async approve(req, res, { sid, record }) {
+  async approve(req, res, session) {
+    const { sid, record } = session;
     const kind = kindOf(record);
     const nothing = { reopen: 'Nothing was reopened.', merge: 'Nothing was merged.', approve: 'Nothing was approved.' }[kind];
     if (!this.originAllowed(req)) {
       this.send(res, 403, this.page('Not allowed', `<p>The request did not come from the confirmation page. ${nothing}</p>`, { tone: 'warn', kind }));
+      return;
+    }
+    if (this.oauth && !session.user) {
+      this.send(res, 401, this.page('Sign in required', `<p>Sign in with GitLab first. ${nothing}</p>`, { tone: 'warn', kind }));
       return;
     }
     const parsed = await this.postForm(req);
@@ -1210,7 +1343,7 @@ export class ApproveServer {
       return;
     }
     const shown = { user: parsed.form.get('user') ?? '', cred: parsed.form.get('cred') ?? '' };
-    if (!this.csrf.verify(parsed.form.get('csrf'), sid, record.id, actorBind(shown))) {
+    if (!this.csrf.verify(parsed.form.get('csrf'), sid, record.id, this.bindOf(shown, session.user))) {
       this.send(res, 403, this.page('Page expired', `<p>This page expired. Open the link again and confirm. ${nothing}</p>`, { tone: 'warn', kind }));
       return;
     }
@@ -1236,11 +1369,13 @@ export class ApproveServer {
       if (!actor) {
         return { code: 409, title: COPY[kind].blocked, body: `${this.summary(current, result.mr, null)}<p>${escapeHtml(UNVERIFIED_ACCOUNT)}</p>` };
       }
+      const denied = this.signInDenied(session.user, result.mr);
+      if (denied) return { code: 403, title: COPY[kind].blocked, body: `${this.summary(current, result.mr, result.user)}<p>${escapeHtml(denied)} ${nothing}</p>` };
       if (actor.user !== shown.user || actor.cred !== shown.cred) {
         return this.identityChanged(this.summary(current, result.mr, result.user), { reopen: 'reopened', merge: 'merged', approve: 'approved' }[kind]);
       }
       if (kind === 'reopen') return this.sendReopen(current, result);
-      return kind === 'merge' ? this.sendMerge(current, result) : this.sendApproval(current, result, { ip: this.clientIp(req) });
+      return kind === 'merge' ? this.sendMerge(current, result) : this.sendApproval(current, result, { ip: this.clientIp(req), signedIn: session.user });
     });
     this.send(res, outcome.code, this.page(outcome.title, outcome.body + (outcome.code === 200 ? this.followLinks(record) : ''), { tone: outcome.tone || toneForCode(outcome.code), kind }));
   }
@@ -1404,7 +1539,7 @@ export class ApproveServer {
     return isIP(forwarded) ? forwarded : '';
   }
 
-  async sendApproval(record, result, { ip = '' } = {}) {
+  async sendApproval(record, result, { ip = '', signedIn = null } = {}) {
     const summary = this.summary(record, result.mr, result.user);
     try {
       await this.gitlab.approveMr(record.project, record.iid, { sha: record.sha, ...this.asActor(result) });
@@ -1442,7 +1577,9 @@ export class ApproveServer {
       const card = typeof this.locateCard === 'function' ? this.locateCard(record.project, record.iid) : null;
       const note = buildApprovalNote({
         trigger: 'button',
-        requesterNote: `someone with the card's Approve link${account ? ` (confirmed as @${account})` : ''}`,
+        requesterNote: signedIn
+          ? `@${signedIn.username} (signed in with GitLab)`
+          : `someone with the card's Approve link${account ? ` (confirmed as @${account})` : ''}`,
         message: card || {},
         ip,
         place: ip && this.geoip ? formatPlace(this.geoip.lookup(ip)) : '',

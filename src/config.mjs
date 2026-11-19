@@ -350,6 +350,13 @@ export function loadConfig(configPath) {
     // Optional MaxMind DB file (e.g. DB-IP City Lite): the comment an Approve-button approval leaves on the
     // merge request then says where the approving address is. Read locally; no address is sent anywhere.
     geoip_database: (getString(rawApprove.geoip_database) || process.env.TEAMS_GITLAB_APPROVE_GEOIP_DATABASE || '').trim(),
+    // Optional "Sign in with GitLab" before a confirmation: an OAuth application (read_user) on the GitLab
+    // host. `client_secret` comes from a `{ _secret: path }` reference. `allowed_users` (usernames) is optional.
+    oauth: {
+      client_id: (getString(rawApprove.oauth?.client_id) || process.env.TEAMS_GITLAB_APPROVE_OAUTH_CLIENT_ID || '').trim(),
+      client_secret: (getString(rawApprove.oauth?.client_secret) || process.env.TEAMS_GITLAB_APPROVE_OAUTH_CLIENT_SECRET || '').trim(),
+      allowed_users: Array.isArray(rawApprove.oauth?.allowed_users) ? rawApprove.oauth.allowed_users.map(String) : [],
+    },
   };
   for (const removed of ['owner_users', 'owner_users_file', 'user_header', 'proxy_secret', 'proxy_secret_file', 'proxy_secret_header']) {
     if (rawApprove[removed] !== undefined) {

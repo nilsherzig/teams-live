@@ -474,6 +474,25 @@ authentication layer. The proxy may keep the path prefix or strip it.
 | `gitlab.approve.host`, `.port` | Listener, loopback only (127.0.0.1, 3006). |
 | `gitlab.approve.base_url` | Public https URL of the page, for example `https://<host>/approve`; no query or fragment. It is also the allowed Origin of the POSTs. Plain http is accepted only for loopback. |
 | `gitlab.approve.link_ttl_seconds` | Lifetime of a link (86400). |
+| `gitlab.approve.oauth.client_id`, `.client_secret` | Turns on [Sign in with GitLab](#sign-in-with-gitlab). Give the secret as `{ _secret = "/path"; }`. Off by default. |
+| `gitlab.approve.oauth.allowed_users` | Optional list of GitLab user names allowed to confirm. Empty: any user that signs in. |
+
+#### Sign in with GitLab
+
+By default the link is a capability: whoever holds it can confirm. With
+`gitlab.approve.oauth` set, the page first sends the visitor through GitLab's
+OAuth sign-in and learns the verified GitLab user name (scope `read_user`,
+authorization code with PKCE; the page never sees a password). The user is
+bound into the session and the confirmation form, may be limited with
+`allowed_users`, cannot be the author of the merge request, and is named in the
+merge request comment (`@user (signed in with GitLab)`). The action itself is
+still made by the configured account.
+
+Set it up once: in GitLab, add an application (your profile, Applications; or a
+group or the admin area) with the redirect URI
+`<base_url>/oauth/callback`, scope `read_user`, "Confidential" on. Keep the
+secret in SOPS and reference it with `_secret`. The proxy must forward
+`/oauth/start` and `/oauth/callback` like the other paths.
 
 The environment fallbacks are `TEAMS_GITLAB_APPROVE_*` (`ENABLE`, `HOST`,
 `PORT`, `BASE_URL`, `LINK_TTL_SECONDS`). The former `owner_users`,
