@@ -644,7 +644,8 @@ export function buildMergeRequestCard(mr) {
 
   let autoMergeText = '';
   if (autoMerge === true) {
-    autoMergeText = `🔀 Enabled${mr.autoMergeUser ? ` by ${mr.autoMergeUser}` : ''}`;
+    // Who enabled it is not shown: it is almost always the author, which the card already says.
+    autoMergeText = '🔀 Enabled';
   } else if (live) {
     autoMergeText = autoMerge === false ? '⏸️ Disabled' : '❔ Unknown (not retrieved)';
   }
@@ -684,9 +685,7 @@ export function buildMergeRequestCard(mr) {
           : ['Approval', approval],
       pipelineFact(mr.pipeline, mr.pipelineKnown),
       ['Rebase', rebase],
-      autoMerge === true && mr.autoMergeUser
-        ? personFact('Auto-merge', autoMergeText, [str(mr.autoMergeUser)], mr.avatars, '🔀 Enabled by')
-        : ['Auto-merge', autoMergeText],
+      ['Auto-merge', autoMergeText],
       logoFact('Ticket', mdLink(jiraLabel, mr.jira?.url), 'jira'),
     ].filter(Boolean),
     actions: live

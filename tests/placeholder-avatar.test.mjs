@@ -68,13 +68,13 @@ test('peekOrPlaceholder: the cached photo, else the placeholder, and it never st
   assert.equal(service.peek('Alice Example'), null, 'strict resolution is unchanged: no photo means no photo');
 });
 
-test('an MR card shows the placeholder for author, approver and auto-merge person without a photo', async () => {
+test('an MR card shows the placeholder for author and approver without a photo', async () => {
   const watcher = newWatcher();
   const mr = { project: 'group/app', iid: 7, title: 'Example' };
   const details = { title: 'Example', author: 'Alice Example', approved: true, approvedBy: ['Zed Nobody'], autoMerge: true, autoMergeUser: 'Quinn Example' };
   await watcher.prefetchAvatars(watcher.mrCardPeopleData(mr, details));
   const images = imagesOf(watcher.buildMrCard(mr, details));
-  assert.deepEqual(images.map((i) => i.altText).sort(), ['Alice Example', 'Quinn Example', 'Zed Nobody']);
+  assert.deepEqual(images.map((i) => i.altText).sort(), ['Alice Example', 'Zed Nobody']);
   for (const image of images) {
     assert.equal(image.url, PLACEHOLDER_AVATAR);
     assert.deepEqual([image.width, image.height], ['18px', '18px']);

@@ -129,7 +129,7 @@ test('merge request card: open, approved, green pipeline, auto-merge', () => {
   assert.ok(JSON.stringify(card).includes('Alice Example'));
   assert.ok(JSON.stringify(card).includes('Bob Example'));
   assert.equal(f.Pipeline, 'Passed (#7)');
-  assert.equal(f['Auto-merge'], '\u{1F500} Enabled by Alice Example');
+  assert.equal(f['Auto-merge'], '\u{1F500} Enabled');
   assert.equal(f.Target, undefined, 'the target branch is not a rich fact');
   assert.equal(f.Ticket, 'EX-123');
   assert.equal(f.Rebase, undefined);

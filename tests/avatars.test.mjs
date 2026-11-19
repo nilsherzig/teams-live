@@ -638,7 +638,7 @@ test('unassigned or picture-less people stay plain facts', () => {
 
 test('merge request approvers and the auto-merge user get pictures, in fact order', () => {
   const card = buildMergeRequestCard({ ...MR, avatars: { 'Alice Example': URI, 'Bob Example': URI, 'Carol Example': URI } });
-  const [approval, autoMerge] = rows(card);
+  const [approval] = rows(card);
   assert.equal(approval.columns[0].items[0].text, 'Approval');
   const approvers = linesOf(approval);
   assert.equal(approval.columns[1].items.some((l) => l.type === 'TextBlock'), false, 'no line of its own for the lead');
@@ -646,12 +646,8 @@ test('merge request approvers and the auto-merge user get pictures, in fact orde
   assert.equal(valueOf(approval)[0].altText, 'Approved');
   assert.deepEqual(approvers.map(lineTexts), [['Alice Example'], ['Bob Example']]);
   assert.equal(approvers[0].columns[0].items[0].type, 'Image');
-  assert.equal(autoMerge.columns[0].items[0].text, 'Auto-merge');
-  // The Enabled state stays explicit, on the same single line as the picture and name.
-  const personLines = linesOf(autoMerge);
-  assert.equal(autoMerge.columns[1].items.length, 1, 'one compact line');
-  assert.deepEqual(personLines.map(lineTexts), [['\u{1F500} Enabled by', 'Carol Example', 'Carol Example']]);
-  assert.equal(autoMerge.columns[0].verticalContentAlignment, 'Center');
+  // The auto-merge row is plain text: it does not say who enabled it.
+  assert.equal(factOf(card, 'Auto-merge').columns[1].items[0].text, '\u{1F500} Enabled');
   const order = items(card).filter((i) => i.type === 'ColumnSet').map((i) => i.columns[0].items[0].text ?? '');
   assert.ok(order.indexOf('Approval') < order.indexOf('Auto-merge'));
   assert.ok(order.includes('Status'), 'plain facts stay, as rows');
@@ -682,7 +678,7 @@ test('person rows wrap only their name: one stretch value column, a picture cell
   const card = buildMergeRequestCard({ ...MR, avatars: { 'Alice Example': URI, 'Bob Example': URI, 'Carol Example': URI } });
   const labelWidth = factOf(card, 'Status').columns[0].width;
   const personRows = rows(card);
-  assert.ok(personRows.length >= 2, 'approval and auto-merge rows');
+  assert.ok(personRows.length >= 1, 'the approval row');
   for (const row of personRows) {
     // Same shape as the plain fact rows: a fixed label cell, then a single stretch value cell.
     assert.equal(row.columns.length, 2);
@@ -699,11 +695,11 @@ test('person rows wrap only their name: one stretch value column, a picture cell
       if (beforeGap) assert.equal(beforeGap.items[0].type === 'Image' || beforeGap.items[0].text === '\u{1F500} Enabled by', true);
     }
   }
-  // The approval pill replaces the "By" lead; the auto-merge lead stays.
+  // The approval pill replaces the "By" lead; the auto-merge row says only that it is enabled.
   const json = JSON.stringify(card);
   assert.equal(json.includes('Approved by'), false);
   assert.equal(json.includes('\u{1F44D} By'), false);
-  assert.ok(json.includes('\u{1F500} Enabled by'));
+  assert.equal(json.includes('\u{1F500} Enabled by'), false);
 });
 
 test('userRow flows several people in one value column; a name without a picture is just its name', () => {
@@ -730,7 +726,7 @@ test('pictures per row and per card are capped and the rest falls back to names'
   const approvers = ['Alice Example', 'Bob Example', 'Carol Example', 'Dave Example'];
   const avatars = Object.fromEntries(approvers.map((n) => [n, URI]));
   const card = buildMergeRequestCard({ ...MR, approvedBy: approvers, avatars });
-  assert.equal(images(card), 4 + 1, 'three photos, one placeholder and the auto-merge user');
+  assert.equal(images(card), 4, 'three photos and one placeholder');
   const [approval] = rows(card);
   assert.ok(linesOf(approval).some((l) => l.columns.some((c) => c.items[0].altText === 'Dave Example')), 'fourth approver by initials');
 
@@ -956,15 +952,6 @@ test('everybody on a card gets a picture: heavy photos never starve a bot or ser
   const person = (name) => JSON.stringify(card).includes(`"altText":"${name}","style":"Person"`);
   assert.ok(person('Dave Example'));
   assert.ok(person('Service Bot'), 'the bot has a picture, a placeholder at least');
-});
-
-test('every person is `<picture> <name>`: the lead text comes before the picture, never between picture and name', () => {
-  const card = buildMergeRequestCard({ ...MR, avatars: { 'Carol Example': URI } });
-  const row = rows(card).find((r) => r.columns[0].items[0].text === 'Auto-merge');
-  const [lead, picture, , name] = row.columns[1].items[0].columns;
-  assert.equal(lead.items[0].text, '\u{1F500} Enabled by');
-  assert.equal(picture.items[0].type, 'Image');
-  assert.equal(name.items[0].text, 'Carol Example');
 });
 
 // ── approvals the MS Teams bot made on somebody's behalf ──────────────────────
