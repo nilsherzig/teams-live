@@ -574,6 +574,7 @@ export class ApproveServer {
     rebaseEnabled = true,
     avatarOf = null,
     avatarWarm = null,
+    recordApprover = null,
     mergePollMs = MERGE_POLL_MS,
     mergePollAttempts = MERGE_POLL_ATTEMPTS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -616,6 +617,8 @@ export class ApproveServer {
     // (name) => picture data URI for a person, and (names) => Promise that loads their photos: from the watcher.
     this.avatarOf = typeof avatarOf === 'function' ? avatarOf : null;
     this.avatarWarm = typeof avatarWarm === 'function' ? avatarWarm : null;
+    // (project, iid, {username, name}) => void: who really approved, so the card can show them instead of the bot.
+    this.recordApprover = typeof recordApprover === 'function' ? recordApprover : null;
     this.mergePollMs = mergePollMs;
     this.mergePollAttempts = Math.max(1, Number(mergePollAttempts) || 1);
     this.rebasePollMs = mergePollMs === MERGE_POLL_MS ? REBASE_POLL_MS : mergePollMs;
@@ -1848,6 +1851,14 @@ export class ApproveServer {
     }
     // Always say how the approval came about: the bot's account approves, so GitLab alone would not tell.
     await this.noteAction(record, result, { action: 'approved', button: 'Approve', ip, signedIn });
+    // The approval is the bot's account's, but the card should show who asked (with the Teams mark) when it is known.
+    if (signedIn && this.recordApprover) {
+      try {
+        this.recordApprover(record.project, record.iid, signedIn);
+      } catch (err) {
+        log(`Could not record the approver of ${record.project}!${record.iid}: ${err.message}`);
+      }
+    }
     return this.approved(record, summary);
   }
 

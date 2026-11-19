@@ -1887,6 +1887,28 @@ export class MergeRequestWatcher {
     this.approveFlow = flow || null;
   }
 
+  /**
+   * Remembers who really approved through the approval page: the signed-in GitLab user. The account that
+   * approves is the bot's, so the card shows this person instead (with the Teams mark), like for `/approve`.
+   * The directory person is found by an explicitly configured GitLab user name, else by the exact name;
+   * without a match the GitLab name is shown (with initials). No comment is left here: the page does that.
+   */
+  recordWebApprover(project, iid, gitlabUser) {
+    if (!project || iid === undefined || !gitlabUser?.username) return;
+    const username = String(gitlabUser.username).toLowerCase();
+    let user = null;
+    try {
+      const configured = this.userDirectory?.byGitlabUsername?.get(username);
+      user = configured?.explicitGitlabUsernames?.has(username) ? configured : null;
+      if (!user && gitlabUser.name) user = this.userDirectory?.findUser(gitlabUser.name) || null;
+    } catch {
+      user = null;
+    }
+    const name = user?.displayName || gitlabUser.name || gitlabUser.username;
+    this.teamsApprovals.set(`${project}!${iid}`.toLowerCase(), { name: String(name), mri: String(user?.mri || ''), at: Date.now() });
+    this.saveState();
+  }
+
   /** The picture of a person for the approval pages: the cached photo, else their initials (as on the cards). */
   webAvatarOf(name) {
     const photo = this.avatarService && !this.suppressAvatars ? this.avatarService.peek(name) : null;

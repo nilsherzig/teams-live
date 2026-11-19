@@ -295,6 +295,7 @@ async function main() {
         rebaseEnabled: apCfg.rebase_enabled !== false,
         avatarOf: (name) => watcher.webAvatarOf(name),
         avatarWarm: (names) => watcher.webAvatarWarm(names),
+        recordApprover: (project, iid, user) => watcher.recordWebApprover(project, iid, user),
         stateFile: path.join(config.gitlab.state_dir, 'approve-links.json'),
         refreshCards: (project, iid) => watcher.refreshMrCards(project, iid),
         locateCard: (project, iid) => watcher.mrCardMessage(project, iid),
