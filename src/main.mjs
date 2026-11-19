@@ -11,6 +11,7 @@ import { TrouterClient } from './trouter.mjs';
 import { MergeRequestWatcher } from './watcher.mjs';
 import { GitLabWebhookServer } from './webhook.mjs';
 import { ApproveServer } from './approve.mjs';
+import { openGeoIp } from './geoip.mjs';
 import { WebhookReconciler, isStrongSecret, MIN_SECRET_LENGTH } from './webhook-reconcile.mjs';
 import path from 'node:path';
 import { SystemdWatchdog } from './systemd.mjs';
@@ -275,6 +276,14 @@ async function main() {
     if (config.teams?.rich_messages !== true) {
       log.warn('GitLab approval flow is enabled but teams.rich_messages is off: no Approve button will be shown.');
     }
+    let geoip = null;
+    if (apCfg.geoip_database) {
+      try {
+        geoip = openGeoIp(apCfg.geoip_database);
+      } catch (err) {
+        log.warn(`GeoIP database not used (${apCfg.geoip_database}): ${err.message}`);
+      }
+    }
     try {
       approveServer = new ApproveServer({
         gitlab,
@@ -286,6 +295,7 @@ async function main() {
         stateFile: path.join(config.gitlab.state_dir, 'approve-links.json'),
         refreshCards: (project, iid) => watcher.refreshMrCards(project, iid),
         locateCard: (project, iid) => watcher.mrCardMessage(project, iid),
+        geoip,
       });
       await approveServer.start();
       watcher.setApproveFlow(approveServer);

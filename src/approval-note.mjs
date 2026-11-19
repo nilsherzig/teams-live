@@ -24,8 +24,9 @@ const clean = (value) => String(value ?? '').replace(/[@\r\n`*_[\]<>]/g, '').tri
  * @param {{conversationId?: string, messageId?: string}} [p.message] the Teams message that triggered it (for the
  *   Approve button: the card that carries the button)
  * @param {string} [p.ip] the address the request came from, when it is known (the button's web page)
+ * @param {string} [p.place] where that address is, as text (see geoip.mjs formatPlace), when it is known
  */
-export function buildApprovalNote({ action = 'approved', requester = {}, requesterNote = '', trigger, message = {}, ip = '' }) {
+export function buildApprovalNote({ action = 'approved', requester = {}, requesterNote = '', trigger, message = {}, ip = '', place = '' }) {
   const revoked = action === 'revoked';
   const title = revoked ? 'Approval revoked via Microsoft Teams' : 'Approved via Microsoft Teams';
 
@@ -47,7 +48,7 @@ export function buildApprovalNote({ action = 'approved', requester = {}, request
     '',
     `- **Requested by:** ${by}`,
     `- **Trigger:** ${how}`,
-    ...(isIP(String(ip || '')) ? [`- **IP address:** \`${ip}\``] : []),
+    ...(isIP(String(ip || '')) ? [`- **IP address:** \`${ip}\`${place ? ` · ${clean(place)}` : ''}`] : []),
     '',
     `_The ${revoked ? 'approval was withdrawn' : 'approval was submitted'} by the MS Teams bot on the requester's behalf._`,
   ].join('\n');

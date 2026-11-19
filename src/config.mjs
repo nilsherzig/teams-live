@@ -347,6 +347,9 @@ export function loadConfig(configPath) {
     base_url: (getString(rawApprove.base_url) || process.env.TEAMS_GITLAB_APPROVE_BASE_URL || '').trim(),
     // Lifetime of a link in seconds (default 24 h); the server bounds it to 60 s .. 7 d.
     link_ttl_seconds: Number(rawApprove.link_ttl_seconds ?? process.env.TEAMS_GITLAB_APPROVE_LINK_TTL_SECONDS ?? 86400),
+    // Optional MaxMind DB file (e.g. DB-IP City Lite): the comment an Approve-button approval leaves on the
+    // merge request then says where the approving address is. Read locally; no address is sent anywhere.
+    geoip_database: (getString(rawApprove.geoip_database) || process.env.TEAMS_GITLAB_APPROVE_GEOIP_DATABASE || '').trim(),
   };
   for (const removed of ['owner_users', 'owner_users_file', 'user_header', 'proxy_secret', 'proxy_secret_file', 'proxy_secret_header']) {
     if (rawApprove[removed] !== undefined) {

@@ -261,3 +261,14 @@ test('the Approve button leaves a comment with the card link and the client addr
   assert.match(notes[0].body, /Approve button on \[this Teams card\]\(https:\/\/teams\.microsoft\.com\/l\/message\/19%3Ax%40thread\.v2\/1700000000000\)/);
   assert.match(notes[0].body, /\*\*IP address:\*\* `203\.0\.113\.7`/);
 });
+
+test('the Approve button comment says where the address is when a GeoIP database is configured', async () => {
+  const notes = [];
+  const gitlab = { approveMr: async () => ({}), addMrNote: async (p, i, body) => notes.push(body) };
+  const geoip = { lookup: (ip) => (ip === '203.0.113.7' ? { city: 'Berlin', region: 'Berlin', country: 'Germany', countryCode: 'DE' } : null) };
+  const server = new ApproveServer({ gitlab, baseUrl: `${ORIGIN}/approve`, port: 0, geoip });
+  await server.sendApproval({ project: PROJECT, iid: IID, sha: SHA }, { user: { id: 1, username: 'bot' }, tokenIndex: 0 }, { ip: '203.0.113.7' });
+  await server.sendApproval({ project: PROJECT, iid: IID, sha: SHA }, { user: { id: 1, username: 'bot' }, tokenIndex: 0 }, { ip: '10.0.0.1' });
+  assert.match(notes[0], /`203\.0\.113\.7` · Berlin, Germany \u{1F1E9}\u{1F1EA}/u);
+  assert.match(notes[1], /`10\.0\.0\.1`$/m, 'an address the database does not know: just the address');
+});

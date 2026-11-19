@@ -47,6 +47,7 @@
 
 import { buildApprovalNote } from './approval-note.mjs';
 import { teamsMessageLink } from './message-links.mjs';
+import { formatPlace } from './geoip.mjs';
 import { PAGE_CSS, TANUKI, escapeHtml, liveScript, liveSlots, liveState, renderSummary, safeLink } from './approve-page.mjs';
 import http from 'node:http';
 import { isIP } from 'node:net';
@@ -524,6 +525,7 @@ export class ApproveServer {
     stateFile = null,
     refreshCards = null,
     locateCard = null,
+    geoip = null,
     now = Date.now,
     mergeEnabled = false,
     mergePollMs = MERGE_POLL_MS,
@@ -553,6 +555,8 @@ export class ApproveServer {
     this.refreshCards = refreshCards;
     // (project, iid) => {conversationId, messageId} | null: the Teams card that carries the button.
     this.locateCard = locateCard;
+    // {lookup(ip)} from geoip.mjs, or null: where an approving address is, for the comment on the MR.
+    this.geoip = geoip;
     this.now = now;
     // Off unless asked for: merging from a card is a deliberate, separate opt-in.
     this.mergeEnabled = mergeEnabled === true;
@@ -1441,6 +1445,7 @@ export class ApproveServer {
         requesterNote: `someone with the card's Approve link${account ? ` (confirmed as @${account})` : ''}`,
         message: card || {},
         ip,
+        place: ip && this.geoip ? formatPlace(this.geoip.lookup(ip)) : '',
       });
       await this.gitlab
         .addMrNote(record.project, record.iid, note, this.asToken(result.tokenIndex))

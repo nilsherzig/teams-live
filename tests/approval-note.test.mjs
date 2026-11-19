@@ -52,3 +52,11 @@ test('the Approve button comment links the Teams card and names the address the 
   assert.match(buildApprovalNote({ trigger: 'button', ip: '2001:db8::1' }), /`2001:db8::1`/);
   assert.match(buildApprovalNote({ trigger: 'button' }), /Approve button on a Teams card$/m);
 });
+
+test('the comment says where the address is when that is known', () => {
+  const note = buildApprovalNote({ trigger: 'button', ip: '203.0.113.7', place: 'Berlin, Germany \u{1F1E9}\u{1F1EA}' });
+  assert.match(note, /\*\*IP address:\*\* `203\.0\.113\.7` · Berlin, Germany \u{1F1E9}\u{1F1EA}/u);
+  assert.match(buildApprovalNote({ trigger: 'button', ip: '203.0.113.7' }), /\*\*IP address:\*\* `203\.0\.113\.7`$/m);
+  assert.ok(!buildApprovalNote({ trigger: 'button', place: 'Berlin' }).includes('Berlin'), 'a place without an address is not shown');
+  assert.ok(!buildApprovalNote({ trigger: 'button', ip: '203.0.113.7', place: '[x](http://evil)' }).includes('[x]'), 'markup in the place is neutralised');
+});
