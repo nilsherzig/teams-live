@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 import { botSentMessageIds, recordBotMessageId } from '../src/teams.mjs';
+import { withStubbedTransport } from './stub-transport.mjs';
 
 const TEST_SELF_OID = 'f94ccd0d-d140-4d1d-9fee-b00e642b9c11';
 const TEST_SELF_MRI = `8:orgid:${TEST_SELF_OID}`;
@@ -349,4 +350,41 @@ test('the approval comment mentions the approver by GitLab username when known, 
     throw new Error('boom');
   };
   await watcher.noteTeamsApproval('group/app', 7, { name: 'Alice Example', via: '/approve' });
+});
+
+test('/unapprove (and its aliases) withdraws the approval and comments who asked, with a link to the Teams message', async () => {
+  for (const command of ['/unapprove', '/revoke', '/disapprove']) {
+    const { watcher } = createWatcher();
+    const unapproved = [];
+    const notes = [];
+    watcher.gitlab.unapproveMr = async (project, iid) => unapproved.push({ project, iid });
+    watcher.gitlab.addMrNote = async (project, iid, body) => notes.push({ project, iid, body });
+    watcher.gitlab.getUserApprovalState = async () => ({ known: true, hasApproved: true, tokenIndex: 0 });
+    watcher.gitlab.getMrStatus = async () => ({ status: 'approved', approved: true, title: 'Fix networking' });
+    watcher.findTargetMrsForCommand = async () => [{ project: 'group/app', iid: '42' }];
+    watcher.checkAllWatched = async () => {};
+    await withStubbedTransport(() =>
+      watcher.executeUnapproveCommand(
+        { conversationId: '19:team@thread.v2', messageId: '1770000000000', from: 'Alice Example', fromMri: '8:orgid:x' },
+        [],
+        command
+      )
+    );
+    assert.deepEqual(unapproved, [{ project: 'group/app', iid: '42' }], command);
+    assert.equal(notes.length, 1);
+    assert.match(notes[0].body, new RegExp(`Approval revoked via Microsoft Teams by \\*\\*Alice Example\\*\\*: \\[${command}\\]\\(https://teams\\.microsoft\\.com/l/message/`));
+  }
+});
+
+test('/unapprove says so when the bot has no approval to withdraw', async () => {
+  const { watcher } = createWatcher();
+  let revoked = false;
+  watcher.gitlab.unapproveMr = async () => {
+    revoked = true;
+  };
+  watcher.gitlab.getUserApprovalState = async () => ({ known: true, hasApproved: false, tokenIndex: 0 });
+  watcher.gitlab.getMrStatus = async () => ({ status: 'approved', approved: true });
+  watcher.findTargetMrsForCommand = async () => [{ project: 'group/app', iid: '42' }];
+  await withStubbedTransport(() => watcher.executeUnapproveCommand({ conversationId: '19:t@thread.v2', messageId: '1', from: 'Alice Example' }, []));
+  assert.equal(revoked, false);
 });

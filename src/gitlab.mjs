@@ -625,6 +625,15 @@ export class GitLabClient {
     );
   }
 
+  /** Withdraws the approval of the account the bot approves as. Approvals of other people stay. */
+  async unapproveMr(project, iid, { tokenIndex = null } = {}) {
+    return await this.writeAs(
+      `projects/${encodeURIComponent(project)}/merge_requests/${iid}/unapprove`,
+      { method: 'POST', body: {}, retry: false },
+      { tokenIndex }
+    );
+  }
+
   /** A comment on a merge request. Sent once (no retry): a duplicate comment is worse than a missing one. */
   async addMrNote(project, iid, body, { tokenIndex = null } = {}) {
     return await this.writeAs(

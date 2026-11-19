@@ -24,6 +24,7 @@ Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, C
 - **Rich Messages (optional)**: Set `teams.rich_messages` to post GitLab, Jira, OpsGenie and Confluence updates, and the replies of structured commands (`/mrs`, `/whois`, `/whereis`, `/alerts`, ...), as Adaptive Cards instead of regular text. Off by default; see [docs/nix.md](docs/nix.md#rich-messages). Merge request cards can carry an optional "👍 Approve" button that opens a capability-link confirmation page (anyone with the link can approve as the configured GitLab account) ([docs](docs/nix.md#approving-from-a-card)).
 - **Slash Commands**:
   - **GitLab**:
+    - `/unapprove [link]` (aliases `/revoke`, `/disapprove`): Withdraws the bot's approval of the target MR and comments who asked for it (approvals of other people stay).
     - `/approve [link|all]`: Approves target GitLab MR (or `/approve all` for all eligible human MRs with green/no pipeline in the group).
     - `/ci` (or `/pipeline`) `[link]`: Detailed CI pipeline status, stages, and failed jobs.
     - `/close [link]`: Closes the target MR.

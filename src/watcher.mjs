@@ -427,6 +427,7 @@ export const COMMAND_CATEGORIES = [
     aliases: ['gitlab', 'mr', 'mrs', 'ci', 'pipeline'],
     commands: [
       '- `/approve [link|all]`: Approves target MR (or `/approve all` for all eligible human MRs with green/no pipeline).',
+      '- `/unapprove [link]` (or `/revoke`, `/disapprove`): Withdraws the bot\'s approval of the target MR (approvals of other people stay).',
       '- `/ci` (or `/pipeline`) [link]: Detailed CI pipeline status, stages, and failed jobs.',
       '- `/close [link]`: Closes the target MR.',
       '- `/merge [link]` (or `/accept`): Merges the target MR (or sets auto-merge if CI is currently running).',
@@ -567,6 +568,7 @@ const KNOWN_COMMANDS = [
   '/close',
   '/confluence',
   '/dice',
+  '/disapprove',
   '/doc',
   '/exec',
   '/flip',
@@ -590,6 +592,7 @@ const KNOWN_COMMANDS = [
   '/reopen',
   '/restart',
   '/retry',
+  '/revoke',
   '/roll',
   '/snake',
   '/sprint',
@@ -599,6 +602,7 @@ const KNOWN_COMMANDS = [
   '/ticket',
   '/today',
   '/tv',
+  '/unapprove',
   '/unban',
   '/usage',
   '/weather',
@@ -4188,14 +4192,70 @@ export class MergeRequestWatcher {
    * message that triggered it (the approval itself is made by the bot's GitLab account, so GitLab
    * alone would not say). Best effort: it never fails the approval.
    */
-  async noteTeamsApproval(project, iid, { name, mri, via, conversationId, messageId }) {
+  async noteTeamsApproval(project, iid, { name, mri, via, conversationId, messageId, action = 'approved' }) {
     if (!this.gitlab?.addMrNote) return;
     try {
       const link = teamsMessageLink(conversationId, messageId);
       const trigger = link ? `[${via}](${link})` : via;
-      await this.gitlab.addMrNote(project, iid, `👍 Approved via Microsoft Teams by ${this.approverLabel({ name, mri })}: ${trigger}.`);
+      await this.gitlab.addMrNote(project, iid, `${action === 'revoked' ? '↩️ Approval revoked' : '👍 Approved'} via Microsoft Teams by ${this.approverLabel({ name, mri })}: ${trigger}.`);
     } catch (err) {
       log.warn(`Could not comment the approver on ${project}!${iid}: ${err.message}`);
+    }
+  }
+
+  /** Withdraws the bot's approval of the target MR and says on the MR who asked for it from Teams. */
+  async executeUnapproveCommand(event, args, command = '/unapprove') {
+    log(`Executing ${command} from ${event.from || event.fromMri} in ${event.conversationId}...`);
+    const allMrs = await this.findTargetMrsForCommand(event, args);
+    const mr = allMrs[0];
+    if (!mr) {
+      await sendReply(
+        event.conversationId,
+        event,
+        `❌ No merge request found. Quote a message containing an MR or send \`${command}\` immediately following it.`
+      );
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+    const mrRef = `!${mr.iid} (${mr.project})`;
+    const mrUrl = this.gitlab.mrLink(mr.project, mr.iid);
+    try {
+      const mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
+      const title = mrState?.title || mr.title;
+      const titleLine = title ? `\n\n💬 **${title}**` : '';
+      if (mrState.status === 'merged' || mrState.status === 'closed') {
+        await sendReply(event.conversationId, event, `ℹ️ [${mrRef}](${mrUrl})${titleLine} is already ${mrState.status}.`);
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+        return;
+      }
+      const own = await this.gitlab.getUserApprovalState(mr.project, mr.iid).catch(() => ({ known: false }));
+      if (own.known && !own.hasApproved) {
+        const others = mrState.approved || mrState.status === 'approved';
+        await sendReply(
+          event.conversationId,
+          event,
+          `ℹ️ [${mrRef}](${mrUrl})${titleLine} has no approval of mine to withdraw${others ? ' (it is approved by other people, which I cannot revoke)' : ''}.`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+        return;
+      }
+      log(`Revoking approval of ${mr.project}!${mr.iid} via GitLab API...`);
+      await this.gitlab.unapproveMr(mr.project, mr.iid, own.known ? { tokenIndex: own.tokenIndex } : {});
+      await this.noteTeamsApproval(mr.project, mr.iid, {
+        name: event.from,
+        mri: event.fromMri,
+        via: command,
+        conversationId: event.conversationId,
+        messageId: event.messageId,
+        action: 'revoked',
+      });
+      await sendReply(event.conversationId, event, `↩️ Approval withdrawn from [${mrRef}](${mrUrl})${titleLine}`);
+      await this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success);
+      this.checkAllWatched().catch((err) => log(`Post-unapproval check failed: ${err.message}`));
+    } catch (err) {
+      log(`Error revoking approval of ${mr.project}!${mr.iid}: ${err.message}`);
+      await sendReply(event.conversationId, event, `❌ Could not withdraw the approval of [${mrRef}](${mrUrl}): ${err.message}`);
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
     }
   }
 
@@ -7621,6 +7681,8 @@ export class MergeRequestWatcher {
 
     if (command === '/approve') {
       await this.executeApproveCommand(event, args);
+    } else if (command === '/unapprove' || command === '/revoke' || command === '/disapprove') {
+      await this.executeUnapproveCommand(event, args, command);
     } else if (command === '/merge' || command === '/accept') {
       await this.executeMergeCommand(event, args);
     } else if (command === '/close') {
