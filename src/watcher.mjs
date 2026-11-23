@@ -1067,6 +1067,7 @@ export class MergeRequestWatcher {
     this.precomputeTimer = null;
     this.selfMri = null;
     this.selfOid = null;
+    this.processedPersonalReactions = new Set();
     this.editOwnUrlMessages = Boolean(config.teams?.edit_own_url_messages ?? false);
     this.richMessages = config.teams?.rich_messages === true;
     const tvConfig = normalizeTvConfig(config.tv);
@@ -2771,7 +2772,7 @@ export class MergeRequestWatcher {
     if (!this.gitlab?.getCurrentUser || !this.gitlab?.tokenIndices) return;
     try {
       const names = new Set();
-      for (const index of this.gitlab.tokenIndices()) {
+      for (const index of [0]) {
         const user = await this.gitlab.getCurrentUser({ tokenIndex: index });
         for (const value of [user?.name, user?.username]) if (value) names.add(String(value).toLowerCase());
       }
@@ -4399,6 +4400,24 @@ export class MergeRequestWatcher {
     }
   }
 
+  /** Resolve an explicitly configured Teams identity to its GitLab credential. */
+  async gitlabActor(mri) {
+    const oid = extractUserOid(mri);
+    const matches = (this.config.gitlab?.user_token_mappings || []).filter((mapping) => {
+      const mappedOid = extractUserOid(mapping.teams_mri);
+      return oid && mappedOid && oid.toLowerCase() === mappedOid.toLowerCase();
+    });
+    if (matches.length > 1) throw new Error('Multiple GitLab credentials are configured for this Teams user');
+    const tokenIndex = matches[0]?.token_index ?? 0;
+    if (!this.gitlab?.getCurrentUser) return { tokenIndex };
+    const user = await this.gitlab.getCurrentUser({ tokenIndex });
+    if (!user?.id) throw new Error('The selected GitLab account is unavailable');
+    if (matches.length && String(user.username || '').toLowerCase() !== matches[0].gitlab_username.toLowerCase()) {
+      throw new Error('The selected GitLab credential does not match the configured account');
+    }
+    return { tokenIndex, expectUserId: user.id };
+  }
+
   /** Withdraws the bot's approval of the target MR and says on the MR who asked for it from Teams. */
   async executeUnapproveCommand(event, args, command = '/unapprove') {
     log(`Executing ${command} from ${event.from || event.fromMri} in ${event.conversationId}...`);
@@ -4424,7 +4443,8 @@ export class MergeRequestWatcher {
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
         return;
       }
-      const own = await this.gitlab.getUserApprovalState(mr.project, mr.iid).catch(() => ({ known: false }));
+      const actor = await this.gitlabActor(event.fromMri || event.sender?.mri);
+      const own = await this.gitlab.getUserApprovalState(mr.project, mr.iid, actor).catch(() => ({ known: false }));
       if (own.known && !own.hasApproved) {
         const others = mrState.approved || mrState.status === 'approved';
         await sendReply(
@@ -4436,8 +4456,8 @@ export class MergeRequestWatcher {
         return;
       }
       log(`Revoking approval of ${mr.project}!${mr.iid} via GitLab API...`);
-      await this.gitlab.unapproveMr(mr.project, mr.iid, own.known ? { tokenIndex: own.tokenIndex } : {});
-      await this.noteTeamsApproval(mr.project, mr.iid, {
+      await this.gitlab.unapproveMr(mr.project, mr.iid, actor);
+      if (actor.tokenIndex === 0) await this.noteTeamsApproval(mr.project, mr.iid, {
         name: event.from,
         mri: event.fromMri,
         via: command,
@@ -4507,9 +4527,10 @@ export class MergeRequestWatcher {
 
       // Action: Approve MR via GitLab API
       log(`Approving ${mr.project}!${mr.iid} via GitLab API...`);
-      await this.gitlab.approveMr(mr.project, mr.iid);
+      const actor = await this.gitlabActor(event.fromMri || event.sender?.mri);
+      await this.gitlab.approveMr(mr.project, mr.iid, actor);
       log(`Approved ${mr.project}!${mr.iid} successfully`);
-      await this.noteTeamsApproval(mr.project, mr.iid, { name: event.from, mri: event.fromMri, via: '/approve', conversationId: event.conversationId, messageId: event.messageId });
+      if (actor.tokenIndex === 0) await this.noteTeamsApproval(mr.project, mr.iid, { name: event.from, mri: event.fromMri, via: '/approve', conversationId: event.conversationId, messageId: event.messageId });
 
       const isSimpleDirectReply = Boolean(
         allMrs.isDirectReply &&
@@ -4616,9 +4637,10 @@ export class MergeRequestWatcher {
           }
 
           log(`Approving ${project}!${iid} as part of /approve all...`);
-          await this.gitlab.approveMr(project, iid);
+          const actor = await this.gitlabActor(event.fromMri || event.sender?.mri);
+          await this.gitlab.approveMr(project, iid, actor);
           log(`Approved ${project}!${iid}`);
-          await this.noteTeamsApproval(project, iid, { name: event.from, mri: event.fromMri, via: '/approve all', conversationId: event.conversationId, messageId: event.messageId });
+          if (actor.tokenIndex === 0) await this.noteTeamsApproval(project, iid, { name: event.from, mri: event.fromMri, via: '/approve all', conversationId: event.conversationId, messageId: event.messageId });
           approved.push({
             mrRef,
             mrUrl,
@@ -4780,6 +4802,7 @@ export class MergeRequestWatcher {
       const mergeResult = await this.gitlab.mergeMr(mr.project, mr.iid, {
         shouldRemoveSourceBranch: true,
         mergeWhenPipelineSucceeds: true,
+        ...(await this.gitlabActor(event.fromMri || event.sender?.mri)),
       });
       log(`Merged ${mr.project}!${mr.iid} result: state=${mergeResult?.state}, autoMerge=${mergeResult?.merge_when_pipeline_succeeds}`);
 
@@ -4868,7 +4891,7 @@ export class MergeRequestWatcher {
       }
 
       log(`Closing ${mr.project}!${mr.iid} via GitLab API...`);
-      await this.gitlab.closeMr(mr.project, mr.iid);
+      await this.gitlab.closeMr(mr.project, mr.iid, await this.gitlabActor(event.fromMri || event.sender?.mri));
       log(`Closed ${mr.project}!${mr.iid} successfully`);
 
       await sendReply(
@@ -4937,7 +4960,7 @@ export class MergeRequestWatcher {
       }
 
       log(`Reopening ${mr.project}!${mr.iid} via GitLab API...`);
-      await this.gitlab.reopenMr(mr.project, mr.iid);
+      await this.gitlab.reopenMr(mr.project, mr.iid, await this.gitlabActor(event.fromMri || event.sender?.mri));
       log(`Reopened ${mr.project}!${mr.iid} successfully`);
 
       if (allMrs.sourceMessageId) {
@@ -5020,7 +5043,7 @@ export class MergeRequestWatcher {
         }
 
         log(`Triggering GitLab rebase for ${mr.project}!${mr.iid}...`);
-        await this.gitlab.rebaseMr(mr.project, mr.iid);
+        await this.gitlab.rebaseMr(mr.project, mr.iid, await this.gitlabActor(event.fromMri || event.sender?.mri));
         log(`Rebase triggered for ${mr.project}!${mr.iid}`);
 
         await sendReply(
@@ -8258,7 +8281,15 @@ export class MergeRequestWatcher {
 
         // This account's own thumbs up first; anybody else's only when they are not the author of the merge
         // request (an author must not approve their own merge request through the bot).
-        selfThumb = thumbs.find((t) => this.isReactorSelf(t.user)) || null;
+        const recentThumbs = thumbs.filter((reaction) => {
+          const value = Number(reaction.time);
+          const time = value < 1e12 ? value * 1000 : value;
+          const age = Date.now() - time;
+          return value > 0 && Number.isFinite(value) && age >= 0 && age <= 30000;
+        });
+        selfThumb = recentThumbs.length === 1 && (this.isReactorSelf(recentThumbs[0].user) || !(await this.isReactorMrAuthor(recentThumbs[0].user, mrState)))
+          ? recentThumbs[0]
+          : thumbs.find((t) => this.isReactorSelf(t.user)) || null;
         if (!selfThumb) {
           for (const t of thumbs) {
             if (!(await this.isReactorMrAuthor(t.user, mrState))) {
@@ -8273,9 +8304,26 @@ export class MergeRequestWatcher {
         }
         const reactorName = selfThumb.user?.displayName || 'self';
         log(`👍 Thumb-up approval: approving ${mr.project}!${mr.iid} via GitLab API (reactor: ${reactorName})...`);
-        await this.gitlab.approveMr(mr.project, mr.iid);
+        const actor = await this.gitlabActor(selfThumb.user?.mri);
+        if (actor.tokenIndex !== 0) {
+          // Message updates contain a reaction snapshot. Only a unique, recent
+          // reaction can authorize a personal write; never reuse an old like.
+          const timeMs = (reaction) => {
+            const value = Number(reaction.time);
+            return value > 0 && Number.isFinite(value) ? (value < 1e12 ? value * 1000 : value) : 0;
+          };
+          const recent = thumbs.filter((reaction) => {
+            const age = Date.now() - timeMs(reaction);
+            return age >= 0 && age <= 30000;
+          });
+          const key = `${convId}/${msgId}/${selfThumb.user.mri}/${selfThumb.time}/${dedupKey}`;
+          if (recent.length !== 1 || recent[0] !== selfThumb || this.processedPersonalReactions.has(key)) continue;
+          this.processedPersonalReactions.add(key);
+          if (this.processedPersonalReactions.size > 5000) this.processedPersonalReactions.delete(this.processedPersonalReactions.values().next().value);
+        }
+        await this.gitlab.approveMr(mr.project, mr.iid, actor);
         log(`Approved ${mr.project}!${mr.iid} successfully via thumbs-up reaction`);
-        await this.noteTeamsApproval(mr.project, mr.iid, { name: selfThumb.user?.displayName, mri: selfThumb.user?.mri, via: '👍 reaction', conversationId: convId, messageId: msgId });
+        if (actor.tokenIndex === 0) await this.noteTeamsApproval(mr.project, mr.iid, { name: selfThumb.user?.displayName, mri: selfThumb.user?.mri, via: '👍 reaction', conversationId: convId, messageId: msgId });
         anyApproved = true;
       } catch (err) {
         log(`Failed to approve ${mr.project}!${mr.iid} on thumbs-up: ${err.message}`);

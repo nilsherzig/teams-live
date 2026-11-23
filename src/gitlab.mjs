@@ -649,11 +649,11 @@ export class GitLabClient {
   }
 
   /** Withdraws the approval of the account the bot approves as. Approvals of other people stay. */
-  async unapproveMr(project, iid, { tokenIndex = null } = {}) {
+  async unapproveMr(project, iid, { tokenIndex = null, expectUserId = null } = {}) {
     return await this.writeAs(
       `projects/${encodeURIComponent(project)}/merge_requests/${iid}/unapprove`,
       { method: 'POST', body: {}, retry: false },
-      { tokenIndex }
+      { tokenIndex, expectUserId }
     );
   }
 
@@ -671,6 +671,8 @@ export class GitLabClient {
     mergeWhenPipelineSucceeds = true,
     squash = null,
     sha = null,
+    tokenIndex = null,
+    expectUserId = null,
   } = {}) {
     const body = {};
     if (shouldRemoveSourceBranch !== null) {
@@ -685,9 +687,10 @@ export class GitLabClient {
     if (sha) {
       body.sha = sha;
     }
-    return await this.request(
+    return await this.writeAs(
       `projects/${encodeURIComponent(project)}/merge_requests/${iid}/merge`,
-      { method: 'PUT', body }
+      { method: 'PUT', body },
+      { tokenIndex, expectUserId }
     );
   }
 
@@ -725,8 +728,8 @@ export class GitLabClient {
     );
   }
 
-  async closeMr(project, iid) {
-    return await this.updateMr(project, iid, { state_event: 'close' });
+  async closeMr(project, iid, options = {}) {
+    return await this.updateMr(project, iid, { state_event: 'close' }, options);
   }
 
   async reopenMr(project, iid, { tokenIndex = null, expectUserId = null } = {}) {

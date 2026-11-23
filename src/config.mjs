@@ -369,6 +369,10 @@ export function loadConfig(configPath) {
   // Who may approve with a 👍 reaction on a merge request message: `anyone` (the default: whoever reacts, except the
   // author of the merge request) or `self` (only the account teams-live runs as, and configured admins).
   gitlab.reaction_approvers = fileConfig.gitlab?.reaction_approvers === 'self' ? 'self' : 'anyone';
+  // Explicit Teams MRI to credential-index bindings. Never infer a credential from a display name.
+  gitlab.user_token_mappings = Array.isArray(fileConfig.gitlab?.user_token_mappings)
+    ? fileConfig.gitlab.user_token_mappings.filter((m) => typeof m?.teams_mri === 'string' && typeof m?.gitlab_username === 'string' && Number.isInteger(m.token_index) && m.token_index > 0)
+    : [];
 
   const stateDir = process.env.XDG_STATE_HOME || path.join(process.cwd(), 'state');
   const homeDir = process.env.HOME;

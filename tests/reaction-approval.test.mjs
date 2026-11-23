@@ -72,6 +72,36 @@ function createWatcher({
   return { watcher, approvedCalls, noteCalls, repliedMessages, selfMri, selfOid };
 }
 
+test('GitLab writes select only an explicitly mapped Teams identity', async () => {
+  const { watcher } = createWatcher();
+  watcher.config.gitlab.user_token_mappings = [{ teams_mri: TEST_SELF_MRI, token_index: 1, gitlab_username: 'alice' }];
+  watcher.gitlab.getCurrentUser = async ({ tokenIndex }) => ({ id: tokenIndex + 10, username: tokenIndex ? 'alice' : 'bot' });
+  assert.deepEqual(await watcher.gitlabActor(TEST_SELF_MRI), { tokenIndex: 1, expectUserId: 11 });
+  assert.deepEqual(await watcher.gitlabActor('8:orgid:11111111-1111-4111-8111-111111111111'), { tokenIndex: 0, expectUserId: 10 });
+  watcher.gitlab.getCurrentUser = async () => null;
+  await assert.rejects(watcher.gitlabActor(TEST_SELF_MRI), /unavailable/);
+});
+
+test('a fresh mapped reaction uses its personal credential; a stale reaction does not', async () => {
+  const convId = '19:team@thread.v2';
+  const messageId = '1770000000100';
+  const reaction = { key: 'like', user: { mri: TEST_SELF_MRI, displayName: 'Alice Example' }, time: Date.now() };
+  const { watcher } = createWatcher({ messages: { [messageId]: {
+    content: 'https://gitlab.example.com/group/app/-/merge_requests/42', reactions: [reaction],
+  } } });
+  watcher.config.gitlab.user_token_mappings = [{ teams_mri: TEST_SELF_MRI, token_index: 1, gitlab_username: 'alice' }];
+  watcher.gitlab.getCurrentUser = async () => ({ id: 11, username: 'alice' });
+  const calls = [];
+  watcher.gitlab.approveMr = async (...args) => { calls.push(args); };
+  recordBotMessageId(messageId);
+  await watcher.handleMrReactionApproval({ conversationId: convId, messageId });
+  assert.deepEqual(calls[0], ['group/app', '42', { tokenIndex: 1, expectUserId: 11 }]);
+  watcher.approvingMrs.clear();
+  reaction.time = Date.now() - 60000;
+  await watcher.handleMrReactionApproval({ conversationId: convId, messageId });
+  assert.equal(calls.length, 1);
+});
+
 test('approves MR when self reacts with thumbs-up to bot status comment', async () => {
   const convId = '19:team@thread.v2';
   const botReplyId = '1770000000000';

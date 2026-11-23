@@ -141,6 +141,7 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `browser_daemon.url`, `.profile`, `.secret_file` | browser-daemon used to sign in to Teams again. |
 | `gitlab.host`, `.group`, `.token_file` | GitLab instance, group for `/mrs`, primary API token. |
 | `gitlab.fallback_token_files` | Ordered list of additional token files. Requests use credentials in order and try the next only after a 404. Approval pages identify the account selected for the merge request and pin the action to that account. Each token is checked and rotated independently; rotated fallback tokens are kept in the service state directory until their configured secrets are updated. |
+| `gitlab.user_token_mappings` | List of `{ teams_mri, gitlab_username, token_index }` mappings for MR commands and reactions. Use a stable Teams MRI, the exact GitLab username, and the credential index (primary is 0, first fallback is 1). The selected account is verified before writing. Unmapped users act as the primary account. Keep identities in private runtime configuration. |
 | `gitlab.poll_interval_seconds` | MR status poll (60). |
 | `gitlab.history_limit`, `.history_max_age_minutes` | Messages scanned at startup. |
 | `gitlab.max_watch_duration_seconds` | How long an MR is watched (7200). |
