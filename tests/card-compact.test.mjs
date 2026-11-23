@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildMergeRequestCard } from '../src/cards.mjs';
 import { initialsAvatar } from '../src/initials-avatar.mjs';
+import { makeRichMessage } from '../src/teams.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 import { stubDirectoryLookups } from './stub-transport.mjs';
 
@@ -24,7 +25,8 @@ const MR = {
 };
 const items = (card) => card.body[0].items;
 const labels = (card) => JSON.stringify(card).match(/"text":"(Status|Author|Approval|Pipeline|Merge|Ticket|Rebase|Auto-merge)"/g)?.map((m) => m.slice(8, -1)) ?? [];
-const approvalFlow = (card) => items(card).find((row) => row.columns?.[0]?.items[0]?.text === 'Approval').columns[1].items[0];
+const factRows = (card) => items(card)[2].items.flatMap((group) => group.items);
+const approvalFlow = (card) => factRows(card).find((row) => row.columns?.[0]?.items[0]?.text === 'Approval').columns[1].items[0];
 const images = (card, alt) => JSON.stringify(card).split(`"altText":"${alt}"`).length - 1;
 
 test('the regular card keeps its rows, with the repository icon, no project line and the auto-merge icon', () => {
@@ -36,14 +38,24 @@ test('the regular card keeps its rows, with the repository icon, no project line
   assert.equal(images(buildMergeRequestCard({ ...MR, autoMerge: false }), 'Auto-merge disabled'), 1);
 });
 
-test('the compact card keeps the header, title and icons, with short labels in full-width rows', () => {
+test('the compact card keeps the header, title and icons, with the same facts in a two-column grid or a narrow stack', () => {
   const card = buildMergeRequestCard(MR, { compact: true });
-  const [header, title, ...rows] = items(card);
+  const [header, title, facts] = items(card);
+  const rows = factRows(card);
   assert.equal(header.type, 'ColumnSet');
   assert.equal(title.type, 'Container');
   assert.equal(rows.length, 6);
   assert.ok(rows.every((row) => row.type === 'ColumnSet' && row.columns[0].width === '72px'));
-  assert.equal(rows[0].spacing, 'Medium');
+  assert.equal(facts.spacing, 'Medium');
+  assert.deepEqual(facts.layouts, [{
+    type: 'Layout.AreaGrid',
+    targetWidth: 'atLeast:standard',
+    columns: [50, 50],
+    columnSpacing: 'Small',
+    areas: [{ name: 'review', column: 1 }, { name: 'details', column: 2 }],
+  }]);
+  assert.deepEqual(facts.items.map((group) => group['grid.area']), ['review', 'details']);
+  assert.equal(makeRichMessage('Preview', buildMergeRequestCard({ ...MR, approvedBy: [] }, { compact: true })).card.version, '1.5');
   assert.deepEqual(labels(card), ['Status', 'Approval', 'Pipeline', 'Author', 'Merge', 'Ticket']);
   // No project line under the title; a repository icon in the header links to the project instead.
   assert.equal(JSON.stringify(items(card).slice(1)).includes('"text":"example-group/example-project"'), false);
@@ -116,7 +128,7 @@ test('the watcher builds the compact card only when teams.compact_cards is true'
     );
     return watcher.buildMrCard({ project: 'group/app', iid: 7, title: 'Example' }, { title: 'Example', author: 'Alice Example', approved: false, autoMerge: false });
   };
-  const compact = (card) => items(card)[2].columns[0].width === '72px';
+  const compact = (card) => items(card)[2].layouts?.[0]?.type === 'Layout.AreaGrid';
   assert.equal(compact(build({ rich_messages: true, compact_cards: true })), true);
   assert.equal(compact(build({ rich_messages: true })), false, 'the classic card without the setting (the default comes from the config loader)');
   assert.equal(compact(build({ rich_messages: true, compact_cards: false })), false);

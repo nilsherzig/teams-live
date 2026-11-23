@@ -1,4 +1,4 @@
-// The compact merge request card uses short labels in full-width fact rows and shows
+// The compact merge request card groups short fact rows into responsive columns and shows
 // approver pictures beside the approval pill when there is room.
 
 import { GITLAB_ICONS_SMALL } from './gitlab-icons-small.mjs';
@@ -78,17 +78,36 @@ function flowApproval(row) {
 /** One of the card's fact rows with the short label column. */
 const narrow = (row) => ({ ...row, columns: [{ ...row.columns[0], width: LABEL_WIDTH }, ...row.columns.slice(1)] });
 
-/** Give each compact fact its own row so its value can use the available card width. */
 export function compactMrFacts(blocks) {
   if (!rowOf(blocks, 'Status') && !rowOf(blocks, 'Approval') && !rowOf(blocks, 'Pipeline')) return blocks;
-  const labels = ['Status', 'Approval', 'Pipeline', 'Author', 'Merge', 'Ticket'];
-  const rows = labels.map((label) => rowOf(blocks, label)).filter(Boolean).map((row, index) => {
-    const fact = row.columns[0].items[0].text === 'Approval' ? flowApproval(row) : row;
-    return { ...narrow(fact), spacing: index === 0 ? 'Medium' : fact.spacing };
-  });
+  const groups = [
+    { name: 'review', labels: ['Status', 'Approval', 'Pipeline'] },
+    { name: 'details', labels: ['Author', 'Merge', 'Ticket'] },
+  ];
+  const items = groups.map(({ name, labels }) => ({
+    type: 'Container',
+    'grid.area': name,
+    items: labels.map((label) => {
+      const row = rowOf(blocks, label);
+      return row && narrow(label === 'Approval' ? flowApproval(row) : row);
+    }).filter(Boolean),
+  })).filter((group) => group.items.length);
+  // Below the grid breakpoint, Teams falls back to its default stack layout.
+  const facts = {
+    type: 'Container',
+    spacing: 'Medium',
+    layouts: [{
+      type: 'Layout.AreaGrid',
+      targetWidth: 'atLeast:standard',
+      columns: [50, 50],
+      columnSpacing: 'Small',
+      areas: items.map((group, index) => ({ name: group['grid.area'], column: index + 1 })),
+    }],
+    items,
+  };
   const rebase = rowOf(blocks, 'Rebase');
   const rebaseText = rebase?.columns?.[1]?.items?.[0]?.text?.replace('Required:', 'Rebase required:');
-  const known = new Set([...labels, 'Rebase']);
+  const known = new Set([...groups.flatMap(({ labels }) => labels), 'Rebase']);
   const rest = blocks.filter((b) => !(b?.type === 'ColumnSet' && known.has(b.columns?.[0]?.items?.[0]?.text)));
-  return [...rows, ...(rebaseText ? [text(rebaseText, { size: 'Small', spacing: 'Small' })] : []), ...rest];
+  return [facts, ...(rebaseText ? [text(rebaseText, { size: 'Small', spacing: 'Small' })] : []), ...rest];
 }

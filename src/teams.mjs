@@ -348,13 +348,12 @@ export const ADAPTIVE_CARD_CONTENT_TYPE = 'application/vnd.microsoft.card.adapti
 const RICH_MESSAGE = Symbol.for('teams-live.richMessage');
 
 /**
- * Layout.Flow (people and pills that wrap) is an Adaptive Cards 1.5 feature:
+ * Responsive container layouts use Adaptive Cards 1.5:
  * a card that uses it declares 1.5, every other card stays on 1.4.
  */
 function withRequiredVersion(card) {
-  // Layout.Flow and the tooltip of an action are Adaptive Cards 1.5.
   const json = JSON.stringify(card);
-  return (json.includes('"Layout.Flow"') || json.includes('"tooltip"')) && card.version !== '1.5' ? { ...card, version: '1.5' } : card;
+  return (json.includes('"Layout.Flow"') || json.includes('"Layout.AreaGrid"') || json.includes('"tooltip"')) && card.version !== '1.5' ? { ...card, version: '1.5' } : card;
 }
 
 /**
