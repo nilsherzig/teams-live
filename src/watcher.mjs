@@ -1120,6 +1120,7 @@ export class MergeRequestWatcher {
     this.avatarService = this.richMessages
       ? new AvatarService({
           directory: this.userDirectory,
+          getSelfProfile: () => this.authManager?.getUserProfile?.(),
           // Where Teams has no picture: Jira, then Confluence, then a configured picture for accounts
           // that exist in no directory (a bot).
           fallbacks: createAvatarFallbacks({

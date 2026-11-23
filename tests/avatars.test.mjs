@@ -151,6 +151,29 @@ test('search fallback accepts exactly one equal-name hit with an orgid MRI', asy
   assert.deepEqual(await ambiguous.avatarsFor(['Frank Example']), {});
 });
 
+test('the signed-in profile fills an omitted directory result and preserves ambiguity checks', async () => {
+  const self = { displayName: 'Frank Example', mri: DAVE };
+  const scenarios = [
+    { results: [], name: self.displayName, expected: [DAVE] },
+    { results: [self], name: self.displayName, expected: [DAVE] },
+    { results: [{ ...self, mri: CAROL }], name: self.displayName, expected: [] },
+    { results: [], name: 'Frank Examples', expected: [] },
+    { results: [{ displayName: 'Other Person', mri: CAROL }], name: self.displayName, searchLimit: 1, expected: [] },
+  ];
+  for (const { results, name, searchLimit, expected } of scenarios) {
+    const fetched = [];
+    const service = new AvatarService({
+      searchFn: async () => results,
+      searchLimit,
+      getSelfProfile: () => self,
+      fetchPhoto: async (mri) => (fetched.push(mri), photo()),
+    });
+    await service.avatarsFor([name]);
+    assert.deepEqual(fetched, expected);
+    assert.equal(Boolean(service.peek(name)), expected.length > 0);
+  }
+});
+
 test('search fallback fails closed when the result page is full (truncated)', async () => {
   const asked = [];
   const svc = new AvatarService({

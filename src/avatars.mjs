@@ -215,9 +215,10 @@ export class AvatarService {
    * @param {Function} [opts.fetchPhoto]  async (mri) => {kind:'photo',bytes}|{kind:'none'}; throws on failure
    * @param {Function} [opts.searchFn]  optional async (name, limit) => people[]; used only when the
    *   directory has no match, and only an exact single hit with an orgid MRI counts
+   * @param {Function} [opts.getSelfProfile]  authenticated Teams profile, which directory search may omit
    * @param {Function} [opts.now]
    */
-  constructor({ directory, fetchPhoto, searchFn = null, fallbacks = [], overrides = [], now = Date.now, ...options } = {}) {
+  constructor({ directory, fetchPhoto, searchFn = null, getSelfProfile = null, fallbacks = [], overrides = [], now = Date.now, ...options } = {}) {
     this.directory = directory;
     // async (person, size) => {kind:'photo',bytes}|{kind:'none'}; throws on failure. Tried in order.
     this.fallbacks = (fallbacks || []).filter((f) => typeof f === 'function');
@@ -229,6 +230,7 @@ export class AvatarService {
     );
     this.fetchPhoto = fetchPhoto || createTeamsPhotoFetcher({ size: options.size, maxBytes: options.maxBytes });
     this.searchFn = searchFn;
+    this.getSelfProfile = getSelfProfile;
     this.now = now;
     this.opts = { ...DEFAULTS, ...Object.fromEntries(Object.entries(options).filter(([, v]) => v !== undefined)) };
     this.cache = new Map(); // `${mri}|${size}` -> { value: dataUri|null, expires }
@@ -272,10 +274,14 @@ export class AvatarService {
     let ttl = this.opts.negativeTtlMs;
     try {
       const results = (await this.#search(name)) || [];
-      const exact = results.filter((r) => norm(r.displayName ?? r.name) === name);
-      // A full page of hits may hide more people with this name: fail closed.
-      const truncated = results.length >= this.opts.searchLimit;
-      if (!truncated && exact.length === 1 && isOrgIdMri(exact[0].mri)) mri = exact[0].mri;
+      // A full page of hits may hide more people with this name.
+      if (results.length < this.opts.searchLimit) {
+        const exact = new Set(results.filter((r) => norm(r.displayName ?? r.name) === name).map((r) => r.mri));
+        const self = this.getSelfProfile?.();
+        if (norm(self?.displayName) === name && isOrgIdMri(self.mri)) exact.add(self.mri);
+        const [match] = exact;
+        if (exact.size === 1 && isOrgIdMri(match)) mri = match;
+      }
     } catch (err) {
       ttl = this.opts.errorTtlMs;
       this.#recordFailure(err);
