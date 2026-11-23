@@ -68,6 +68,21 @@
     in
     eachSystem
     // {
+      circus.consumerBuilds.nixos-config = {
+        repository = "pschmitt/nixos-config";
+        ref = "main";
+        input = "teams-live";
+        follows = [
+          "nixpkgs"
+          "flake-utils"
+          "browser-daemon"
+          "teams-auth-source"
+        ];
+        packages.aarch64-linux = [
+          "teams-live"
+        ];
+      };
+
       hydraJobs = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (system: {
         packages = self.packages.${system} or { };
         checks = self.checks.${system} or { };
