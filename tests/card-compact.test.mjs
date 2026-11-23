@@ -78,6 +78,20 @@ test('the approval pill and approver pictures can wrap within the value column',
   assert.deepEqual(flow.items.map((item) => item.altText), ['Approved', 'Bob Example', 'Carol Example', 'Dave Example']);
 });
 
+test('a Teams-badged approver appears beside a direct approver in the compact card', () => {
+  const card = buildMergeRequestCard({
+    ...MR,
+    approvedBy: ['Bob Example', 'Carol Example'],
+    approvedVia: ['Bob Example'],
+  }, { compact: true });
+  const { items: approval } = approvalFlow(card);
+  assert.deepEqual(approval.map((item) => item.altText), [
+    'Approved',
+    'Bob Example (approved via the MS Teams bot)',
+    'Carol Example',
+  ]);
+});
+
 test('more than five approvers show five pictures and a count', () => {
   const names = ['A One', 'B Two', 'C Three', 'D Four', 'E Five', 'F Six', 'G Seven'];
   const avatars = Object.fromEntries(names.map((n) => [n, initialsAvatar(n)]));

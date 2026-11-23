@@ -44,18 +44,16 @@ export function repoIconColumn(projectUrl) {
  * Names remain in image alt text, with a "+N" count for the remaining approvers.
  */
 function flowApproval(row) {
-  const images = [];
-  const walk = (node) => {
-    if (!node || typeof node !== 'object') return;
-    if (Array.isArray(node)) return node.forEach(walk);
-    if (node.type === 'Image') images.push(node);
-    walk(node.columns);
-    walk(node.items);
-  };
-  walk(row.columns.slice(1));
-  const pill = images.find((i) => i.style !== 'Person');
-  const people = images.filter((i) => i.style === 'Person');
-  if (!pill || people.length === 0) return row;
+  const flow = row.columns[1]?.items[0];
+  if (flow?.type !== 'Container') return row;
+  // userRow places the pill first, followed by person chips. A Teams-badged
+  // avatar is already cropped and therefore has no Person style.
+  const [pill, ...chips] = flow.items;
+  if (pill?.type !== 'Image') return row;
+  const people = chips.flatMap((chip) =>
+    (chip.columns ?? []).flatMap((column) => column.items.filter((item) => item.type === 'Image'))
+  );
+  if (people.length === 0) return row;
   const shown = people.slice(0, MAX_APPROVER_PICTURES);
   const more = people.length - shown.length;
   return {
@@ -66,8 +64,7 @@ function flowApproval(row) {
         type: 'Column',
         width: 'stretch',
         items: [{
-          type: 'Container',
-          layouts: [{ type: 'Layout.Flow', horizontalItemsAlignment: 'Left', verticalItemsAlignment: 'Center', columnSpacing: 'Small', rowSpacing: 'Small' }],
+          ...flow,
           items: [pill, ...shown, ...(more > 0 ? [text(`+${more}`, { size: 'Small', isSubtle: true, wrap: false })] : [])],
         }],
       },
