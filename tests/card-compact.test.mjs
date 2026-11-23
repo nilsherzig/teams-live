@@ -24,6 +24,7 @@ const MR = {
 };
 const items = (card) => card.body[0].items;
 const labels = (card) => JSON.stringify(card).match(/"text":"(Status|Author|Approval|Pipeline|Merge|Ticket|Rebase|Auto-merge)"/g)?.map((m) => m.slice(8, -1)) ?? [];
+const approvalFlow = (card) => items(card).find((row) => row.columns?.[0]?.items[0]?.text === 'Approval').columns[1].items[0];
 const images = (card, alt) => JSON.stringify(card).split(`"altText":"${alt}"`).length - 1;
 
 test('the regular card keeps its rows, with the repository icon, no project line and the auto-merge icon', () => {
@@ -35,15 +36,15 @@ test('the regular card keeps its rows, with the repository icon, no project line
   assert.equal(images(buildMergeRequestCard({ ...MR, autoMerge: false }), 'Auto-merge disabled'), 1);
 });
 
-test('the compact card keeps the header, title and icons, with short labels in two columns', () => {
+test('the compact card keeps the header, title and icons, with short labels in full-width rows', () => {
   const card = buildMergeRequestCard(MR, { compact: true });
-  const [header, title, grid] = items(card);
+  const [header, title, ...rows] = items(card);
   assert.equal(header.type, 'ColumnSet');
   assert.equal(title.type, 'Container');
-  assert.equal(grid.type, 'ColumnSet');
-  assert.equal(grid.columns.length, 2);
-  assert.equal(grid.spacing, 'Medium');
-  assert.deepEqual(labels(card).sort(), ['Approval', 'Author', 'Merge', 'Pipeline', 'Status', 'Ticket']);
+  assert.equal(rows.length, 6);
+  assert.ok(rows.every((row) => row.type === 'ColumnSet' && row.columns[0].width === '72px'));
+  assert.equal(rows[0].spacing, 'Medium');
+  assert.deepEqual(labels(card), ['Status', 'Approval', 'Pipeline', 'Author', 'Merge', 'Ticket']);
   // No project line under the title; a repository icon in the header links to the project instead.
   assert.equal(JSON.stringify(items(card).slice(1)).includes('"text":"example-group/example-project"'), false);
   const repo = header.columns.find((c) => c.items?.[0]?.altText === 'Repository');
@@ -53,25 +54,25 @@ test('the compact card keeps the header, title and icons, with short labels in t
   for (const alt of ['GitLab', 'Open', 'Approved', 'Passed', 'Jira', 'Auto-merge on']) assert.equal(images(card, alt) >= 1, true, alt);
 });
 
-test('the approval is one line: the pill and the approvers pictures, no names', () => {
+test('the approval pill and approver pictures can wrap within the value column', () => {
   const card = buildMergeRequestCard(MR, { compact: true });
   const approval = JSON.stringify(card);
   for (const name of ['Bob Example', 'Carol Example', 'Dave Example']) {
     assert.equal(images(card, name), 1, `${name} has a picture`);
     assert.equal(approval.includes(`"text":"${name}"`), false, `${name} is not printed`);
   }
-  const grid = items(card)[2];
-  const row = grid.columns[0].items.find((r) => r.columns[0].items[0].text === 'Approval');
-  assert.equal(row.columns.length, 1 + 1 + 3, 'label, pill, three pictures');
+  const flow = approvalFlow(card);
+  assert.equal(flow.layouts[0].type, 'Layout.Flow');
+  assert.deepEqual(flow.items.map((item) => item.altText), ['Approved', 'Bob Example', 'Carol Example', 'Dave Example']);
 });
 
 test('more than five approvers show five pictures and a count', () => {
   const names = ['A One', 'B Two', 'C Three', 'D Four', 'E Five', 'F Six', 'G Seven'];
   const avatars = Object.fromEntries(names.map((n) => [n, initialsAvatar(n)]));
   const card = buildMergeRequestCard({ ...MR, approvedBy: names, approvalsGiven: 7, avatars }, { compact: true });
-  const row = items(card)[2].columns[0].items.find((r) => r.columns[0].items[0].text === 'Approval');
-  assert.equal(row.columns.length, 1 + 1 + 5 + 1);
-  assert.equal(row.columns.at(-1).items[0].text, '+2');
+  const { items: approval } = approvalFlow(card);
+  assert.equal(approval.length, 1 + 5 + 1);
+  assert.equal(approval.at(-1).text, '+2');
 });
 
 test('auto-merge is an icon and a short text: on, off, unknown', () => {
@@ -89,7 +90,7 @@ test('the rebase warning is a line of its own and only when needed', () => {
   const ok = buildMergeRequestCard(MR, { compact: true });
   assert.equal(JSON.stringify(ok).includes('Required'), false);
   const behind = buildMergeRequestCard({ ...MR, needsRebase: true }, { compact: true });
-  const warning = items(behind)[3];
+  const warning = items(behind).find((item) => item.type === 'TextBlock' && item.text.includes('Rebase required'));
   assert.equal(warning.type, 'TextBlock');
   assert.equal(warning.text, '\u26a0\ufe0f Rebase required: behind target branch');
   assert.equal(JSON.stringify(behind).includes('status:'), false, 'the merge status is not repeated');
@@ -115,19 +116,17 @@ test('the watcher builds the compact card only when teams.compact_cards is true'
     );
     return watcher.buildMrCard({ project: 'group/app', iid: 7, title: 'Example' }, { title: 'Example', author: 'Alice Example', approved: false, autoMerge: false });
   };
-  // The compact grid is one ColumnSet whose columns hold the fact rows; the classic card's rows hold a label and a value.
-  const compactGrid = (card) => card.body[0].items[2].columns?.[0]?.items?.[0]?.type === 'ColumnSet';
-  assert.equal(compactGrid(build({ rich_messages: true, compact_cards: true })), true);
-  assert.equal(compactGrid(build({ rich_messages: true })), false, 'the classic card without the setting (the default comes from the config loader)');
-  assert.equal(compactGrid(build({ rich_messages: true, compact_cards: false })), false);
+  const compact = (card) => items(card)[2].columns[0].width === '72px';
+  assert.equal(compact(build({ rich_messages: true, compact_cards: true })), true);
+  assert.equal(compact(build({ rich_messages: true })), false, 'the classic card without the setting (the default comes from the config loader)');
+  assert.equal(compact(build({ rich_messages: true, compact_cards: false })), false);
 });
 
 test('an approver without a photo gets an initials picture in the compact card, not the generic silhouette', async () => {
   const { PLACEHOLDER_AVATAR } = await import('../src/placeholder-avatar.mjs');
   for (const approvedBy of [['Lena Muster'], ['Lena Muster', 'Max Mustermann']]) {
     const card = buildMergeRequestCard({ ...MR, approvedBy, approvalsGiven: approvedBy.length, avatars: { 'Alice Example': initialsAvatar('Alice Example') } }, { compact: true });
-    const row = items(card)[2].columns[0].items.find((r) => r.columns[0].items[0].text === 'Approval');
-    const pictures = row.columns.map((c) => c.items?.[0]).filter((i) => i?.style === 'Person');
+    const pictures = approvalFlow(card).items.filter((i) => i.style === 'Person');
     assert.equal(pictures.length, approvedBy.length);
     for (const picture of pictures) {
       assert.notEqual(picture.url, PLACEHOLDER_AVATAR, 'initials, not the silhouette');

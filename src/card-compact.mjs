@@ -1,6 +1,5 @@
-// The compact merge request card: same header, title and icons as the regular card, but the facts sit in
-// two columns with short labels, the approval is one line (pill and pictures), and the project line under
-// the title is replaced by a repository icon in the header. Pure functions on the card's own blocks.
+// The compact merge request card uses short labels in full-width fact rows and shows
+// approver pictures beside the approval pill when there is room.
 
 import { GITLAB_ICONS_SMALL } from './gitlab-icons-small.mjs';
 
@@ -41,11 +40,10 @@ export function repoIconColumn(projectUrl) {
 }
 
 /**
- * The approval row on one line: the pill, then only the approvers' pictures (their names stay as alt text),
- * five at most and "+N" for the rest. A row without a pill or without pictures stays as it is.
+ * Let the approval pill and up to five approver pictures wrap within the value column.
+ * Names remain in image alt text, with a "+N" count for the remaining approvers.
  */
-function oneLineApproval(row) {
-  if (!row) return row;
+function flowApproval(row) {
   const images = [];
   const walk = (node) => {
     if (!node || typeof node !== 'object') return;
@@ -60,14 +58,19 @@ function oneLineApproval(row) {
   if (!pill || people.length === 0) return row;
   const shown = people.slice(0, MAX_APPROVER_PICTURES);
   const more = people.length - shown.length;
-  const cell = (item, width = 'auto', extra = {}) => ({ type: 'Column', width, verticalContentAlignment: 'Center', ...extra, items: [item] });
   return {
     ...row,
     columns: [
       row.columns[0],
-      cell(pill),
-      ...shown.map((p) => cell(p, `${parseInt(p.width, 10) || 18}px`, { spacing: 'Small' })),
-      ...(more > 0 ? [cell(text(`+${more}`, { size: 'Small', isSubtle: true, wrap: false }))] : []),
+      {
+        type: 'Column',
+        width: 'stretch',
+        items: [{
+          type: 'Container',
+          layouts: [{ type: 'Layout.Flow', horizontalItemsAlignment: 'Left', verticalItemsAlignment: 'Center', columnSpacing: 'Small', rowSpacing: 'Small' }],
+          items: [pill, ...shown, ...(more > 0 ? [text(`+${more}`, { size: 'Small', isSubtle: true, wrap: false })] : [])],
+        }],
+      },
     ],
   };
 }
@@ -75,29 +78,17 @@ function oneLineApproval(row) {
 /** One of the card's fact rows with the short label column. */
 const narrow = (row) => ({ ...row, columns: [{ ...row.columns[0], width: LABEL_WIDTH }, ...row.columns.slice(1)] });
 
-/**
- * Re-lays the fact rows of a merge request card: Status, Approval and Pipeline on the left, Author, Merge and
- * Ticket on the right, the rebase warning in a line of its own. Blocks it does not know follow unchanged; when
- * the rows are not the expected ones (a plain FactSet) the blocks are returned as they are.
- */
+/** Give each compact fact its own row so its value can use the available card width. */
 export function compactMrFacts(blocks) {
   if (!rowOf(blocks, 'Status') && !rowOf(blocks, 'Approval') && !rowOf(blocks, 'Pipeline')) return blocks;
-  const column = (labels) => ({
-    type: 'Column',
-    width: 'stretch',
-    items: labels
-      .map((label) => (label === 'Approval' ? oneLineApproval(rowOf(blocks, label)) : rowOf(blocks, label)))
-      .filter(Boolean)
-      .map(narrow),
+  const labels = ['Status', 'Approval', 'Pipeline', 'Author', 'Merge', 'Ticket'];
+  const rows = labels.map((label) => rowOf(blocks, label)).filter(Boolean).map((row, index) => {
+    const fact = row.columns[0].items[0].text === 'Approval' ? flowApproval(row) : row;
+    return { ...narrow(fact), spacing: index === 0 ? 'Medium' : fact.spacing };
   });
-  const known = new Set(['Status', 'Approval', 'Pipeline', 'Author', 'Merge', 'Ticket', 'Rebase']);
   const rebase = rowOf(blocks, 'Rebase');
-  // The line has no label of its own, so it names the rebase: "⚠️ Rebase required: behind target branch".
   const rebaseText = rebase?.columns?.[1]?.items?.[0]?.text?.replace('Required:', 'Rebase required:');
+  const known = new Set([...labels, 'Rebase']);
   const rest = blocks.filter((b) => !(b?.type === 'ColumnSet' && known.has(b.columns?.[0]?.items?.[0]?.text)));
-  return [
-    { type: 'ColumnSet', spacing: 'Medium', columns: [column(['Status', 'Approval', 'Pipeline']), column(['Author', 'Merge', 'Ticket'])] },
-    ...(rebaseText ? [text(rebaseText, { size: 'Small', spacing: 'Small' })] : []),
-    ...rest,
-  ];
+  return [...rows, ...(rebaseText ? [text(rebaseText, { size: 'Small', spacing: 'Small' })] : []), ...rest];
 }
