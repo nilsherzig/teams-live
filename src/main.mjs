@@ -4,7 +4,7 @@ import { AuthManager } from './auth.mjs';
 import { GitLabClient } from './gitlab.mjs';
 import { JiraClient } from './jira.mjs';
 import { ConfluenceClient } from './confluence.mjs';
-import { OpsGenieClient, formatOnDuty } from './opsgenie.mjs';
+import { OpsGenieClient, humanizeRecipient } from './opsgenie.mjs';
 import { getCalendarView } from './teams.mjs';
 import { HRWorksClient } from './hrworks.mjs';
 import { ScreenshotClient } from './screenshot.mjs';
@@ -77,9 +77,10 @@ function dashboardSources({ jira, opsgenie }) {
           if (r.onCallError && r.supportError) throw new Error(r.onCallError);
           return {
             alerts: [...r.onCallAlerts, ...r.supportAlerts],
+            // Each person with the address OpsGenie knows: the dashboard finds their Teams photo by it.
             duty: [
-              { queue: 'On-call', who: formatOnDuty(r.onCallDuty) },
-              { queue: 'Support', who: formatOnDuty(r.supportDuty) },
+              { queue: 'On-call', people: (r.onCallDuty || []).map((p) => ({ name: humanizeRecipient(p), email: String(p).includes('@') ? String(p) : '' })) },
+              { queue: 'Support', people: (r.supportDuty || []).map((p) => ({ name: humanizeRecipient(p), email: String(p).includes('@') ? String(p) : '' })) },
             ],
           };
         }
@@ -387,6 +388,8 @@ async function main() {
         rebaseEnabled: apCfg.rebase_enabled !== false,
         avatarOf: (name) => watcher.webAvatarOf(name),
         avatarWarm: (names) => watcher.webAvatarWarm(names),
+        // A cached photo of a person ({name, email}) or null, without the initials fallback.
+        avatarPeek: (person) => (watcher.suppressAvatars ? null : watcher.avatarService?.peek?.(person)) || null,
         recordApprover: (project, iid, user) => watcher.recordWebApprover(project, iid, user),
         stateFile: path.join(config.gitlab.state_dir, 'approve-links.json'),
         dashSessionFile: path.join(config.gitlab.state_dir, 'dashboard-sessions.json'),

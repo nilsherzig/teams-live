@@ -308,7 +308,15 @@ export function alertsSection(state, ctx) {
   });
   const more = alerts.length > 12 ? `<li class="none">${alerts.length - 12} more in OpsGenie</li>` : '';
   const list = rows.length ? `<ul class="alist">${rows.join('')}${more}</ul>` : `<p class="empty ok">${ICONS.check}No open alerts.</p>`;
-  const duty = (data.duty || []).filter((d) => d && d.who).map((d) => `<li>${ICONS.phone}<span><b>${escapeHtml(d.who)}</b> <small>${escapeHtml(d.queue)}</small></span></li>`).join('');
+  // Who is on duty, per queue: their photo (initials without one) and name; nobody on duty reads "Off-duty".
+  const duty = (data.duty || [])
+    .filter(Boolean)
+    .map((d) => {
+      const people = Array.isArray(d.people) ? d.people.filter((p) => p?.name) : d.who ? [{ name: d.who }] : [];
+      const who = people.length ? people.map((p) => `<span class="duty-p">${avatarImg(p.name, ctx.avatars)}<b>${escapeHtml(p.name)}</b></span>`).join('') : '<span class="note">Off-duty</span>';
+      return `<li>${ICONS.phone}<span class="duty-who">${who}<small>${escapeHtml(d.queue)}</small></span></li>`;
+    })
+    .join('');
   return `${list}${duty ? `<ul class="duty">${duty}</ul>` : ''}`;
 }
 
@@ -854,7 +862,7 @@ export const DASHBOARD_CSS = [
   '.none{color:var(--muted);font-size:.8rem;padding:.3rem .2rem}',
   '.al{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.6rem;align-items:center;padding:.6rem 1rem;border-top:1px solid var(--line)}.al:first-child{border-top:0}.al b{display:block;font-size:.86rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.al b a{color:var(--text)}.al small{color:var(--muted)}.al.acked{opacity:.6}',
   '.prio{font:700 .72rem var(--mono);border-radius:4px;padding:.05rem .35rem;background:var(--draft-bg);color:var(--draft)}.prio-p1,.prio-p2{background:var(--closed-bg);color:var(--closed)}.prio-p3{background:var(--warn-bg);color:var(--warn)}',
-  '.duty{border-top:1px solid var(--line);background:var(--subtle);padding:.4rem 0}.duty li{display:flex;gap:.55rem;align-items:center;padding:.3rem 1rem;font-size:.86rem}.duty small{color:var(--muted)}',
+  '.duty-who{display:flex;flex-wrap:wrap;align-items:center;gap:.2rem .7rem}.duty-p{display:inline-flex;align-items:center}.duty-p .av{width:22px;height:22px;margin-right:.45rem}.duty{border-top:1px solid var(--line);background:var(--subtle);padding:.4rem 0}.duty li{display:flex;gap:.55rem;align-items:center;padding:.3rem 1rem;font-size:.86rem}.duty small{color:var(--muted)}',
   '.mlist .day{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:.6rem 1rem .2rem}',
   '.mt{display:grid;grid-template-columns:3.2rem minmax(0,1fr) auto;gap:.6rem;align-items:center;padding:.5rem 1rem}.mt time{font:.8rem var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}.mt b{display:block;font-size:.86rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mt small{color:var(--muted)}',
   '.mt.now{background:var(--run-bg)}.mt.now time{color:var(--run);font-weight:700}.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}',

@@ -612,6 +612,7 @@ export class ApproveServer {
     rebaseEnabled = true,
     avatarOf = null,
     avatarWarm = null,
+    avatarPeek = null,
     recordApprover = null,
     mergePollMs = MERGE_POLL_MS,
     mergePollAttempts = MERGE_POLL_ATTEMPTS,
@@ -657,6 +658,8 @@ export class ApproveServer {
     // (name) => picture data URI for a person, and (names) => Promise that loads their photos: from the watcher.
     this.avatarOf = typeof avatarOf === 'function' ? avatarOf : null;
     this.avatarWarm = typeof avatarWarm === 'function' ? avatarWarm : null;
+    // (person) => cached photo or null: for people known by email (the on-duty responders from OpsGenie).
+    this.avatarPeek = typeof avatarPeek === 'function' ? avatarPeek : null;
     // (project, iid, {username, name}) => void: who really approved, so the card can show them instead of the bot.
     this.recordApprover = typeof recordApprover === 'function' ? recordApprover : null;
     this.mergePollMs = mergePollMs;
@@ -1822,6 +1825,17 @@ export class ApproveServer {
       try {
         const uri = this.avatarOf?.(name);
         if (uri) avatars[name] = uri;
+      } catch { /* initials */ }
+    }
+    // On-duty responders: OpsGenie knows their address, not their Teams name (which may be spelled differently).
+    const duty = (data.alerts.data?.duty || []).flatMap((d) => (Array.isArray(d.people) ? d.people : [])).filter((p) => p?.name);
+    if (duty.length && this.avatarWarm) {
+      try { await this.avatarWarm(duty.map((p) => (p.email ? { name: p.name, email: p.email } : p.name))); } catch { /* initials */ }
+    }
+    for (const p of duty) {
+      try {
+        const uri = (this.avatarPeek && this.avatarPeek(p.email ? { name: p.name, email: p.email } : p.name)) || null;
+        if (uri) avatars[p.name] = uri;
       } catch { /* initials */ }
     }
     return { username: session.user.username, name: session.user.name, host: this.gitlabHost, avatars, now: this.now(), timeZone: this.dashboard.timeZone };

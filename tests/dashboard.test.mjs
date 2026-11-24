@@ -379,3 +379,13 @@ test('without approval rules a merge request is approved only once someone appro
   const one = normalizeMr(node({ approved: true, approvalsRequired: 0, approvalsLeft: 0, approvedBy: { nodes: [{ username: 'carol', name: 'Carol' }] } }));
   assert.match(mrsSection({ items: [one] }, ctx), /alt="Approved \(by Carol\)"/);
 });
+
+test('on-duty responders show their picture (initials without one), and an empty queue reads Off-duty', () => {
+  const photo = 'data:image/png;base64,AAAA';
+  const ctx = { username: 'alice', name: 'Alice', host: GL, avatars: { 'Carol Example': photo }, now: Date.now(), timeZone: 'UTC' };
+  const html = alertsSection({ data: { alerts: [], duty: [{ queue: 'On-call', people: [{ name: 'Carol Example', email: 'carol.example@example.com' }] }, { queue: 'Support', people: [{ name: 'Dave Example' }] }, { queue: 'Edge', people: [] }] } }, ctx);
+  assert.ok(html.includes(`src="${photo}"`), 'the cached photo');
+  assert.match(html, /<img class="av" src="data:image\/png;base64,[^"]+" alt="Dave Example"/, 'initials for the one without a photo');
+  assert.match(html, /Off-duty<\/span><small>Edge<\/small>/);
+  assert.ok(!html.includes('carol.example@'), 'no addresses on the page');
+});
