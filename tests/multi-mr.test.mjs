@@ -97,14 +97,16 @@ test('bulk confirmation rechecks heads and approves only the still-valid item', 
     assert.deepEqual(writes, [{ project: 'group/app', iid: '1', sha }]);
     assert.match(result, /merge request changed/i);
     assert.match(result, /❌ 1 of 2 merge request\(s\) were not confirmed as approved/);
-    assert.match(result, /✅ <strong>group\/app !1<\/strong>: Already approved by you/);
-    assert.match(result, /❌ <strong>group\/app !2<\/strong>:/);
+    assert.match(result, /Change 1/);
+    assert.match(result, /✅ Already approved by you/);
+    assert.equal((result.match(/class="mr"/g) || []).length, 2);
+    assert.match(result, /data-status="failed">❌/);
     assert.equal(server.store.byId(newer.record.id).status, 'open', 'an old batch cannot stale the new card link');
   } finally { globalThis.fetch = originalFetch; await server.stop(); }
 });
 
 test('open-all has its own route and retries only links blocked on page load', async () => {
-  const gitlab = { host: 'gitlab.example.com', mrLink: (project, iid) => `https://gitlab.example.com/${project}/-/merge_requests/${iid}` };
+  const gitlab = { host: 'gitlab.example.com', mrLink: (project, iid) => `https://gitlab.example.com/${project}/-/merge_requests/${iid}`, getMr: async (_project, iid) => ({ state: 'opened', title: `Change ${iid}`, head_pipeline: { status: 'success' }, author: { name: 'Alice Example' } }), getApprovalSummary: async () => ({ known: true, approvalsGiven: 0, approvalsRequired: 1 }) };
   const server = new ApproveServer({ gitlab, baseUrl: `${origin}/approve`, port: 0, oauth: { clientId: 'cid', clientSecret: 'secret' } });
   await server.start();
   try {
@@ -122,6 +124,10 @@ test('open-all has its own route and retries only links blocked on page load', a
     assert.match(body, /aria-label="GitLab account alice"/);
     assert.match(body, /class="account-avatar"/);
     assert.match(body, /id="open-all"/);
+    assert.equal((body.match(/class="mr"/g) || []).length, 2);
+    assert.match(body, /Change 1/);
+    assert.match(body, /Pipeline/);
+    assert.match(body, /1 required/);
     const approveLink = /href="([^"]+)"[^>]*>👍 Approve all<\/a>/.exec(body)?.[1];
     assert.ok(approveLink, 'the page links to the approval confirmation');
     const approveRecord = server.store.byToken(new URL(approveLink).hash.slice(1));

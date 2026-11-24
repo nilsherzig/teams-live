@@ -1485,15 +1485,24 @@ export class ApproveServer {
   }
 
   /** The page contains individual links as a fallback when a browser blocks pop-ups. */
-  showBatchOpen(res, record) {
-    const links = record.items.map((item) => {
+  async showBatchOpen(res, record) {
+    const links = (await Promise.all(record.items.map(async (item) => {
       const url = safeLink(this.gitlab.mrLink(item.project, item.iid), this.gitlabHost);
-      return url ? `<li><a data-mr-link href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.project)} !${escapeHtml(item.iid)}</a></li>` : '';
-    }).join('');
+      let mr = null;
+      let approvals = null;
+      try {
+        ({ mr } = await this.readMr(item));
+        approvals = await this.gitlab.getApprovalSummary?.(item.project, item.iid) || null;
+        await this.warmAvatars(mr, approvals);
+      } catch { /* Keep the link usable when GitLab is unavailable. */ }
+      const summary = renderSummary({ record: item, mr: mr ? { ...mr, web_url: mr.web_url || url } : null, approvals, host: this.gitlabHost, avatars: this.avatarsFor(mr, approvals), live: false });
+      const link = url ? `<div class="batch-actions"><a class="btn btn-secondary" data-mr-link href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open in GitLab</a></div>` : '';
+      return `<section class="batch-item">${summary}${link}</section>`;
+    }))).join('');
     const approvable = record.items.filter((item) => item.sha);
     const approveUrl = this.oauth && approvable.length ? this.batchLinkFor(approvable, 'approve') : null;
     const approve = approveUrl ? `<p><a class="btn" href="${escapeHtml(approveUrl)}">👍 Approve all</a></p>` : '';
-    const body = `<p>Opening the merge requests in separate tabs.</p><button id="open-all" class="btn" type="button">Open remaining</button><p id="open-note" class="note"></p><ul>${links}</ul><noscript><p>Open the links above individually.</p></noscript>${approve}`;
+    const body = `<p>Opening the merge requests in separate tabs.</p><button id="open-all" class="btn" type="button">Open remaining</button><p id="open-note" class="note"></p><div class="batch-list">${links}</div><noscript><p>Open the links above individually.</p></noscript>${approve}`;
     return this.send(res, 200, this.page('Open merge requests', body, { kind: 'generic', script: `<script>${this.openAllScript}</script>` }), { script: 'open-all' });
   }
 
@@ -1535,7 +1544,7 @@ export class ApproveServer {
       const label = status === 'ready' ? 'Ready to approve' : status === 'already' ? 'Already approved by you' : reason || status;
       const icon = status === 'ready' ? '⏳' : status === 'already' ? '✅' : '❌';
       const mr = result?.mr;
-      const summary = mr ? renderSummary({ record: item, mr: { ...mr, web_url: mr.web_url || this.gitlab.mrLink?.(item.project, item.iid) }, approvals: result.approvals, host: this.gitlabHost, avatars: this.avatarsFor(mr, result.approvals), live: false }) : `<div class="mr"><strong>${escapeHtml(item.project)} !${escapeHtml(item.iid)}</strong></div>`;
+      const summary = renderSummary({ record: item, mr: mr ? { ...mr, web_url: mr.web_url || this.gitlab.mrLink?.(item.project, item.iid) } : null, approvals: result?.approvals, host: this.gitlabHost, avatars: this.avatarsFor(mr, result?.approvals), live: false });
       const button = status === 'ready' ? `<button class="btn btn-secondary" type="submit" name="item_index" value="${index}" data-approve-item>👍 Approve</button>` : `<button class="btn btn-secondary" type="button" data-done="true" disabled>${status === 'already' ? 'Already approved' : 'Cannot approve'}</button>`;
       return `<section class="batch-item" data-batch-item data-index="${index}" data-status="${escapeHtml(status)}">${summary}<div class="batch-status" data-batch-status data-status="${escapeHtml(status)}">${icon} ${escapeHtml(label)}</div><div class="batch-actions">${button}</div></section>`;
     }).join('');
@@ -1568,27 +1577,34 @@ export class ApproveServer {
       let outcome;
       try { outcome = await this.withLock(key, async () => {
         const checked = await userApprovalPreflight(this.gitlabHost, { ...item, status: 'open' }, session);
-        if (checked.status === 'already') return { status: 'already', text: 'Already approved by you' };
-        if (checked.status !== 'ready') return { status: 'failed', text: checked.reason || checked.status };
+        if (checked.status === 'already') return { status: 'already', text: 'Already approved by you', mr: checked.mr, approvals: checked.approvals };
+        if (checked.status !== 'ready') return { status: 'failed', text: checked.reason || checked.status, mr: checked.mr, approvals: checked.approvals };
         const link = this.store.linkFor({ ...item, action: 'approve' });
-        if (!link) return { status: 'failed', text: 'Approval link unavailable' };
+        if (!link) return { status: 'failed', text: 'Approval link unavailable', mr: checked.mr, approvals: checked.approvals };
         const shown = actors.find((a) => a.id === link.record.id);
-        if (!shown) return { status: 'failed', text: 'Not included in the confirmation' };
+        if (!shown) return { status: 'failed', text: 'Not included in the confirmation', mr: checked.mr, approvals: checked.approvals };
         const result = checked;
         const actor = actorOf(result);
-        if (!actor || actor.user !== shown.user || actor.cred !== shown.cred) return { status: 'failed', text: 'Account changed; review again' };
+        if (!actor || actor.user !== shown.user || actor.cred !== shown.cred) return { status: 'failed', text: 'Account changed; review again', mr: checked.mr, approvals: checked.approvals };
         const denied = this.signInDenied(session.user, result.mr, 'approve');
-        if (denied) return { status: 'failed', text: denied };
+        if (denied) return { status: 'failed', text: denied, mr: checked.mr, approvals: checked.approvals };
         const sent = await this.sendUserApproval(link.record, result, session, { deferRefresh: wantsJson });
-        return { status: sent.code === 200 ? 'approved' : sent.title === 'Outcome unknown' ? 'unknown' : 'failed', text: sent.title === 'Outcome unknown' ? 'Outcome unknown; check this merge request in GitLab before retrying' : sent.title };
+        let shownResult = checked;
+        if (!wantsJson && sent.code === 200) {
+          try { shownResult = await userApprovalPreflight(this.gitlabHost, { ...item, status: 'open' }, session); } catch { /* Keep the pre-approval snapshot. */ }
+        }
+        return { status: sent.code === 200 ? 'approved' : sent.title === 'Outcome unknown' ? 'unknown' : 'failed', text: sent.title === 'Outcome unknown' ? 'Outcome unknown; check this merge request in GitLab before retrying' : sent.title, mr: shownResult.mr || checked.mr, approvals: shownResult.approvals || checked.approvals };
       }); } catch { outcome = { status: 'unknown', text: 'Outcome unknown; check this merge request in GitLab before retrying' }; }
       outcomes.push({ item, ...outcome });
     }
     if (wantsJson) return this.json(res, 200, { status: outcomes[0].status, text: outcomes[0].text });
     const incomplete = outcomes.filter(({ status }) => status === 'failed' || status === 'unknown').length;
     const heading = incomplete ? `❌ ${incomplete} of ${outcomes.length} merge request(s) were not confirmed as approved.` : rawIndex !== null ? '✅ This MR is approved.' : outcomes.every(({ status }) => status === 'approved') ? '✅ All MRs were approved successfully.' : '✅ All MRs are approved.';
-    const rows = outcomes.map(({ item, status, text }) => `<li>${status === 'unknown' ? '⚠️' : status === 'failed' ? '❌' : '✅'} <strong>${escapeHtml(item.project)} !${escapeHtml(item.iid)}</strong>: ${escapeHtml(text)}</li>`).join('');
-    return this.send(res, 200, this.page('Approval results', `<p class="callout">${heading}</p><ul>${rows}</ul>`, { kind: 'approve', tone: incomplete ? 'warn' : 'ok' }));
+    const rows = outcomes.map(({ item, status, text, mr, approvals }) => {
+      const summary = renderSummary({ record: item, mr: mr ? { ...mr, web_url: mr.web_url || this.gitlab.mrLink?.(item.project, item.iid) } : null, approvals, host: this.gitlabHost, avatars: this.avatarsFor(mr, approvals), live: false });
+      return `<section class="batch-item">${summary}<div class="batch-status" data-status="${escapeHtml(status)}">${status === 'unknown' ? '⚠️' : status === 'failed' ? '❌' : '✅'} ${escapeHtml(text)}</div></section>`;
+    }).join('');
+    return this.send(res, 200, this.page('Approval results', `<p class="callout">${heading}</p><div class="batch-list">${rows}</div>`, { kind: 'approve', tone: incomplete ? 'warn' : 'ok' }));
   }
 
   async showConfirmation(res, session) {

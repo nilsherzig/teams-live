@@ -192,7 +192,7 @@ export function renderSummary({ record, mr, approvals = null, host = '', kind = 
   const authorHtml = author ? `${avatarImg(author, avatars)}${anchor(safeLink(mr.author.web_url, host), escapeHtml(author))}` : '';
   const facts = [];
   if (authorHtml) facts.push(['Author', authorHtml]);
-  if (kind !== 'reopen') {
+  if (kind !== 'reopen' && mr) {
     facts.push(['Pipeline', `<span data-live="pipeline">${slots.pipeline}</span>`]);
     facts.push(['Approvals', `<span data-live="approvals">${slots.approvals}</span>`]);
     facts.push(['Auto-merge', `<span data-live="automerge">${slots.automerge}</span>`]);
