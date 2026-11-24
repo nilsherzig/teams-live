@@ -4,7 +4,7 @@
 // Who may see it: a GitLab user who signs in (OAuth, the same application as the approval flow) and is an
 // active member of the configured group (and, when `oauth.allowed_users` is set, on that list too). The merge
 // requests are read with the visitor's own token, so nobody sees a merge request GitLab would hide from them.
-// Sprint, alerts and meetings come from the bot's own accounts: the page says so.
+// Sprint, alerts and meetings come from the bot's own accounts.
 //
 // Data in, HTML out, plus two small GitLab reads (membership and one GraphQL query). Every value that reaches
 // the HTML goes through `escapeHtml`, every link through `safeLink` (GitLab host) or `webLink` (http(s) only).
@@ -358,10 +358,10 @@ const NAV = [
 ];
 
 const SECTIONS = [
-  ['mrs', 'Merge requests', 'Read with your GitLab account'],
-  ['sprint', 'Active sprint', 'From Jira, read by the bot'],
-  ['alerts', 'Alerts and on-call', 'From OpsGenie, read by the bot'],
-  ['meetings', 'Meetings', 'From the bot’s Teams calendar'],
+  ['mrs', 'Merge requests'],
+  ['sprint', 'Active sprint'],
+  ['alerts', 'Alerts and on-call'],
+  ['meetings', 'Meetings'],
 ];
 
 /** The body of the dashboard page (inside the common header and footer). */
@@ -370,7 +370,7 @@ export function dashboardBody({ data, ctx, csrf, filter, updated }) {
   const counts = navCounts(data, ctx);
   const badge = (k) => (counts[k] ? `<span class="badge${k === 'alerts' ? ' badge-bad' : ''}" data-count="${k}">${counts[k]}</span>` : `<span class="badge" data-count="${k}" hidden></span>`);
   const nav = (short) => NAV.map(([k, label, brief]) => `<button type="button" data-view-to="${k}"${short && brief !== label ? ` aria-label="${label}"` : ''}${short ? '' : ` title="${label}"`}>${ICONS[k]}<span>${short ? brief : label}</span>${k === 'mrs' || k === 'alerts' ? badge(k) : ''}</button>`).join('');
-  const box = ([k, title, source]) => `<section class="box box-${k}" data-sec="${k}" aria-labelledby="h-${k}"><header><h2 id="h-${k}">${ICONS[k]}${title}</h2><small>${source}</small></header><div class="box-body" data-sec-body="${k}">${s[k]}</div></section>`;
+  const box = ([k, title]) => `<section class="box box-${k}" data-sec="${k}" aria-labelledby="h-${k}"><header><h2 id="h-${k}">${ICONS[k]}${title}</h2></header><div class="box-body" data-sec-body="${k}">${s[k]}</div></section>`;
   const main = SECTIONS.slice(0, 2).map(box).join('');
   const side = SECTIONS.slice(2).map(box).join('');
   return (
@@ -392,7 +392,7 @@ function greeting(ctx) {
 }
 
 export const DASHBOARD_CSS = [
-  '.shell.dashboard{max-width:80rem;padding:0 max(1rem,env(safe-area-inset-right,0px)) 3rem max(1rem,env(safe-area-inset-left,0px))}',
+  '.shell.dashboard{max-width:80rem;padding:0 max(1rem,env(safe-area-inset-right,0px)) 0 max(1rem,env(safe-area-inset-left,0px))}',
   '.dash{display:grid;grid-template-columns:13.5rem minmax(0,1fr);gap:0;min-height:70vh;transition:grid-template-columns .3s var(--ease)}',
   '.side span{white-space:nowrap;overflow:hidden;transition:opacity .2s}.side button{position:relative;min-height:36px}.collapse{color:var(--muted);font-size:.85rem}.collapse .di{transition:transform .3s var(--ease)}',
   '.dash.collapsed{grid-template-columns:3.5rem minmax(0,1fr)}.dash.collapsed .side span{opacity:0;width:0}.dash.collapsed .side button{justify-content:center;gap:0;padding-inline:0}.dash.collapsed .collapse .di{transform:rotate(180deg)}',

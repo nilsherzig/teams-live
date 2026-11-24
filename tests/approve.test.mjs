@@ -202,7 +202,7 @@ test('the entry page is static: no token needed, no GitLab call, hash-pinned scr
         const hash = `sha256-${crypto.createHash('sha256').update(script).digest('base64')}`;
         assert.ok(csp.includes(`script-src '${hash}'`), 'the CSP pins exactly this script');
         assert.doesNotMatch(html, /src=/, 'no third-party or external resources');
-        assert.match(html, /href="https:\/\/github\.com\/pschmitt\/teams-live"[^>]*>teams-live<\/a>/);
+        assert.match(html, /href="https:\/\/github\.com\/pschmitt\/teams-live"[^>]*>.*teams-live on GitHub<\/a>/);
         assert.match(script, /history\.replaceState/, 'the fragment is cleared from the address bar');
         assert.match(script, /location\.hash/);
       }
@@ -318,7 +318,7 @@ test('the pages are styled self-contained: state pills, tones, dark mode, no ext
     assert.match(html, /<button class="btn" type="submit" data-busy="Approving…">Approve merge request<\/button>/);
     assert.match(html, /prefers-color-scheme:dark/);
     assert.match(html, /<title>Approve merge request \u00b7 teams-live<\/title>/);
-    assert.match(html, /Nothing here is GitLab itself/);
+    assert.match(html, /<footer class="foot"><a href="https:\/\/github\.com\/pschmitt\/teams-live"/);
     // The merge request title is escaped, never markup.
     assert.equal(html.includes('<img src=x'), false, 'no markup from the title (the only images are the embedded icons)');
     assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; &amp; &quot;quoted&quot;/);

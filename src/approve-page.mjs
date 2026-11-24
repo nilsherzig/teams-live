@@ -21,7 +21,7 @@ export const PAGE_CSS = [
   '@media (prefers-color-scheme:dark){:root{--bg:#18171d;--panel:#232228;--subtle:#1e1d23;--text:#ececef;--muted:#a4a3a8;--line:#3a383f;--line-strong:#535158;--accent:#63a6e9;--focus:#63a6e9;--code:#333238;--bar:#101014;--bar-text:#ececef;',
   '--ok:#52b87a;--ok-bg:#16301f;--merged:#63a6e9;--merged-bg:#1d3047;--closed:#f57f6c;--closed-bg:#3d1c17;--draft:#a4a3a8;--draft-bg:#333238;--run:#63a6e9;--run-bg:#1d3047;--warn:#e9be74;--warn-bg:#3a2e12;--btn:#2a6fb8;--btn-h:#1d63b0;--btn-text:#fff;',
   '--shadow:0 1px 2px rgba(0,0,0,.3),0 4px 16px rgba(0,0,0,.3);--shadow-lg:0 8px 32px rgba(0,0,0,.5)}}',
-  '*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 "GitLab Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans",Ubuntu,Cantarell,"Helvetica Neue",sans-serif}',
+  '*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}body{display:flex;flex-direction:column;min-height:100vh;min-height:100dvh;margin:0;background:var(--bg);color:var(--text);font:14px/1.5 "GitLab Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans",Ubuntu,Cantarell,"Helvetica Neue",sans-serif}',
   'a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:4px}',
   // the top bar: the tanuki, the product, what this page is for, and who is signed in
   '.brand{position:sticky;top:0;z-index:10;margin:0 0 1.5rem;padding:.55rem max(1rem,env(safe-area-inset-right,0px)) .55rem max(1rem,env(safe-area-inset-left,0px));background:var(--bar);color:var(--bar-text);font-size:.9rem}.brand .in{display:flex;align-items:center;gap:.5rem;max-width:44rem;margin:0 auto;min-height:32px}.brand.wide .in{max-width:58rem}.brand.dashboard .in{max-width:78rem}',
@@ -36,7 +36,7 @@ export const PAGE_CSS = [
   '@keyframes tl-menu{from{opacity:0;transform:scale(.96) translateY(-4px)}to{opacity:1;transform:none}}',
   '.menu-who{display:grid;padding:.45rem .6rem .55rem;border-bottom:1px solid var(--line);margin-bottom:.3rem}.menu-who span{color:var(--muted);font-size:.85rem}',
   '.menu-item{display:block;width:100%;text-align:left;font:inherit;color:var(--text);background:none;border:0;border-radius:6px;padding:.45rem .6rem;cursor:pointer}.menu-item:hover{background:var(--subtle);text-decoration:none}.menu-sep{border-top:1px solid var(--line);margin:.3rem 0}.account-menu form{margin:0}',
-  '.shell{max-width:46rem;margin:0 auto;padding:0 max(1rem,env(safe-area-inset-right,0px)) 3rem max(1rem,env(safe-area-inset-left,0px))}.shell.wide{max-width:60rem}',
+  '.shell{flex:1;display:flex;flex-direction:column;width:100%;max-width:46rem;margin:0 auto;padding:0 max(1rem,env(safe-area-inset-right,0px)) 0 max(1rem,env(safe-area-inset-left,0px))}.shell.wide{max-width:60rem}',
   '.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:1.25rem 1.35rem 1.35rem;box-shadow:var(--shadow);animation:tl-rise .45s var(--ease) both}',
   '@keyframes tl-rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}',
   // the page title, with a status picture on finished pages (drawn in, like the checkmark of a passed pipeline)
@@ -93,7 +93,7 @@ export const PAGE_CSS = [
   '@keyframes tl-spin{to{transform:rotate(360deg)}}',
   '.btn[hidden]{display:none}.btn:focus-visible{outline:3px solid var(--focus);outline-offset:2px}',
   '.links{display:flex;flex-wrap:wrap;gap:.5rem;margin:1rem 0 0}',
-  '.foot{margin-top:1rem;color:var(--muted);font-size:.8rem;text-align:center}',
+  '.foot{margin-top:auto;padding:2rem 0 1.25rem;text-align:center;font-size:.8rem}.foot a{display:inline-flex;align-items:center;gap:.4rem;color:var(--muted);padding:.25rem .5rem;border-radius:6px;transition:color .15s,background .15s}.foot a:hover{color:var(--text);background:var(--subtle);text-decoration:none}',
   '@media (max-width:34rem){.brand{margin-bottom:0}.shell{padding-left:0;padding-right:0}.panel{border-radius:0;border-inline:0;box-shadow:none;padding:1rem max(1rem,env(safe-area-inset-left,0px)) 1.25rem}',
   '.mr-facts .fact{grid-template-columns:24px minmax(0,1fr);gap:.15rem .6rem}.mr-facts .fact dt{grid-column:2}.mr-facts .fact dd{grid-column:2}.mr-facts .wic{grid-row:span 2}',
   '.actions{position:sticky;bottom:0;margin:1rem -1rem -1.25rem;padding:.85rem 1rem calc(.85rem + env(safe-area-inset-bottom,0px));background:var(--panel);border-top:1px solid var(--line)}.actions form>p{margin:.2rem 0 .6rem}',
@@ -117,6 +117,10 @@ export function heroIcon(tone) {
   const path = { ok: '<path d="M5 12.5l4.5 4.5L19 7.5"/>', warn: '<path d="M12 6.5v7M12 17.5v.01"/>', error: '<path d="M7 7l10 10M17 7L7 17"/>' }[tone];
   return path ? `<span class="hero hero-${tone}" aria-hidden="true">${SVG(path)}</span>` : '';
 }
+
+/** The GitHub mark for the footer link (inline: the CSP allows no images from elsewhere). */
+export const GITHUB_MARK =
+  '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
 
 /** The tanuki: a simple three-color fox head, drawn inline (the CSP allows no images). */
 export const TANUKI =

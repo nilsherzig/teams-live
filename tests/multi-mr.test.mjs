@@ -141,7 +141,7 @@ test('open-all has its own route and retries only links blocked on page load', a
     const individualLinks = [...body.matchAll(/href="([^"]+)"[^>]*>👍 Approve<\/a>/g)].map((match) => match[1]);
     assert.equal(individualLinks.length, 2);
     assert.deepEqual(individualLinks.map((url) => server.store.byToken(new URL(url).hash.slice(1))).map(({ project, iid, sha: head, action }) => ({ project, iid, sha: head, action })), items.map((item) => ({ ...item, action: 'approve' })));
-    assert.match(body, /approvals are sent as the signed-in GitLab user/);
+    assert.match(body, /Approvals are sent as the signed-in GitLab user/);
     assert.match(response.headers.get('content-security-policy'), /script-src 'sha256-/);
     const script = /<script>([\s\S]*?)<\/script>/.exec(body)[1];
     const opened = [];

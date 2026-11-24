@@ -56,7 +56,7 @@ import { userApprovalPreflight, userApprovalWrite } from './user-approval.mjs';
 import { BATCH_APPROVAL_SCRIPT } from './batch-approval-page.mjs';
 import { teamsMessageLink } from './message-links.mjs';
 import { formatPlace } from './geoip.mjs';
-import { PAGE_CSS, TANUKI, escapeHtml, headerAccount, heroIcon, liveScript, liveSlots, liveState, renderSummary, safeLink } from './approve-page.mjs';
+import { GITHUB_MARK, PAGE_CSS, TANUKI, escapeHtml, headerAccount, heroIcon, liveScript, liveSlots, liveState, renderSummary, safeLink } from './approve-page.mjs';
 import http from 'node:http';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { isIP } from 'node:net';
@@ -115,8 +115,7 @@ const COPY = {
     title: 'Approve merge request',
     blocked: 'Cannot approve',
     kicker: 'GitLab approval',
-    footer: 'approvals are sent as the signed-in GitLab user.',
-    question: 'Approve this merge request?',
+    question: 'Approve this merge request with your GitLab account?',
     button: 'Approve merge request',
     busy: 'Approving…',
   },
@@ -124,7 +123,6 @@ const COPY = {
     title: 'Reopen merge request',
     blocked: 'Cannot reopen',
     kicker: 'GitLab merge request',
-    footer: 'the reopen is sent through the configured account.',
     question: 'Reopen this merge request?',
     button: 'Reopen merge request',
     busy: 'Reopening…',
@@ -133,7 +131,6 @@ const COPY = {
     title: 'Merge merge request',
     blocked: 'Cannot merge',
     kicker: 'GitLab merge',
-    footer: 'the merge is sent through the configured account.',
     question: 'Merge this merge request?',
     button: 'Merge merge request',
     busy: 'Merging…',
@@ -142,12 +139,12 @@ const COPY = {
     title: 'Rebase merge request',
     blocked: 'Cannot rebase',
     kicker: 'GitLab rebase',
-    footer: 'the rebase is sent through the configured account.',
     question: 'Rebase this merge request onto its target branch?',
     button: 'Rebase merge request',
     busy: 'Rebasing…',
   },
-  generic: { kicker: 'GitLab', footer: 'actions are sent through the configured account.' },
+  generic: { kicker: 'GitLab' },
+  dashboard: { kicker: 'Dashboard' },
 };
 
 const sha256 = (value) => crypto.createHash('sha256').update(String(value)).digest();
@@ -824,17 +821,17 @@ export class ApproveServer {
     const live = body.includes('data-live-root');
     const tail = script || (live ? `<script>${this.liveScript}</script>` : '');
     const main = `<main class="panel tone-${safeTone}"><div class="page-head">${heroIcon(safeTone)}<h1>${escapeHtml(title)}</h1></div>${body}${tail}</main>`;
-    return this.documentHtml({ title, kicker: copy.kicker, footer: copy.footer, live, shell: wide ? 'shell wide' : 'shell', main });
+    return this.documentHtml({ title, kicker: copy.kicker, live, shell: wide ? 'shell wide' : 'shell', main });
   }
 
   /** The HTML document every page shares: head, top bar with the signed-in account, the shell and the footer. */
-  documentHtml({ title, kicker, footer, live = false, shell = 'shell', main, css = '', dashLink = true, menu = '' }) {
+  documentHtml({ title, kicker, live = false, shell = 'shell', main, css = '', dashLink = true, menu = '' }) {
     const user = this.requestContext.getStore()?.user;
     let avatar = '';
     try { if (user) avatar = this.avatarOf?.(user.name || user.username) || ''; } catch { /* Fall back to initials. */ }
     const items = `${this.dashboard && dashLink ? `<a class="menu-item" href="${escapeHtml(this.dashPath)}">Dashboard</a>` : ''}${menu}`;
     const account = user ? headerAccount(user, this.gitlabHost, avatar, items) : '';
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}${css}</style></head><body><header class="${shell.replace(/\bshell\b/, 'brand')}"><div class="in">${this.dashboard ? `<a class="home" href="${escapeHtml(`${this.dashPath}#overview`)}" data-home aria-label="teams-live dashboard">${TANUKI}<span class="word">teams-live</span></a>` : `${TANUKI}<span class="word">teams-live</span>`}<span class="sep" aria-hidden="true">/</span><span class="kicker">${kicker}</span>${live ? '<span class="live-dot" title="This page keeps itself up to date"><i></i>Live</span>' : ''}${account}</div></header><div class="${shell}">${main}<footer class="foot">Served by your <a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">teams-live</a> instance. Nothing here is GitLab itself; ${footer}</footer></div></body></html>`;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}${css}</style></head><body><header class="${shell.replace(/\bshell\b/, 'brand')}"><div class="in">${this.dashboard ? `<a class="home" href="${escapeHtml(`${this.dashPath}#overview`)}" data-home aria-label="teams-live dashboard">${TANUKI}<span class="word">teams-live</span></a>` : `${TANUKI}<span class="word">teams-live</span>`}<span class="sep" aria-hidden="true">/</span><span class="kicker">${kicker}</span>${live ? '<span class="live-dot" title="This page keeps itself up to date"><i></i>Live</span>' : ''}${account}</div></header><div class="${shell}">${main}<footer class="foot"><a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">${GITHUB_MARK}teams-live on GitHub</a></footer></div></body></html>`;
   }
 
   /** The static script that exchanges the fragment token for a session. */
@@ -1475,9 +1472,8 @@ export class ApproveServer {
   dashboardGate(res) {
     const body =
       '<p>Your merge requests, the active sprint, open alerts with who is on call, and your next meetings in one place.</p>' +
-      '<ul class="note"><li>Merge requests are read with your own GitLab account.</li><li>Sprint, alerts and meetings are read by the bot with its own accounts.</li><li>Approving needs a click on Approve; nothing is sent by just looking.</li></ul>' +
       `<p class="links"><a class="btn" href="${escapeHtml(`${this.dashPath}/signin`)}">Sign in with GitLab</a></p>`;
-    return this.send(res, 200, this.page('Dashboard', body, { kind: 'generic' }));
+    return this.send(res, 200, this.page('Dashboard', body, { kind: 'dashboard' }));
   }
 
   /** Starts a GitLab sign-in for the dashboard (no capability link needed: membership decides). */
@@ -1621,7 +1617,7 @@ export class ApproveServer {
     const ctx = this.dashboardCtx(session, data);
     const csrf = this.csrf.issue(session.sid, 'dashboard', `who=${session.user.username}`);
     const body = dashboardBody({ data, ctx, csrf, filter: defaultFilter(data.mrs.items || [], session.user.username), updated: this.dashboardUpdated(data.at) });
-    const html = this.documentHtml({ title: 'Dashboard', kicker: 'Dashboard', footer: 'merge requests are read as you, everything else by the bot.', shell: 'shell dashboard', main: `<main>${body}<script>${this.dashboardScript}</script></main>`, css: DASHBOARD_CSS, dashLink: false, menu: `<div class="menu-sep"></div><form method="post" action="${escapeHtml(`${this.origin}${this.dashPath}/signout`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}" data-csrf><button class="menu-item" type="submit">Sign out</button></form>` });
+    const html = this.documentHtml({ title: 'Dashboard', kicker: 'Dashboard', shell: 'shell dashboard', main: `<main>${body}<script>${this.dashboardScript}</script></main>`, css: DASHBOARD_CSS, dashLink: false, menu: `<div class="menu-sep"></div><form method="post" action="${escapeHtml(`${this.origin}${this.dashPath}/signout`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}" data-csrf><button class="menu-item" type="submit">Sign out</button></form>` });
     return this.send(res, 200, html, { script: 'dashboard' });
   }
 
@@ -1812,7 +1808,7 @@ export class ApproveServer {
     }))).join('');
     const approvable = record.items.filter((item) => item.sha);
     const approveUrl = this.oauth && approvable.length ? this.batchLinkFor(approvable, 'approve') : null;
-    const approve = approveUrl ? `<p><a class="btn" href="${escapeHtml(approveUrl)}">👍 Approve all</a></p>` : '';
+    const approve = approveUrl ? `<p><a class="btn" href="${escapeHtml(approveUrl)}">👍 Approve all</a></p><p class="note">Approvals are sent as the signed-in GitLab user.</p>` : '';
     const body = `<p>Opening the merge requests in separate tabs.</p><button id="open-all" class="btn" type="button">Open remaining</button><p id="open-note" class="note"></p><div class="batch-list">${links}</div><noscript><p>Open the links above individually.</p></noscript>${approve}`;
     return this.send(res, 200, this.page('Open merge requests', body, { kind: 'approve', script: `<script>${this.openAllScript}</script>` }), { script: 'open-all' });
   }
