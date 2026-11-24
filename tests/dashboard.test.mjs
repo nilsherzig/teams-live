@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 
 import { ApproveServer } from '../src/approve.mjs';
-import { alertsSection, defaultFilter, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, webLink } from '../src/dashboard.mjs';
+import { liveScript } from '../src/approve-page.mjs';
+import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
+import { alertsSection, dashboardScript, defaultFilter, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -324,4 +326,10 @@ test('moving a ticket: one transition for a ticket on the board, after Origin an
     assert.deepEqual(ok, { status: 'moved', text: 'ABC-1 moved to In Review.' });
     assert.deepEqual(moves, [['ABC-1', 'inReview']]);
   });
+});
+
+test('the page script parses (a syntax error would leave the whole page inert)', () => {
+  assert.doesNotThrow(() => new Function(dashboardScript('/dashboard')));
+  assert.doesNotThrow(() => new Function(liveScript('/approve/state')));
+  assert.doesNotThrow(() => new Function(BATCH_APPROVAL_SCRIPT));
 });
