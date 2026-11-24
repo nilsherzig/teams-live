@@ -492,6 +492,7 @@ authentication layer. The proxy may keep the path prefix or strip it.
 | `gitlab.approve.rebase_enabled` | The Rebase button (true; only an explicit `false` turns it off). |
 | `gitlab.reaction_approvers` | Who may approve a merge request with a 👍 reaction on its Teams message: `anyone` (default: whoever reacts, except the merge request's author, whose reaction is ignored; the reactor is named in the comment and shown on the card) or `self` (only the account teams-live runs as and configured admins). Note that with `anyone` any 👍 on a card approves it. |
 | `gitlab.approve.oauth.client_id`, `.client_secret` | Turns on [Sign in with GitLab](#sign-in-with-gitlab). Give the secret as `{ _secret = "/path"; }`. Off by default. |
+| `gitlab.approve.oauth.auto_setup` | Create and verify a user-owned GitLab OAuth application (false). Explicit credentials remain a fallback if automatic setup fails. |
 | `gitlab.approve.oauth.allowed_users` | Optional list of GitLab user names allowed to confirm. Empty: any user that signs in. |
 
 #### Rebase and Merge buttons
@@ -541,6 +542,18 @@ group or the admin area) with the redirect URI
 applications need the `api` scope enabled and users must authorize it again. Keep the
 secret in SOPS and reference it with `_secret`. The proxy must forward
 `/oauth/start` and `/oauth/callback` like the other paths.
+
+Alternatively set `gitlab.approve.oauth.auto_setup = true`. On startup,
+teams-live creates a confidential application owned by the primary GitLab
+token's user with the `api` scope and its configured callback. The one-time
+client secret is stored in `gitlab-oauth.json` in the
+service state directory, mode 0600. Back up this file: GitLab does not return
+the secret again. When configured, existing explicit credentials are used if
+automatic setup fails. Switching to the managed application requires users to
+authorize it again. A matching application without a local state file is not
+adopted or deleted. If
+creation is interrupted or its outcome is unknown, a `.pending` marker stops
+automatic retries until the application and state have been checked manually.
 
 The environment fallbacks are `TEAMS_GITLAB_APPROVE_*` (`ENABLE`, `HOST`,
 `PORT`, `BASE_URL`, `LINK_TTL_SECONDS`). The former `owner_users`,

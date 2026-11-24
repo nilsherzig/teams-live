@@ -13,6 +13,7 @@ import { GitLabWebhookServer } from './webhook.mjs';
 import { ApproveServer } from './approve.mjs';
 import { openGeoIp } from './geoip.mjs';
 import { WebhookReconciler, isStrongSecret, MIN_SECRET_LENGTH } from './webhook-reconcile.mjs';
+import { ensureOAuthApplication } from './oauth-reconcile.mjs';
 import path from 'node:path';
 import { SystemdWatchdog } from './systemd.mjs';
 import { HealthMonitor } from './health.mjs';
@@ -285,6 +286,21 @@ async function main() {
       }
     }
     try {
+      const configuredOauth = apCfg.oauth?.client_id && apCfg.oauth?.client_secret
+        ? { clientId: apCfg.oauth.client_id, clientSecret: apCfg.oauth.client_secret }
+        : null;
+      if (!configuredOauth && (apCfg.oauth?.client_id || apCfg.oauth?.client_secret)) {
+        throw new Error('Configure both GitLab OAuth client ID and secret, or neither');
+      }
+      let oauth = configuredOauth;
+      if (apCfg.oauth?.auto_setup) {
+        try {
+          oauth = await ensureOAuthApplication({ gitlab, baseUrl: apCfg.base_url, stateFile: path.join(config.gitlab.state_dir, 'gitlab-oauth.json') });
+          log('GitLab OAuth application is ready');
+        } catch (err) {
+          log.warn(`GitLab OAuth automatic setup failed${configuredOauth ? '; using configured credentials' : ''}: ${err.message}`);
+        }
+      }
       approveServer = new ApproveServer({
         gitlab,
         baseUrl: apCfg.base_url,
@@ -300,7 +316,7 @@ async function main() {
         refreshCards: (project, iid) => watcher.refreshMrCards(project, iid),
         locateCard: (project, iid) => watcher.mrCardMessage(project, iid),
         geoip,
-        oauth: apCfg.oauth?.client_id ? { clientId: apCfg.oauth.client_id, clientSecret: apCfg.oauth.client_secret, allowedUsers: apCfg.oauth.allowed_users } : null,
+        oauth: oauth ? { ...oauth, allowedUsers: apCfg.oauth.allowed_users } : null,
       });
       await approveServer.start();
       watcher.setApproveFlow(approveServer);
