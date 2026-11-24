@@ -421,3 +421,18 @@ test('installable app: manifest, icons and service worker without a session; onl
     assert.equal(data.headers.get('x-tl-offline'), '1');
   });
 });
+
+test('theme: the tl_theme cookie picks light or dark for every page; the account menu switches it', async () => {
+  await withDashboard({}, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    const page = async (theme) => (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: `${cookie}; tl_theme=${theme}` } })).text();
+    const dark = await page('dark');
+    assert.match(dark, /<html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark">/);
+    assert.match(dark, /data-theme-set="dark" aria-pressed="true"/);
+    const odd = await page('%3Cx%3E');
+    assert.match(odd, /<html lang="en"><head>/, 'anything else follows the system');
+    assert.match(odd, /data-theme-set="auto" aria-pressed="true"/);
+    const gate = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: 'tl_theme=light' } })).text();
+    assert.match(gate, /<html lang="en" data-theme="light">/, 'other pages follow the choice too');
+  });
+});

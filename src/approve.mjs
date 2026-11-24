@@ -770,7 +770,8 @@ export class ApproveServer {
     if (this.server) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const srv = http.createServer((req, res) => {
-        this.requestContext.run({ user: this.rememberedUser(req) }, () => {
+        const theme = parseCookies(req.headers.cookie).tl_theme;
+        this.requestContext.run({ user: this.rememberedUser(req), theme: theme === 'dark' || theme === 'light' ? theme : '' }, () => {
           this.handle(req, res).catch((err) => {
             log(`Unhandled error: ${err.message}`);
             if (!res.headersSent) this.send(res, 500, this.page('Error', '<p>Something went wrong. Nothing was approved.</p>', { tone: 'error' }));
@@ -843,11 +844,13 @@ export class ApproveServer {
   /** The HTML document every page shares: head, top bar with the signed-in account, the shell and the footer. */
   documentHtml({ title, kicker, live = false, shell = 'shell', main, css = '', dashLink = true, menu = '', actions = '', footer = true, head = '' }) {
     const user = this.requestContext.getStore()?.user;
+    // The visitor's theme choice (tl_theme cookie, set by the dashboard's account menu): auto, light or dark.
+    const theme = this.requestContext.getStore()?.theme || '';
     let avatar = '';
     try { if (user) avatar = this.avatarOf?.(user.name || user.username) || ''; } catch { /* Fall back to initials. */ }
     const items = `${this.dashboard && dashLink ? `<a class="menu-item" href="${escapeHtml(this.dashPath)}">Dashboard</a>` : ''}${menu}`;
     const account = user ? headerAccount(user, this.gitlabHost, avatar, items) : '';
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><link rel="icon" type="image/png" href="${FAVICON}">${head}<title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}${css}</style></head><body><header class="${shell.replace(/\bshell\b/, 'brand')}"><div class="in">${this.dashboard ? `<a class="home" href="${escapeHtml(`${this.dashPath}#overview`)}" data-home aria-label="teams-live dashboard">${TANUKI}<span class="word">teams-live</span></a>` : `${TANUKI}<span class="word">teams-live</span>`}<span class="sep" aria-hidden="true">/</span><span class="kicker">${kicker}</span>${live ? '<span class="live-dot" title="This page keeps itself up to date"><i></i>Live</span>' : ''}${actions}${account}</div></header><div class="${shell}">${main}${footer ? FOOTER : ''}</div></body></html>`;
+    return `<!doctype html><html lang="en"${theme ? ` data-theme="${theme}"` : ''}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="${theme || 'light dark'}"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><link rel="icon" type="image/png" href="${FAVICON}">${head}<title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}${css}</style></head><body><header class="${shell.replace(/\bshell\b/, 'brand')}"><div class="in">${this.dashboard ? `<a class="home" href="${escapeHtml(`${this.dashPath}#overview`)}" data-home aria-label="teams-live dashboard">${TANUKI}<span class="word">teams-live</span></a>` : `${TANUKI}<span class="word">teams-live</span>`}<span class="sep" aria-hidden="true">/</span><span class="kicker">${kicker}</span>${live ? '<span class="live-dot" title="This page keeps itself up to date"><i></i>Live</span>' : ''}${actions}${account}</div></header><div class="${shell}">${main}${footer ? FOOTER : ''}</div></body></html>`;
   }
 
   /** The static script that exchanges the fragment token for a session. */
@@ -1871,7 +1874,7 @@ export class ApproveServer {
     const ctx = await this.dashboardCtx(session, data);
     const csrf = this.csrf.issue(session.sid, 'dashboard', `who=${session.user.username}`);
     const body = dashboardBody({ data, ctx, csrf, filter: defaultFilter(data.mrs.items || [], session.user.username), updated: this.dashboardUpdated(data.at) });
-    const html = this.documentHtml({ title: 'Dashboard', kicker: 'Dashboard', shell: 'shell dashboard', main: `<main>${body}<script>${this.dashboardScript}</script></main>`, css: DASHBOARD_CSS, dashLink: false, actions: CUSTOMIZE_BUTTON, footer: false, head: `<link rel="manifest" href="${escapeHtml(`${this.dashPath}/manifest.webmanifest`)}"><meta name="theme-color" content="#1f1e24"><link rel="apple-touch-icon" href="${escapeHtml(`${this.dashPath}/icon-192.png`)}">`, menu: `<div class="menu-sep"></div><form method="post" action="${escapeHtml(`${this.origin}${this.dashPath}/signout`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}" data-csrf><button class="menu-item" type="submit">Sign out</button></form>` });
+    const html = this.documentHtml({ title: 'Dashboard', kicker: 'Dashboard', shell: 'shell dashboard', main: `<main>${body}<script>${this.dashboardScript}</script></main>`, css: DASHBOARD_CSS, dashLink: false, actions: CUSTOMIZE_BUTTON, footer: false, head: `<link rel="manifest" href="${escapeHtml(`${this.dashPath}/manifest.webmanifest`)}"><meta name="theme-color" content="#1f1e24"><link rel="apple-touch-icon" href="${escapeHtml(`${this.dashPath}/icon-192.png`)}">`, menu: `<div class="menu-sep"></div><div class="menu-theme"><span>Theme</span><span class="theme-seg" role="group" aria-label="Theme">${['auto', 'light', 'dark'].map((t) => `<button type="button" data-theme-set="${t}" aria-pressed="${(this.requestContext.getStore()?.theme || 'auto') === t}">${t[0].toUpperCase()}${t.slice(1)}</button>`).join('')}</span></div><div class="menu-sep"></div><form method="post" action="${escapeHtml(`${this.origin}${this.dashPath}/signout`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}" data-csrf><button class="menu-item" type="submit">Sign out</button></form>` });
     return this.send(res, 200, html, { script: 'dashboard', extra: { 'X-TL-Offline': '1' } });
   }
 
