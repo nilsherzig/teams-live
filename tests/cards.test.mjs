@@ -1027,3 +1027,19 @@ test('merge request title is accent coloured; the project is a repository icon i
   // Other cards keep their plain subtitles.
   assert.equal(items(buildJobCard({ name: 'j', status: 'failed', project: 'group/project', url: 'https://gitlab.example.com/-/jobs/5' }))[2].type, 'TextBlock');
 });
+
+test('the /oncall card shows each queue with its responders\' pictures, and Off-duty for an empty one', async () => {
+  const { buildOnCallCard } = await import('../src/cards.mjs');
+  const photo = 'data:image/png;base64,iVBORw0KGgo=';
+  const card = buildOnCallCard({
+    queues: [
+      { label: 'Platform', people: ['Carol Example'], avatars: { 'Carol Example': photo } },
+      { label: 'Support', people: [], avatars: {} },
+    ],
+    fallbackText: 'On-call',
+  });
+  const json = JSON.stringify(card);
+  assert.ok(json.includes('On-Call Responders'));
+  assert.ok(json.includes(photo), 'the picture of the responder');
+  assert.ok(json.includes('Carol Example') && json.includes('Off-duty'));
+});

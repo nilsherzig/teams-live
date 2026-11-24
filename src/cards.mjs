@@ -849,6 +849,17 @@ export function opsGenieStatusBadge(alert) {
 }
 
 /** OpsGenie alert. */
+/**
+ * The /oncall reply: one row per duty queue with the responders' pictures (initials without a photo) and names,
+ * "Off-duty" for a queue with nobody on duty. `queues`: [{ label, people: [name], avatars: {name: dataUri} }].
+ */
+export function buildOnCallCard({ queues = [], fallbackText } = {}) {
+  const facts = queues.map(({ label, people = [], avatars = {} }) =>
+    people.length ? personFact(label, people.join(', '), people, avatars, '', null, people.length > 1) : [label, 'Off-duty'],
+  );
+  return assembleCard({ service: 'opsgenie', kind: 'On-call', title: 'On-Call Responders', facts, fallbackText });
+}
+
 export function buildOpsGenieAlertCard(alert) {
   const closed = str(alert.status).toLowerCase() === 'closed';
   const priority = str(alert.priority) || 'P3';

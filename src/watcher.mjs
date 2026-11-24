@@ -44,6 +44,7 @@ import {
   buildJobCard,
   buildPipelineCard,
   buildJiraIssueCard,
+  buildOnCallCard,
   buildOpsGenieAlertCard,
   buildConfluencePageCard,
   buildCodePreviewCard,
@@ -7455,11 +7456,27 @@ export class MergeRequestWatcher {
         `- 🚨 **CKS Platform**: **${onCallPerson}**\n` +
         `- 💼 **Support Queue**: **${supportPerson}**`;
 
-      await sendReply(
-        event.conversationId,
-        event,
-        this.richCommandMessage(text, { service: 'opsgenie', kind: 'On-call' })
+      // The responders with their pictures, looked up by the address OpsGenie knows (the name derived from it may
+      // be spelled differently from the Teams one, e.g. without umlauts).
+      const responders = (list) =>
+        (Array.isArray(list) ? list : []).map((p) => ({ name: humanizeRecipient(p), email: String(p).includes('@') ? String(p) : undefined })).filter((p) => p.name);
+      const queues = [
+        { label: 'CKS Platform', people: responders(onCallDuty) },
+        { label: 'Support Queue', people: responders(supportDuty) },
+      ];
+      let avatars = {};
+      if (this.richMessages && this.avatarService && !this.suppressAvatars) {
+        try {
+          avatars = await this.avatarService.avatarsFor(queues.flatMap((q) => q.people));
+        } catch {
+          avatars = {};
+        }
+      }
+      const message = this.richMessage(text, () =>
+        buildOnCallCard({ queues: queues.map((q) => ({ label: q.label, people: q.people.map((p) => p.name), avatars })), fallbackText: text })
       );
+
+      await sendReply(event.conversationId, event, message);
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
     } catch (err) {
       log(`Failed to execute /oncall: ${err.message}`);
