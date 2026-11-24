@@ -56,7 +56,7 @@ import { userApprovalPreflight, userApprovalWrite } from './user-approval.mjs';
 import { BATCH_APPROVAL_SCRIPT } from './batch-approval-page.mjs';
 import { teamsMessageLink } from './message-links.mjs';
 import { formatPlace } from './geoip.mjs';
-import { PAGE_CSS, TANUKI, escapeHtml, headerAccount, liveScript, liveSlots, liveState, renderSummary, safeLink } from './approve-page.mjs';
+import { PAGE_CSS, TANUKI, escapeHtml, headerAccount, heroIcon, liveScript, liveSlots, liveState, renderSummary, safeLink } from './approve-page.mjs';
 import http from 'node:http';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { isIP } from 'node:net';
@@ -64,6 +64,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from './logger.mjs';
+import { DASHBOARD_CSS, dashboardBody, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, renderSections } from './dashboard.mjs';
 
 const FULL_WARN_INTERVAL_MS = 10 * 60 * 1000;
 const log = createLogger('approve');
@@ -100,6 +101,12 @@ const MERGE_POLL_ATTEMPTS = 8;
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const MAX_OAUTH_STATES = 500;
 const OAUTH_TIMEOUT_MS = 10_000;
+const DASH_COOKIE = 'tl_dash';
+const DASH_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const MAX_DASH_SESSIONS = 200;
+const DASH_DATA_CACHE_MS = 20_000;
+const DASH_SOURCE_CACHE_MS = 60_000;
+const DASH_SOURCES = { sprint: 'Jira', alerts: 'OpsGenie', meetings: 'the calendar' };
 
 // Page copy per kind of link. `generic` is the entry page, which does not know
 // the action yet (the token that says so is still in the fragment).
@@ -605,6 +612,7 @@ export class ApproveServer {
     mergePollMs = MERGE_POLL_MS,
     mergePollAttempts = MERGE_POLL_ATTEMPTS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    dashboard = null,
   } = {}) {
     if (!gitlab) throw new Error('approve: a GitLab client is required');
     let base;
@@ -676,6 +684,16 @@ export class ApproveServer {
     this.gitlabHost = typeof gitlab.host === 'string' ? gitlab.host : '';
     this.lastApprovals = new Map();
     this.liveCache = new Map();
+    // The dashboard: on only with GitLab sign-in and a group whose members may see it.
+    // `sources` are the bot's own readers: {sprint, alerts, meetings}, each () => Promise.
+    this.dashboard = dashboard?.enable && dashboard.group && this.oauth
+      ? { group: String(dashboard.group), sources: dashboard.sources || {}, timeZone: dashboard.timeZone || 'Europe/Berlin' }
+      : null;
+    this.dashSessions = new Map();
+    this.dashData = new Map();
+    this.dashSourceCache = new Map();
+    this.dashboardScript = dashboardScript(this.basePath);
+    this.dashboardHash = `sha256-${crypto.createHash('sha256').update(this.dashboardScript).digest('base64')}`;
   }
 
   /**
@@ -778,7 +796,7 @@ export class ApproveServer {
       'Referrer-Policy': 'same-origin',
       'Cross-Origin-Opener-Policy': 'same-origin',
       // img-src data: only: the pictures are embedded (card icons, profile pictures), never fetched.
-      'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'unsafe-inline'; ${script ? `script-src '${script === 'live' ? this.liveHash : script === 'batch' ? this.batchApprovalHash : script === 'open-all' ? this.openAllHash : script === 'open-bootstrap' ? this.openBootstrapHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
+      'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'unsafe-inline'; ${script ? `script-src '${script === 'live' ? this.liveHash : script === 'batch' ? this.batchApprovalHash : script === 'open-all' ? this.openAllHash : script === 'open-bootstrap' ? this.openBootstrapHash : script === 'dashboard' ? this.dashboardHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
       ...extra,
     };
   }
@@ -796,15 +814,23 @@ export class ApproveServer {
    * inline SVG only (the CSP allows nothing else), no external fonts or images.
    * `tone` colors the panel edge: neutral, ok, warn or error.
    */
-  page(title, body, { script = '', tone = 'neutral', kind = 'approve' } = {}) {
+  page(title, body, { script = '', tone = 'neutral', kind = 'approve', wide = false } = {}) {
     const safeTone = ['neutral', 'ok', 'warn', 'error'].includes(tone) ? tone : 'neutral';
     const copy = COPY[kind] || COPY.approve;
-    const tail = script || (body.includes('data-live-root') ? `<script>${this.liveScript}</script>` : '');
+    const live = body.includes('data-live-root');
+    const tail = script || (live ? `<script>${this.liveScript}</script>` : '');
+    const main = `<main class="panel tone-${safeTone}"><div class="page-head">${heroIcon(safeTone)}<h1>${escapeHtml(title)}</h1></div>${body}${tail}</main>`;
+    return this.documentHtml({ title, kicker: copy.kicker, footer: copy.footer, live, shell: wide ? 'shell wide' : 'shell', main });
+  }
+
+  /** The HTML document every page shares: head, top bar with the signed-in account, the shell and the footer. */
+  documentHtml({ title, kicker, footer, live = false, shell = 'shell', main, css = '', dashLink = true }) {
     const user = this.requestContext.getStore()?.user;
     let avatar = '';
     try { if (user) avatar = this.avatarOf?.(user.name || user.username) || ''; } catch { /* Fall back to initials. */ }
     const account = user ? headerAccount(user, this.gitlabHost, avatar) : '';
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}</style></head><body><header class="brand"><div class="in">${TANUKI}<span class="word">teams-live</span><span class="sep" aria-hidden="true">·</span><span class="kicker">${copy.kicker}</span>${account}</div></header><div class="shell"><main class="panel tone-${safeTone}"><h1>${escapeHtml(title)}</h1>${body}${tail}</main><footer class="foot">Served by your <a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">teams-live</a> instance. Nothing here is GitLab itself; ${copy.footer}</footer></div></body></html>`;
+    const dash = this.dashboard && user && dashLink ? `<a class="dash-link" href="${escapeHtml(`${this.basePath}/dashboard`)}">Dashboard</a>` : '';
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}${css}</style></head><body><header class="brand"><div class="in">${TANUKI}<span class="word">teams-live</span><span class="sep" aria-hidden="true">/</span><span class="kicker">${kicker}</span>${live ? '<span class="live-dot" title="This page keeps itself up to date"><i></i>Live</span>' : ''}${dash}${account}</div></header><div class="${shell}">${main}<footer class="foot">Served by your <a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">teams-live</a> instance. Nothing here is GitLab itself; ${footer}</footer></div></body></html>`;
   }
 
   /** The static script that exchanges the fragment token for a session. */
@@ -824,7 +850,7 @@ export class ApproveServer {
     if (this.basePath && (pathname === this.basePath || pathname.startsWith(`${this.basePath}/`))) {
       pathname = pathname.slice(this.basePath.length) || '/';
     }
-    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback'].includes(pathname) ? pathname : null;
+    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/approve', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
   }
 
   readForm(req) {
@@ -964,6 +990,7 @@ export class ApproveServer {
       if (method === 'HEAD') return this.send(res, 200, '', { head: true });
       return route === '/oauth/start' ? this.oauthStart(req, res) : this.oauthCallback(req, res);
     }
+    if (route.startsWith('/dashboard')) return this.handleDashboard(route, req, res);
     // /open/view and /confirm require a session created from the capability.
     if (method === 'HEAD') return this.send(res, 200, '', { head: true });
     const session = this.sessionOf(req);
@@ -1320,6 +1347,7 @@ export class ApproveServer {
     const state = this.oauthStates.get(key);
     this.oauthStates.delete(key);
     if (!state || state.exp <= this.now()) return fail('The sign-in expired or was not started here.');
+    if (state.dash) return this.dashboardCallback(res, params, state);
     const session = this.sessions.get(state.sid);
     const code = params.get('code');
     if (!session || session.expiresAt <= this.now() || !code) return fail(params.get('error') ? 'GitLab did not sign you in.' : 'The sign-in could not be completed.');
@@ -1348,13 +1376,279 @@ export class ApproveServer {
       signal: signal(),
     });
     if (!tokenRes.ok) throw new Error(`token endpoint answered HTTP ${tokenRes.status}`);
-    const accessToken = (await tokenRes.json())?.access_token;
+    const granted = await tokenRes.json();
+    const accessToken = granted?.access_token;
     if (typeof accessToken !== 'string' || !accessToken) throw new Error('no access token');
+    const expiresIn = Number(granted?.expires_in);
     const userRes = await fetch(`https://${this.gitlabHost}/api/v4/user`, { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' }, signal: signal() });
     if (!userRes.ok) throw new Error(`user endpoint answered HTTP ${userRes.status}`);
     const u = await userRes.json();
     if (!u?.id || typeof u.username !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(u.username)) throw new Error('unusable user');
-    return { user: { id: u.id, username: u.username, name: typeof u.name === 'string' ? u.name : u.username }, accessToken };
+    return { user: { id: u.id, username: u.username, name: typeof u.name === 'string' ? u.name : u.username }, accessToken, expiresIn: Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : null };
+  }
+
+  // --- dashboard ---
+
+  dashCookie(value, maxAge) {
+    return `${DASH_COOKIE}=${value}; Path=${this.basePath || '/'}; Max-Age=${maxAge}; HttpOnly; SameSite=Strict${this.secure ? '; Secure' : ''}`;
+  }
+
+  /** The dashboard session of a request: `{sid, user, accessToken}` or null. */
+  dashSessionOf(req) {
+    const sid = parseCookies(req.headers.cookie)[DASH_COOKIE];
+    if (typeof sid !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(sid)) return null;
+    const s = this.dashSessions.get(sha256Hex(sid));
+    if (!s || s.expiresAt <= this.now()) return null;
+    return { sid, user: s.user, accessToken: s.accessToken };
+  }
+
+  /** Why this signed-in user may not see the dashboard, or '': group membership and the optional allow-list. */
+  async dashboardDenied(user, accessToken) {
+    const name = String(user.username).toLowerCase();
+    if (this.oauth.allowedUsers.size > 0 && !this.oauth.allowedUsers.has(name)) return `The GitLab user ${user.username} is not allowed to use this dashboard.`;
+    if (!(await isGroupMember(this.gitlabHost, accessToken, this.dashboard.group, user.id))) return `The GitLab user ${user.username} is not a member of the GitLab group this dashboard is for.`;
+    return '';
+  }
+
+  async handleDashboard(route, req, res) {
+    const method = req.method;
+    const notAllowed = (allow) => this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: allow } });
+    if (!this.dashboard) return this.send(res, 404, this.page('Not found', '<p>Nothing here.</p>', { tone: 'warn' }), { head: method === 'HEAD' });
+    if (route === '/dashboard/signin') {
+      if (method !== 'GET') return notAllowed('GET');
+      return this.dashboardSignIn(res);
+    }
+    const session = this.dashSessionOf(req);
+    if (session) this.requestContext.getStore().user = session.user;
+    if (route === '/dashboard') {
+      if (method !== 'GET' && method !== 'HEAD') return notAllowed('GET, HEAD');
+      if (method === 'HEAD') return this.send(res, 200, '', { head: true });
+      if (!session) return this.dashboardGate(res);
+      return this.showDashboard(res, session);
+    }
+    if (route === '/dashboard/data') {
+      if (method !== 'GET') return notAllowed('GET');
+      if (!session) return this.json(res, 401, {});
+      try {
+        return this.json(res, 200, await this.dashboardPayload(session));
+      } catch {
+        return this.json(res, 502, {});
+      }
+    }
+    if (route === '/dashboard/approve') {
+      if (method !== 'POST') return notAllowed('POST');
+      if (!session) return this.json(res, 401, { status: 'failed', text: 'Signed out. Reload the page and sign in again. Nothing was approved.' });
+      return this.dashboardApprove(req, res, session);
+    }
+    if (route === '/dashboard/signout') {
+      if (method !== 'POST') return notAllowed('POST');
+      if (!this.originAllowed(req)) return this.send(res, 403, this.page('Not allowed', '<p>Nothing was changed.</p>', { tone: 'warn' }));
+      const parsed = await this.postForm(req);
+      if (session && parsed.form && this.csrf.verify(parsed.form.get('csrf'), session.sid, 'dashboard', `who=${session.user.username}`)) {
+        this.dashSessions.delete(sha256Hex(session.sid));
+        this.dashData.delete(sha256Hex(session.sid));
+      }
+      this.requestContext.getStore().user = null;
+      const forget = `${WHO_COOKIE}=; Path=${this.basePath || '/'}; Max-Age=0; HttpOnly; SameSite=Strict${this.secure ? '; Secure' : ''}`;
+      res.writeHead(303, this.headers({ Location: `${this.basePath}/dashboard`, 'Set-Cookie': [this.dashCookie('', 0), forget] }));
+      return res.end();
+    }
+    return this.send(res, 404, this.page('Not found', '<p>Nothing here.</p>', { tone: 'warn' }));
+  }
+
+  /** Signed out: what the dashboard is and one button to sign in with GitLab. */
+  dashboardGate(res) {
+    const body =
+      '<p>Your merge requests, the active sprint, open alerts with who is on call, and your next meetings in one place.</p>' +
+      '<ul class="note"><li>Merge requests are read with your own GitLab account.</li><li>Sprint, alerts and meetings are read by the bot with its own accounts.</li><li>Approving needs a click on Approve; nothing is sent by just looking.</li></ul>' +
+      `<p class="links"><a class="btn" href="${escapeHtml(`${this.basePath}/dashboard/signin`)}">Sign in with GitLab</a></p>`;
+    return this.send(res, 200, this.page('Dashboard', body, { kind: 'generic' }));
+  }
+
+  /** Starts a GitLab sign-in for the dashboard (no capability link needed: membership decides). */
+  dashboardSignIn(res) {
+    const now = this.now();
+    for (const [k, v] of this.oauthStates) if (v.exp <= now) this.oauthStates.delete(k);
+    while (this.oauthStates.size >= MAX_OAUTH_STATES) this.oauthStates.delete(this.oauthStates.keys().next().value);
+    const nonce = crypto.randomBytes(32).toString('base64url');
+    const verifier = crypto.randomBytes(48).toString('base64url');
+    this.oauthStates.set(nonce, { dash: true, verifier, exp: now + OAUTH_STATE_TTL_MS });
+    const url = new URL(`https://${this.gitlabHost}/oauth/authorize`);
+    url.search = new URLSearchParams({
+      client_id: this.oauth.clientId,
+      redirect_uri: this.oauthRedirectUri(),
+      response_type: 'code',
+      scope: 'api',
+      state: nonce,
+      code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url'),
+      code_challenge_method: 'S256',
+    }).toString();
+    res.writeHead(302, this.headers({ Location: url.href }));
+    res.end();
+  }
+
+  /** The OAuth answer for a dashboard sign-in: check who it is and whether they may see it, then open a session. */
+  async dashboardCallback(res, params, state) {
+    const fail = (status, text) => this.send(res, status, this.page('Sign-in failed', `<p>${escapeHtml(text)}</p><p class="links"><a class="btn btn-secondary" href="${escapeHtml(`${this.basePath}/dashboard`)}">Back to the dashboard</a></p>`, { tone: 'warn', kind: 'generic' }));
+    if (!this.dashboard) return fail(404, 'The dashboard is switched off.');
+    const code = params.get('code');
+    if (!code) return fail(400, params.get('error') ? 'GitLab did not sign you in.' : 'The sign-in could not be completed.');
+    let user, accessToken, expiresIn;
+    try {
+      ({ user, accessToken, expiresIn } = await this.oauthUser(code, state.verifier));
+    } catch (err) {
+      log(`Dashboard sign-in failed: ${err.message}`);
+      return fail(400, 'GitLab could not confirm who you are.');
+    }
+    const denied = await this.dashboardDenied(user, accessToken);
+    if (denied) {
+      log(`Dashboard sign-in refused for ${user.username}`);
+      return fail(403, denied);
+    }
+    const now = this.now();
+    for (const [h, s] of this.dashSessions) if (s.expiresAt <= now) this.dashSessions.delete(h);
+    while (this.dashSessions.size >= MAX_DASH_SESSIONS) this.dashSessions.delete(this.dashSessions.keys().next().value);
+    const sid = crypto.randomBytes(32).toString('base64url');
+    // Never longer than GitLab lets the token live (a minute early), at most a working day.
+    const ttl = Math.max(60_000, Math.min(DASH_SESSION_TTL_MS, expiresIn ? expiresIn * 1000 - 60_000 : DASH_SESSION_TTL_MS));
+    const key = sha256Hex(sid);
+    const session = { user, accessToken, expiresAt: now + ttl };
+    this.dashSessions.set(key, session);
+    const timer = setTimeout(() => {
+      if (this.dashSessions.get(key) === session) this.dashSessions.delete(key);
+      this.dashData.delete(key);
+    }, ttl);
+    timer.unref?.();
+    this.requestContext.getStore().user = user;
+    try { await this.avatarWarm?.([user.name || user.username]); } catch { /* Use initials when the photo is unavailable. */ }
+    const next = `${this.basePath}/dashboard`;
+    return this.send(res, 200, this.page('Signed in', `<meta http-equiv="refresh" content="0;url=${escapeHtml(next)}"><p>Signed in as <code>${escapeHtml(user.username)}</code>.</p><p class="links"><a class="btn" href="${escapeHtml(next)}">Open the dashboard</a></p>`, { tone: 'ok', kind: 'generic' }), {
+      extra: { 'Set-Cookie': [this.dashCookie(sid, Math.floor(ttl / 1000)), this.whoCookie(user)] },
+    });
+  }
+
+  /** One source the bot reads (sprint, alerts, meetings), shared by every visitor for a minute. */
+  dashSource(name) {
+    const fn = this.dashboard.sources?.[name];
+    if (typeof fn !== 'function') return Promise.resolve({ error: `${DASH_SOURCES[name]} is not configured.` });
+    const now = this.now();
+    const hit = this.dashSourceCache.get(name);
+    if (hit && now - hit.at < DASH_SOURCE_CACHE_MS) return hit.promise;
+    const promise = Promise.resolve()
+      .then(fn)
+      .then((data) => ({ data }))
+      .catch((err) => {
+        log(`Dashboard could not read ${name}: ${err.message}`);
+        if (this.dashSourceCache.get(name) === entry) this.dashSourceCache.set(name, { ...entry, at: now - DASH_SOURCE_CACHE_MS + 10_000 });
+        return hit?.ok ? hit.promise : { error: `Could not read ${DASH_SOURCES[name]} right now.` };
+      });
+    const entry = { at: now, promise, ok: false };
+    promise.then((r) => { if (r.data !== undefined) entry.ok = true; });
+    this.dashSourceCache.set(name, entry);
+    return promise;
+  }
+
+  /** Everything the dashboard shows, for one visitor (their merge requests are read with their token). */
+  dashboardData(session) {
+    const key = sha256Hex(session.sid);
+    const now = this.now();
+    const hit = this.dashData.get(key);
+    if (hit && now - hit.at < DASH_DATA_CACHE_MS) return hit.promise;
+    const promise = (async () => {
+      const [mrs, sprint, alerts, meetings] = await Promise.all([
+        fetchGroupMrs(this.gitlabHost, session.accessToken, this.dashboard.group)
+          .then((items) => ({ items }))
+          .catch((err) => {
+            log(`Dashboard could not list merge requests for ${session.user.username}: ${err.message}`);
+            return { error: err.status === 401 ? 'GitLab ended the sign-in. Reload the page to sign in again.' : 'Could not read the merge requests from GitLab right now.' };
+          }),
+        this.dashSource('sprint'),
+        this.dashSource('alerts'),
+        this.dashSource('meetings'),
+      ]);
+      return { at: this.now(), mrs, sprint, alerts, meetings };
+    })();
+    const entry = { at: now, promise };
+    this.dashData.set(key, entry);
+    promise.catch(() => { if (this.dashData.get(key) === entry) this.dashData.delete(key); });
+    return promise;
+  }
+
+  /** The drawing context: who looks, their pictures, the time zone of the meetings. */
+  dashboardCtx(session, data) {
+    const names = new Set();
+    for (const mr of data.mrs.items || []) names.add(mr.author.name);
+    for (const k of ['todo', 'inProgress', 'inReview']) for (const t of data.sprint.data?.[k] || []) if (t.assignee) names.add(t.assignee);
+    const avatars = {};
+    for (const name of names) {
+      try {
+        const uri = this.avatarOf?.(name);
+        if (uri) avatars[name] = uri;
+      } catch { /* initials */ }
+    }
+    // Photos that are not known yet are loaded in the background for the next refresh.
+    if (this.avatarWarm && names.size) Promise.resolve().then(() => this.avatarWarm([...names].slice(0, 60))).catch(() => {});
+    return { username: session.user.username, name: session.user.name, host: this.gitlabHost, avatars, now: this.now(), timeZone: this.dashboard.timeZone };
+  }
+
+  dashboardUpdated(at) {
+    return new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: this.dashboard.timeZone });
+  }
+
+  async dashboardPayload(session) {
+    const data = await this.dashboardData(session);
+    const ctx = this.dashboardCtx(session, data);
+    return { sections: renderSections(data, ctx), counts: navCounts(data, ctx), csrf: this.csrf.issue(session.sid, 'dashboard', `who=${session.user.username}`), updated: this.dashboardUpdated(data.at) };
+  }
+
+  async showDashboard(res, session) {
+    const data = await this.dashboardData(session);
+    const ctx = this.dashboardCtx(session, data);
+    const csrf = this.csrf.issue(session.sid, 'dashboard', `who=${session.user.username}`);
+    const body = dashboardBody({ data, ctx, csrf, filter: defaultFilter(data.mrs.items || [], session.user.username), updated: this.dashboardUpdated(data.at), signOutAction: `${this.origin}${this.basePath}/dashboard/signout` });
+    const html = this.documentHtml({ title: 'Dashboard', kicker: 'Dashboard', footer: 'merge requests are read as you, everything else by the bot.', shell: 'shell dashboard', main: `<main>${body}<script>${this.dashboardScript}</script></main>`, css: DASHBOARD_CSS, dashLink: false });
+    return this.send(res, 200, html, { script: 'dashboard' });
+  }
+
+  /**
+   * POST <base>/dashboard/approve: ONE approval of one merge request at the head the dashboard showed, as the
+   * signed-in user. The same checks as the approval page (identity, head, draft, author, GitLab's own rules);
+   * never repeated. Answers JSON `{status: approved|already|failed|unknown, text}`.
+   */
+  async dashboardApprove(req, res, session) {
+    const answer = (status, text, code = 200) => this.json(res, code, { status, text });
+    if (!this.originAllowed(req)) return answer('failed', 'The request did not come from the dashboard. Nothing was approved.', 403);
+    const parsed = await this.postForm(req);
+    if (!parsed.form) return answer('failed', 'The request was rejected. Nothing was approved.', parsed.status);
+    if (!this.csrf.verify(parsed.form.get('csrf'), session.sid, 'dashboard', `who=${session.user.username}`)) return answer('failed', 'The page expired. Reload it and try again. Nothing was approved.', 403);
+    const project = String(parsed.form.get('project') || '');
+    const iid = String(parsed.form.get('iid') || '');
+    const sha = String(parsed.form.get('sha') || '');
+    if (!/^[A-Za-z0-9_.\/-]{1,255}$/.test(project) || !/^[1-9]\d{0,9}$/.test(iid) || !/^[0-9a-f]{40,64}$/i.test(sha)) return answer('failed', 'The request was rejected. Nothing was approved.', 400);
+    const group = this.dashboard.group.toLowerCase();
+    if (!project.toLowerCase().startsWith(`${group}/`)) return answer('failed', 'This merge request is not in the dashboard’s group. Nothing was approved.', 403);
+    const ref = `${project}!${iid}`;
+    try {
+      const outcome = await this.withLock(keyOf(project, iid), async () => {
+        const item = { project, iid: Number(iid), sha };
+        const checked = await userApprovalPreflight(this.gitlabHost, { ...item, status: 'open' }, session);
+        if (checked.status === 'already') return ['already', `You had already approved ${ref}.`];
+        if (checked.status !== 'ready') return ['failed', `${ref}: ${checked.reason || 'cannot be approved.'} Nothing was approved.`];
+        const denied = this.signInDenied(session.user, checked.mr, 'approve');
+        if (denied) return ['failed', `${denied} Nothing was approved.`];
+        this.store.forgetApproved(project, item.iid, sha);
+        const link = this.store.linkFor({ ...item, action: 'approve' });
+        if (!link) return ['failed', 'The approval could not be prepared. Nothing was approved.'];
+        const sent = await this.sendUserApproval(link.record, checked, session, { deferRefresh: true });
+        if (sent.code === 200) return ['approved', `Approved ${ref} as ${session.user.username}.`];
+        if (sent.title === 'Outcome unknown') return ['unknown', `GitLab did not confirm the approval of ${ref}. Check it in GitLab before retrying.`];
+        return ['failed', `GitLab rejected the approval of ${ref}. Nothing was approved.`];
+      });
+      this.dashData.delete(sha256Hex(session.sid));
+      return answer(outcome[0], outcome[1]);
+    } catch {
+      return answer('unknown', `The outcome for ${ref} is unknown. Check it in GitLab before retrying.`);
+    }
   }
 
   usedPage(record) {
@@ -1552,7 +1846,7 @@ export class ApproveServer {
     }).join('');
     const warning = blocked.length ? `<p class="callout">❌ ${blocked.length} of ${items.length} merge request(s) cannot be approved.</p>` : '';
     const action = ready.length ? `<p id="batch-prompt">Approve ${ready.length} eligible merge request(s) with the account shown above?</p><button id="batch-approve-all" class="btn" type="submit">👍 Approve ${ready.length === items.length ? 'all' : 'eligible'}</button>` : '<p>No approvals were sent. There are no eligible merge requests to approve.</p>';
-    const form = `<form id="batch-approval" method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="actors" value="${escapeHtml(encoded)}"><div class="batch-list">${rows}</div><p id="batch-message" class="batch-message" role="status" aria-live="polite"></p><progress id="batch-progress" class="batch-progress" hidden aria-label="Approval progress"></progress>${action}</form>`;
+    const form = `<form id="batch-approval" method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="actors" value="${escapeHtml(encoded)}"><div class="batch-list">${rows}</div><div class="batch-bar"><p id="batch-message" class="batch-message" role="status" aria-live="polite"></p><progress id="batch-progress" class="batch-progress" hidden aria-label="Approval progress"></progress>${action}</div></form>`;
     return this.send(res, 200, this.page('Approve merge requests', `${warning}${form}`, { kind: 'approve', tone: blocked.length ? 'warn' : 'neutral', script: `<script>${BATCH_APPROVAL_SCRIPT}</script>` }), { script: 'batch' });
   }
 

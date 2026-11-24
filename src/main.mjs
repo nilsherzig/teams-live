@@ -4,7 +4,8 @@ import { AuthManager } from './auth.mjs';
 import { GitLabClient } from './gitlab.mjs';
 import { JiraClient } from './jira.mjs';
 import { ConfluenceClient } from './confluence.mjs';
-import { OpsGenieClient } from './opsgenie.mjs';
+import { OpsGenieClient, formatOnDuty } from './opsgenie.mjs';
+import { getCalendarView } from './teams.mjs';
 import { HRWorksClient } from './hrworks.mjs';
 import { ScreenshotClient } from './screenshot.mjs';
 import { TrouterClient } from './trouter.mjs';
@@ -21,6 +22,39 @@ import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
 import { createLogger } from './logger.mjs';
 
 const log = createLogger('main');
+
+/**
+ * What the dashboard shows besides the merge requests, read by the bot with its own accounts: the active sprint,
+ * the open alerts with who is on duty, and the rest of the week's meetings (declined ones left out).
+ */
+function dashboardSources({ jira, opsgenie }) {
+  return {
+    sprint: jira.isConfigured() ? () => jira.getActiveSprintTasks() : null,
+    alerts: opsgenie.isConfigured()
+      ? async () => {
+          const r = await opsgenie.getAllOpenAlerts();
+          if (r.onCallError && r.supportError) throw new Error(r.onCallError);
+          return {
+            alerts: [...r.onCallAlerts, ...r.supportAlerts],
+            duty: [
+              { queue: 'On-call', who: formatOnDuty(r.onCallDuty) },
+              { queue: 'Support', who: formatOnDuty(r.supportDuty) },
+            ],
+          };
+        }
+      : null,
+    meetings: async () => {
+      const start = new Date();
+      const end = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const res = await getCalendarView({ startDate: start.toISOString(), endDate: end.toISOString(), limit: 50 });
+      if (!res.ok) throw new Error(res.error?.message || 'calendar view failed');
+      return (res.value?.meetings || [])
+        .filter((m) => m.myResponse !== 'Declined')
+        .map((m) => ({ subject: m.subject, startTime: m.startTime, endTime: m.endTime, joinUrl: m.joinUrl || '', organizer: m.organizer?.name || '' }))
+        .sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime));
+    },
+  };
+}
 
 // CLI args
 const args = process.argv.slice(2);
@@ -318,6 +352,14 @@ async function main() {
         locateCard: (project, iid) => watcher.mrCardMessage(project, iid),
         geoip,
         oauth: oauth ? { ...oauth, allowedUsers: apCfg.oauth.allowed_users } : null,
+        dashboard: apCfg.dashboard?.enable
+          ? {
+              enable: true,
+              group: config.gitlab.group,
+              timeZone: apCfg.dashboard.time_zone,
+              sources: dashboardSources({ jira, opsgenie }),
+            }
+          : null,
       });
       await approveServer.start();
       watcher.setApproveFlow(approveServer);

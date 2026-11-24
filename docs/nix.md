@@ -495,6 +495,8 @@ authentication layer. The proxy may keep the path prefix or strip it.
 | `gitlab.approve.oauth.auto_setup` | Create and verify a user-owned GitLab OAuth application (false). Explicit credentials remain a fallback if automatic setup fails. |
 | `gitlab.approve.oauth.state_file` | Optional path for the managed application state; defaults to `gitlab-oauth.json` in the state directory. |
 | `gitlab.approve.oauth.allowed_users` | Optional list of GitLab user names allowed to confirm. Empty: any user that signs in. |
+| `gitlab.approve.dashboard.enable` | The signed-in [dashboard](#dashboard) at `<base_url>/dashboard` (false). Needs `oauth` and `gitlab.group`. |
+| `gitlab.approve.dashboard.time_zone` | Time zone of the meeting times on the dashboard (`Europe/Berlin`). |
 
 #### Rebase and Merge buttons
 
@@ -543,6 +545,26 @@ group or the admin area) with the redirect URI
 applications need the `api` scope enabled and users must authorize it again. Keep the
 secret in SOPS and reference it with `_secret`. The proxy must forward
 `/oauth/start` and `/oauth/callback` like the other paths.
+
+#### Dashboard
+
+With `gitlab.approve.dashboard.enable = true` (and `oauth` and `gitlab.group` set), `<base_url>/dashboard` is a
+signed-in start page:
+
+- **Merge requests** of the group, read with the visitor's own GitLab token (one GraphQL query), filtered into
+  "Needs my review" (the visitor is a reviewer, has not approved, is not the author), "Mine", "Human" and "Bots"
+  (the same rules as `/mrs`). Each row has the pipeline, the approvals and, where GitLab lets the visitor approve,
+  an inline **Approve**: one POST pinned to the head commit the page showed, with the same checks as the approval
+  page (identity, head, draft, author, GitLab's rules), never repeated, leaving the usual comment and card refresh.
+- **Active sprint** (Jira), **alerts and on-call** (OpsGenie) and the **next meetings** (the Teams calendar of the
+  account teams-live runs as). These are read by the bot with its own accounts, at most once a minute for everyone.
+
+Who may open it: a GitLab user who signs in and is an active member of `gitlab.group` (checked with their own
+token), and on `oauth.allowed_users` when that list is set. The session cookie is HttpOnly and SameSite=Strict and
+lasts as long as GitLab's token (at most eight hours); "Sign out" ends it. The page refreshes its sections every
+minute while it is visible. On a phone the sidebar becomes a bottom tab bar.
+
+The dashboard uses the same OAuth application and callback; the proxy must forward `/dashboard` and its sub-paths.
 
 Alternatively set `gitlab.approve.oauth.auto_setup = true`. On startup,
 teams-live creates a confidential application owned by the primary GitLab

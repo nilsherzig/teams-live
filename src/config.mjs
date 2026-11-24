@@ -361,6 +361,12 @@ export function loadConfig(configPath) {
       client_secret: (getString(rawApprove.oauth?.client_secret) || process.env.TEAMS_GITLAB_APPROVE_OAUTH_CLIENT_SECRET || '').trim(),
       allowed_users: Array.isArray(rawApprove.oauth?.allowed_users) ? rawApprove.oauth.allowed_users.map(String) : [],
     },
+    // The signed-in dashboard (`<base_url>/dashboard`): needs `oauth` and `gitlab.group`; members of the group (and
+    // of `oauth.allowed_users` when set) see the group's merge requests, the sprint, alerts and meetings. Off by default.
+    dashboard: {
+      enable: (rawApprove.dashboard?.enable ?? envBool(process.env.TEAMS_GITLAB_APPROVE_DASHBOARD_ENABLE)) === true,
+      time_zone: (getString(rawApprove.dashboard?.time_zone) || process.env.TEAMS_GITLAB_APPROVE_DASHBOARD_TIME_ZONE || 'Europe/Berlin').trim(),
+    },
   };
   for (const removed of ['owner_users', 'owner_users_file', 'user_header', 'proxy_secret', 'proxy_secret_file', 'proxy_secret_header']) {
     if (rawApprove[removed] !== undefined) {
