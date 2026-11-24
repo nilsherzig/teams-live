@@ -5,6 +5,11 @@ OpsGenie integrations.
 
 - Use `just check` and `just build` to validate code changes. Keep live-service
   integrations behind test credentials or mocks when testing behavior.
+- On an rworker, the development shell does not provide the `msteams-mcp`
+  Node dependency in the checkout. After `nix develop -c just build`, run
+  `ln -s result/lib/teams-live/node_modules node_modules` in the synced checkout
+  before `nix develop -c just test`. Remove an existing `node_modules` only
+  when it is your own disposable worker copy.
 - Before changing workflows, check for reusable workflows or actions in
   [ci-workflows](https://github.com/pschmitt/ci-workflows) and preserve
   existing triggers, parameters, and check coverage.
