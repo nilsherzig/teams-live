@@ -35,7 +35,7 @@ const node = (over = {}) => ({
   ...over,
 });
 
-async function withDashboard({ member = true, nodes = [node()], sources = {}, enable = true, path = '' } = {}, fn) {
+async function withDashboard({ member = true, nodes = [node()], sources = {}, enable = true, path = '', dashSessionFile = null, now = Date.now } = {}, fn) {
   const gitlab = { host: GL, mrLink: (p, i) => `https://${GL}/${p}/-/merge_requests/${i}`, async getMr() { return {}; } };
   const server = new ApproveServer({
     gitlab,
@@ -43,6 +43,8 @@ async function withDashboard({ member = true, nodes = [node()], sources = {}, en
     port: 0,
     oauth: { clientId: 'cid', clientSecret: 'sec', allowedUsers: [] },
     dashboard: { enable, group: 'group', sources, timeZone: 'UTC', path },
+    dashSessionFile,
+    now,
   });
   await server.start();
   const base = `http://127.0.0.1:${server.port}`;
@@ -52,7 +54,11 @@ async function withDashboard({ member = true, nodes = [node()], sources = {}, en
     const u = String(url);
     if (!u.startsWith(`https://${GL}/`)) return original(url, options);
     seen.push({ url: u, options });
-    if (u.endsWith('/oauth/token')) return Response.json({ access_token: 'tok', expires_in: 7200 });
+    if (u.endsWith('/oauth/token')) {
+      const grant = new URLSearchParams(options.body);
+      if (grant.get('grant_type') === 'refresh_token') return grant.get('refresh_token') === 'ref' ? Response.json({ access_token: 'tok2', refresh_token: 'ref2', expires_in: 7200 }) : new Response('{}', { status: 400 });
+      return Response.json({ access_token: 'tok', refresh_token: 'ref', expires_in: 7200 });
+    }
     if (u.endsWith('/api/v4/user')) return Response.json({ id: 9, username: 'alice', name: 'Alice Example' });
     if (u.includes('/groups/group/members/all/9')) return member ? Response.json({ state: 'active', access_level: 30 }) : new Response('{}', { status: 404 });
     if (u.endsWith('/api/graphql')) return Response.json({ data: { group: { mergeRequests: { pageInfo: { hasNextPage: false }, nodes } } } });
@@ -224,4 +230,48 @@ test('the dashboard can live on its own path; its old address leads there', asyn
     assert.equal((await fetch(`${base}/dashboard/nope`)).status, 404);
   });
   assert.throws(() => new ApproveServer({ gitlab: { host: GL }, baseUrl: `${ORIGIN}/approve`, oauth: { clientId: 'c', clientSecret: 's' }, dashboard: { enable: true, group: 'g', path: 'dashboard' } }), /dashboard\.path/);
+});
+
+test('dashboard sessions survive a restart, saved encrypted, and renew the GitLab token before it expires', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-dash-'));
+  const file = path.join(dir, 'dashboard-sessions.json');
+  let clock = Date.now();
+  const now = () => clock;
+  try {
+    let cookie;
+    await withDashboard({ dashSessionFile: file, now }, async ({ base }) => {
+      ({ cookie } = await signIn(base));
+    });
+    const saved = fs.readFileSync(file, 'utf8');
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    assert.ok(!saved.includes('tok') && !saved.includes('ref') && !saved.includes('alice'), 'tokens and names are encrypted');
+    clock += 3 * 3600 * 1000; // past the access token's two hours
+    await withDashboard({ dashSessionFile: file, now }, async ({ base, seen }) => {
+      const page = await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } });
+      assert.equal(page.status, 200);
+      assert.match(await page.text(), /data-approve/, 'signed in after the restart, no new sign-in');
+      const grant = seen.filter((c) => c.url.endsWith('/oauth/token')).map((c) => new URLSearchParams(c.options.body).get('grant_type'));
+      assert.deepEqual(grant, ['refresh_token']);
+      const graphql = seen.find((c) => c.url.endsWith('/api/graphql'));
+      assert.equal(graphql.options.headers.Authorization, 'Bearer tok2', 'the renewed token is used');
+      assert.ok(seen.some((c) => c.url.includes('/members/all/9') && c.options.headers.Authorization === 'Bearer tok2'), 'membership is checked again');
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a session whose token cannot be renewed ends', async () => {
+  let clock = Date.now();
+  await withDashboard({ now: () => clock, member: true }, async ({ base, server }) => {
+    const { cookie } = await signIn(base);
+    for (const s of server.dashSessions.values()) s.refreshToken = 'revoked';
+    clock += 3 * 3600 * 1000;
+    const page = await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } });
+    assert.match(await page.text(), /Sign in with GitLab/);
+    assert.equal(server.dashSessions.size, 0);
+  });
 });

@@ -102,7 +102,10 @@ const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const MAX_OAUTH_STATES = 500;
 const OAUTH_TIMEOUT_MS = 10_000;
 const DASH_COOKIE = 'tl_dash';
-const DASH_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+// A dashboard session outlives the GitLab access token (about two hours): the token is renewed with GitLab's
+// refresh token, and the group membership is checked again each time.
+const DASH_SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const DASH_TOKEN_MARGIN_MS = 2 * 60 * 1000;
 const MAX_DASH_SESSIONS = 200;
 const DASH_DATA_CACHE_MS = 20_000;
 const DASH_SOURCE_CACHE_MS = 60_000;
@@ -610,6 +613,7 @@ export class ApproveServer {
     mergePollAttempts = MERGE_POLL_ATTEMPTS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     dashboard = null,
+    dashSessionFile = null,
   } = {}) {
     if (!gitlab) throw new Error('approve: a GitLab client is required');
     let base;
@@ -691,6 +695,9 @@ export class ApproveServer {
     if (ownPath && !/^\/[A-Za-z0-9._~-]+(\/[A-Za-z0-9._~-]+)*$/.test(ownPath)) throw new Error('approve: dashboard.path must be an absolute path like /dashboard');
     this.dashPath = ownPath || `${this.basePath}/dashboard`;
     this.dashSessions = new Map();
+    // Dashboard sessions survive a restart: kept in this file, encrypted with a key derived from the OAuth secret.
+    this.dashSessionFile = this.dashboard && dashSessionFile ? String(dashSessionFile) : null;
+    this.loadDashSessions();
     this.dashData = new Map();
     this.dashSourceCache = new Map();
     this.dashboardScript = dashboardScript(this.dashPath);
@@ -1396,7 +1403,7 @@ export class ApproveServer {
     if (!userRes.ok) throw new Error(`user endpoint answered HTTP ${userRes.status}`);
     const u = await userRes.json();
     if (!u?.id || typeof u.username !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(u.username)) throw new Error('unusable user');
-    return { user: { id: u.id, username: u.username, name: typeof u.name === 'string' ? u.name : u.username }, accessToken, expiresIn: Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : null };
+    return { user: { id: u.id, username: u.username, name: typeof u.name === 'string' ? u.name : u.username }, accessToken, refreshToken: typeof granted?.refresh_token === 'string' ? granted.refresh_token : null, expiresIn: Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : null };
   }
 
   // --- dashboard ---
@@ -1411,7 +1418,93 @@ export class ApproveServer {
     if (typeof sid !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(sid)) return null;
     const s = this.dashSessions.get(sha256Hex(sid));
     if (!s || s.expiresAt <= this.now()) return null;
-    return { sid, user: s.user, accessToken: s.accessToken };
+    return { sid, user: s.user, accessToken: s.accessToken, stored: s };
+  }
+
+  /**
+   * The session with a usable GitLab token, or null. A token about to expire (or refused by GitLab) is renewed
+   * with the refresh token, once at a time per session, and the membership is checked again; when either fails
+   * the session ends and the visitor signs in again.
+   */
+  async freshDashSession(session) {
+    if (!session) return null;
+    const s = session.stored;
+    // Due: refused by GitLab (0) or close to its expiry. A token without a known expiry is used until refused.
+    const due = s.tokenExpiresAt === 0 || (s.tokenExpiresAt != null && s.tokenExpiresAt - DASH_TOKEN_MARGIN_MS <= this.now());
+    if (!due) return session;
+    const key = sha256Hex(session.sid);
+    if (!s.refreshing) {
+      s.refreshing = this.renewDashToken(s)
+        .catch((err) => {
+          log(`Dashboard session of ${s.user.username} ended: ${err.message}`);
+          this.dashSessions.delete(key);
+          this.dashData.delete(key);
+          return false;
+        })
+        .finally(() => {
+          s.refreshing = null;
+          this.saveDashSessions();
+        });
+    }
+    return (await s.refreshing) === false ? null : { ...session, accessToken: s.accessToken };
+  }
+
+  async renewDashToken(s) {
+    if (!s.refreshToken) throw new Error('the GitLab token expired and there is no refresh token');
+    const res = await fetch(`https://${this.gitlabHost}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: new URLSearchParams({ client_id: this.oauth.clientId, client_secret: this.oauth.clientSecret, grant_type: 'refresh_token', refresh_token: s.refreshToken, redirect_uri: this.oauthRedirectUri() }).toString(),
+      signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`token refresh answered HTTP ${res.status}`);
+    const granted = await res.json();
+    if (typeof granted?.access_token !== 'string' || !granted.access_token) throw new Error('token refresh gave no access token');
+    const denied = await this.dashboardDenied(s.user, granted.access_token);
+    if (denied) throw new Error(denied);
+    s.accessToken = granted.access_token;
+    if (typeof granted.refresh_token === 'string' && granted.refresh_token) s.refreshToken = granted.refresh_token;
+    const expiresIn = Number(granted.expires_in);
+    s.tokenExpiresAt = Number.isFinite(expiresIn) && expiresIn > 0 ? this.now() + expiresIn * 1000 : null;
+    return true;
+  }
+
+  dashSessionKey() {
+    return crypto.createHmac('sha256', 'teams-live dashboard sessions').update(this.oauth.clientSecret).digest();
+  }
+
+  /** Reads the saved dashboard sessions; anything unreadable (another key, a damaged file) just starts empty. */
+  loadDashSessions() {
+    if (!this.dashSessionFile || !this.oauth) return;
+    try {
+      const box = JSON.parse(fs.readFileSync(this.dashSessionFile, 'utf8'));
+      const decipher = crypto.createDecipheriv('aes-256-gcm', this.dashSessionKey(), Buffer.from(box.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(box.tag, 'base64'));
+      const entries = JSON.parse(Buffer.concat([decipher.update(Buffer.from(box.data, 'base64')), decipher.final()]).toString('utf8'));
+      const now = this.now();
+      for (const [key, s] of entries) {
+        if (typeof key === 'string' && /^[0-9a-f]{64}$/.test(key) && s?.user?.username && s.expiresAt > now) this.dashSessions.set(key, s);
+      }
+    } catch (err) {
+      if (err.code !== 'ENOENT') log(`Saved dashboard sessions not used: ${err.message}`);
+    }
+  }
+
+  /** Writes the dashboard sessions (encrypted, mode 0600, replaced atomically). Best effort. */
+  saveDashSessions() {
+    if (!this.dashSessionFile || !this.oauth) return;
+    try {
+      const now = this.now();
+      const entries = [...this.dashSessions].filter(([, s]) => s.expiresAt > now).map(([k, s]) => [k, { user: s.user, accessToken: s.accessToken, refreshToken: s.refreshToken || null, tokenExpiresAt: s.tokenExpiresAt ?? null, expiresAt: s.expiresAt }]);
+      const iv = crypto.randomBytes(12);
+      const cipher = crypto.createCipheriv('aes-256-gcm', this.dashSessionKey(), iv);
+      const data = Buffer.concat([cipher.update(JSON.stringify(entries), 'utf8'), cipher.final()]);
+      const tmp = `${this.dashSessionFile}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ v: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64') }), { mode: 0o600 });
+      fs.renameSync(tmp, this.dashSessionFile);
+    } catch (err) {
+      log(`Could not save the dashboard sessions: ${err.message}`);
+    }
   }
 
   /** Why this signed-in user may not see the dashboard, or '': group membership and the optional allow-list. */
@@ -1430,7 +1523,7 @@ export class ApproveServer {
       if (method !== 'GET') return notAllowed('GET');
       return this.dashboardSignIn(res);
     }
-    const session = this.dashSessionOf(req);
+    const session = await this.freshDashSession(this.dashSessionOf(req));
     if (session) this.requestContext.getStore().user = session.user;
     if (route === '/dashboard') {
       if (method !== 'GET' && method !== 'HEAD') return notAllowed('GET, HEAD');
@@ -1459,6 +1552,7 @@ export class ApproveServer {
       if (session && parsed.form && this.csrf.verify(parsed.form.get('csrf'), session.sid, 'dashboard', `who=${session.user.username}`)) {
         this.dashSessions.delete(sha256Hex(session.sid));
         this.dashData.delete(sha256Hex(session.sid));
+        this.saveDashSessions();
       }
       this.requestContext.getStore().user = null;
       const forget = `${WHO_COOKIE}=; Path=${this.basePath || '/'}; Max-Age=0; HttpOnly; SameSite=Strict${this.secure ? '; Secure' : ''}`;
@@ -1504,9 +1598,9 @@ export class ApproveServer {
     if (!this.dashboard) return fail(404, 'The dashboard is switched off.');
     const code = params.get('code');
     if (!code) return fail(400, params.get('error') ? 'GitLab did not sign you in.' : 'The sign-in could not be completed.');
-    let user, accessToken, expiresIn;
+    let user, accessToken, refreshToken, expiresIn;
     try {
-      ({ user, accessToken, expiresIn } = await this.oauthUser(code, state.verifier));
+      ({ user, accessToken, refreshToken, expiresIn } = await this.oauthUser(code, state.verifier));
     } catch (err) {
       log(`Dashboard sign-in failed: ${err.message}`);
       return fail(400, 'GitLab could not confirm who you are.');
@@ -1520,16 +1614,11 @@ export class ApproveServer {
     for (const [h, s] of this.dashSessions) if (s.expiresAt <= now) this.dashSessions.delete(h);
     while (this.dashSessions.size >= MAX_DASH_SESSIONS) this.dashSessions.delete(this.dashSessions.keys().next().value);
     const sid = crypto.randomBytes(32).toString('base64url');
-    // Never longer than GitLab lets the token live (a minute early), at most a working day.
-    const ttl = Math.max(60_000, Math.min(DASH_SESSION_TTL_MS, expiresIn ? expiresIn * 1000 - 60_000 : DASH_SESSION_TTL_MS));
+    // Without a refresh token the session cannot outlive the access token (a minute early).
+    const ttl = refreshToken ? DASH_SESSION_TTL_MS : Math.max(60_000, Math.min(DASH_SESSION_TTL_MS, expiresIn ? expiresIn * 1000 - 60_000 : DASH_SESSION_TTL_MS));
     const key = sha256Hex(sid);
-    const session = { user, accessToken, expiresAt: now + ttl };
-    this.dashSessions.set(key, session);
-    const timer = setTimeout(() => {
-      if (this.dashSessions.get(key) === session) this.dashSessions.delete(key);
-      this.dashData.delete(key);
-    }, ttl);
-    timer.unref?.();
+    this.dashSessions.set(key, { user, accessToken, refreshToken, tokenExpiresAt: expiresIn ? now + expiresIn * 1000 : null, expiresAt: now + ttl });
+    this.saveDashSessions();
     this.requestContext.getStore().user = user;
     try { await this.avatarWarm?.([user.name || user.username]); } catch { /* Use initials when the photo is unavailable. */ }
     const next = this.dashPath;
@@ -1571,6 +1660,7 @@ export class ApproveServer {
           .then((items) => ({ items }))
           .catch((err) => {
             log(`Dashboard could not list merge requests for ${session.user.username}: ${err.message}`);
+            if (err.status === 401 && session.stored) session.stored.tokenExpiresAt = 0;
             return { error: err.status === 401 ? 'GitLab ended the sign-in. Reload the page to sign in again.' : 'Could not read the merge requests from GitLab right now.' };
           }),
         this.dashSource('sprint'),
@@ -1585,11 +1675,18 @@ export class ApproveServer {
     return promise;
   }
 
-  /** The drawing context: who looks, their pictures, the time zone of the meetings. */
-  dashboardCtx(session, data) {
+  /**
+   * The drawing context: who looks, their pictures, the time zone of the meetings. Pictures not cached yet are
+   * loaded first, bounded by the picture service's own deadline (1.5 s), so a cold cache after a restart does not
+   * show initials everywhere until the next refresh.
+   */
+  async dashboardCtx(session, data) {
     const names = new Set();
     for (const mr of data.mrs.items || []) names.add(mr.author.name);
     for (const k of ['todo', 'inProgress', 'inReview']) for (const t of data.sprint.data?.[k] || []) if (t.assignee) names.add(t.assignee);
+    if (this.avatarWarm && names.size) {
+      try { await this.avatarWarm([...names].slice(0, 80)); } catch { /* initials */ }
+    }
     const avatars = {};
     for (const name of names) {
       try {
@@ -1597,8 +1694,6 @@ export class ApproveServer {
         if (uri) avatars[name] = uri;
       } catch { /* initials */ }
     }
-    // Photos that are not known yet are loaded in the background for the next refresh.
-    if (this.avatarWarm && names.size) Promise.resolve().then(() => this.avatarWarm([...names].slice(0, 60))).catch(() => {});
     return { username: session.user.username, name: session.user.name, host: this.gitlabHost, avatars, now: this.now(), timeZone: this.dashboard.timeZone };
   }
 
@@ -1608,13 +1703,13 @@ export class ApproveServer {
 
   async dashboardPayload(session) {
     const data = await this.dashboardData(session);
-    const ctx = this.dashboardCtx(session, data);
+    const ctx = await this.dashboardCtx(session, data);
     return { sections: renderSections(data, ctx), counts: navCounts(data, ctx), csrf: this.csrf.issue(session.sid, 'dashboard', `who=${session.user.username}`), updated: this.dashboardUpdated(data.at) };
   }
 
   async showDashboard(res, session) {
     const data = await this.dashboardData(session);
-    const ctx = this.dashboardCtx(session, data);
+    const ctx = await this.dashboardCtx(session, data);
     const csrf = this.csrf.issue(session.sid, 'dashboard', `who=${session.user.username}`);
     const body = dashboardBody({ data, ctx, csrf, filter: defaultFilter(data.mrs.items || [], session.user.username), updated: this.dashboardUpdated(data.at) });
     const html = this.documentHtml({ title: 'Dashboard', kicker: 'Dashboard', shell: 'shell dashboard', main: `<main>${body}<script>${this.dashboardScript}</script></main>`, css: DASHBOARD_CSS, dashLink: false, menu: `<div class="menu-sep"></div><form method="post" action="${escapeHtml(`${this.origin}${this.dashPath}/signout`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}" data-csrf><button class="menu-item" type="submit">Sign out</button></form>` });

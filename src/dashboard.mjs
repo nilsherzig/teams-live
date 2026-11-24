@@ -10,6 +10,8 @@
 // the HTML goes through `escapeHtml`, every link through `safeLink` (GitLab host) or `webLink` (http(s) only).
 
 import { avatarImg, escapeHtml, safeLink } from './approve-page.mjs';
+import { approvalBadge } from './approval-badges.mjs';
+import { ciStatusIcon, ciStatusInfo } from './cards.mjs';
 
 const GITLAB_TIMEOUT_MS = 20_000;
 const MAX_MR_PAGES = 3;
@@ -161,29 +163,27 @@ export const ICONS = {
   thumb: svg('<path d="M7 11v9H4v-9zM7 11l4-8a2 2 0 0 1 2 2v4h5.5a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.3 20H7"/>'),
   video: svg('<rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3"/>'),
   ext: svg('<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>'),
+  hide: svg('<path d="M3 3l18 18M10.6 6.1A9.8 9.8 0 0 1 12 6c5 0 8.5 4.4 9.5 6-.5.8-1.4 2-2.7 3.2M6.6 6.6C4.6 7.9 3.2 9.8 2.5 12c1 1.6 4.5 6 9.5 6 1.6 0 3-.4 4.3-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/>'),
+  grip: svg('<circle cx="9" cy="6" r="1.2"/><circle cx="15" cy="6" r="1.2"/><circle cx="9" cy="12" r="1.2"/><circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="18" r="1.2"/><circle cx="15" cy="18" r="1.2"/>'),
   refresh: svg('<path d="M20 11a8 8 0 0 0-14.6-4.5M4 4v4h4M4 13a8 8 0 0 0 14.6 4.5M20 20v-4h-4"/>'),
   collapse: svg('<rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16M15.5 10l-2 2 2 2"/>'),
   signout: svg('<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/>'),
   phone: svg('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a1 1 0 0 1-1 1A16 16 0 0 1 4 5a1 1 0 0 1 1-1z"/>'),
 };
 
-const PIPELINE = {
-  success: ['ok', 'check', 'Pipeline passed'],
-  failed: ['bad', 'cross', 'Pipeline failed'],
-  running: ['run', 'run', 'Pipeline running'],
-  pending: ['run', 'clock', 'Pipeline pending'],
-  created: ['run', 'clock', 'Pipeline created'],
-  preparing: ['run', 'clock', 'Pipeline preparing'],
-  waiting_for_resource: ['run', 'clock', 'Pipeline waiting'],
-  canceled: ['idle', 'cross', 'Pipeline canceled'],
-  skipped: ['idle', 'clock', 'Pipeline skipped'],
-  manual: ['idle', 'clock', 'Pipeline waits for a manual job'],
-  scheduled: ['idle', 'clock', 'Pipeline scheduled'],
-};
 
-function pipelineDot(status) {
-  const [tone, icon, label] = PIPELINE[status] || ['idle', 'clock', status ? `Pipeline ${status}` : 'No pipeline'];
-  return `<span class="dot dot-${tone}" title="${escapeHtml(label)}" role="img" aria-label="${escapeHtml(label)}">${ICONS[icon]}</span>`;
+/** An embedded picture descriptor (`{url}`) as an <img>, or ''. Only data: images (the CSP allows nothing else). */
+function img(desc, label, height, cls) {
+  const url = desc?.url;
+  if (typeof url !== 'string' || !/^data:image\/(png|jpeg|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(url)) return '';
+  const width = desc.width && desc.height ? Math.round((desc.width * height) / desc.height) : height;
+  return `<img class="${cls}" src="${escapeHtml(url)}" width="${width}" height="${height}" alt="${escapeHtml(label)}" title="${escapeHtml(label)}">`;
+}
+
+/** The pipeline as GitLab's own status icon (the one on the Teams card), with its state as the tooltip. */
+function pipelineIcon(status) {
+  if (!status) return '<span class="ci-none" title="No pipeline"></span>';
+  return img(ciStatusIcon(status), `Pipeline: ${ciStatusInfo(status).label}`, 16, 'ci-ic') || `<span class="ci-none" title="Pipeline: ${escapeHtml(status)}"></span>`;
 }
 
 // --- sections ---
@@ -208,11 +208,13 @@ function mrRow(mr, { username, host, avatars, now }) {
   const approvedByMe = mr.approvedBy.some((u) => u.username === me);
   const given = mr.approvedBy.length;
   const required = mr.required ?? 0;
-  const approvals = required > 0 ? `${given}/${required}` : given > 0 ? `${given}` : '0';
-  const approvalTitle = required > 0 ? `${given} of ${required} approvals` : `${given} approval(s)`;
+  // The approval badge of the Teams card ("Approved", "1 of 2 Approvals", "Not approved yet"); who approved in its tooltip.
+  const names = mr.approvedBy.map((u) => (u.username === me ? 'you' : u.name));
+  const state = mr.approved || (required > 0 && given >= required) ? true : false;
+  const badgeLabel = `${state ? 'Approved' : required > 0 ? `${given} of ${required} approvals` : 'Not approved yet'}${names.length ? ` (by ${names.join(', ')})` : ''}`;
+  const badge = img(approvalBadge({ approved: state, approvalsGiven: given, approvalsRequired: required }), badgeLabel, 18, 'appr-badge');
   let action = '';
-  if (approvedByMe) action = `<span class="pill pill-ok">${ICONS.check}Approved</span>`;
-  else if (filters.includes('review') || (mr.canApprove && !filters.includes('mine') && !mr.draft)) {
+  if (!approvedByMe && (filters.includes('review') || (mr.canApprove && !filters.includes('mine') && !mr.draft))) {
     action =
       mr.canApprove && mr.sha && mr.pipeline !== 'failed'
         ? `<button class="btn btn-secondary btn-sm" type="button" data-approve data-project="${escapeHtml(mr.project)}" data-iid="${escapeHtml(mr.iid)}" data-sha="${escapeHtml(mr.sha)}" aria-label="Approve ${escapeHtml(mr.project)}!${escapeHtml(mr.iid)}">${ICONS.thumb}Approve</button>`
@@ -221,10 +223,10 @@ function mrRow(mr, { username, host, avatars, now }) {
   const title = `${mr.draft ? '<span class="pill pill-draft">Draft</span> ' : ''}${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(mr.title)}</a>` : escapeHtml(mr.title)}`;
   const ref = projectUrl ? `<a class="muted-link" href="${escapeHtml(projectUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(mr.project)}</a>!${escapeHtml(mr.iid)}` : `${escapeHtml(mr.project)}!${escapeHtml(mr.iid)}`;
   return (
-    `<li class="mrrow" data-f="${filters.join(' ')}">` +
+    `<li class="mrrow" data-f="${filters.join(' ')}" data-key="${escapeHtml(`${mr.project}!${mr.iid}`)}">` +
     `${avatarImg(mr.author.name, avatars)}` +
     `<div class="mrmain"><span class="t">${title}</span><span class="m"><span>${ref}</span><span>· ${escapeHtml(mr.author.name)}</span><span>· ${escapeHtml(ago(mr.updatedAt, now))}</span></span></div>` +
-    `<div class="mrside">${pipelineDot(mr.pipeline)}<span class="appr${mr.approved ? ' appr-ok' : ''}" title="${escapeHtml(approvalTitle)}">${ICONS.thumb}${approvals}</span>${action}</div>` +
+    `<div class="mrside">${pipelineIcon(mr.pipeline)}${badge}${action}</div>` +
     '</li>'
   );
 }
@@ -260,7 +262,7 @@ export function sprintSection(state, ctx) {
       const url = webLink(t.url);
       const mine = me && lower(t.assignee) === me;
       const key = url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t.key)}</a>` : escapeHtml(t.key);
-      return `<li class="tk${mine ? ' mine' : ''}"><span class="key">${key}<span>${escapeHtml(t.status || '')}</span></span><span class="sum">${escapeHtml(t.summary)}</span><span class="who">${avatarImg(t.assignee || 'Unassigned', ctx.avatars)}${escapeHtml(t.assignee || 'Unassigned')}</span></li>`;
+      return `<li class="tk${mine ? ' mine' : ''}" data-key="${escapeHtml(t.key)}"><span class="key">${key}<span>${escapeHtml(t.status || '')}</span></span><span class="sum">${escapeHtml(t.summary)}</span><span class="who">${avatarImg(t.assignee || 'Unassigned', ctx.avatars)}${escapeHtml(t.assignee || 'Unassigned')}</span></li>`;
     });
     return `<div class="col"><h4>${label}<span>${tickets.length}</span></h4><ul>${tickets.join('') || '<li class="none">Nothing here</li>'}</ul></div>`;
   }).join('');
@@ -278,7 +280,7 @@ export function alertsSection(state, ctx) {
     const prio = /^P[1-5]$/.test(a.priority) ? a.priority : 'P?';
     const msg = url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(a.message || 'Alert')}</a>` : escapeHtml(a.message || 'Alert');
     const acked = a.acknowledged ? ' · acknowledged' : '';
-    return `<li class="al${a.acknowledged ? ' acked' : ''}"><span class="prio prio-${prio.toLowerCase()}">${prio}</span><div><b>${msg}</b><small>${escapeHtml(a.queue || '')}${a.count > 1 ? ` · ${escapeHtml(a.count)}×` : ''} · ${escapeHtml(ago(a.createdAt, ctx.now))}${acked}</small></div></li>`;
+    return `<li class="al${a.acknowledged ? ' acked' : ''}" data-key="${escapeHtml(a.tinyId || a.id || a.message || '')}"><span class="prio prio-${prio.toLowerCase()}">${prio}</span><div><b>${msg}</b><small>${escapeHtml(a.queue || '')}${a.count > 1 ? ` · ${escapeHtml(a.count)}×` : ''} · ${escapeHtml(ago(a.createdAt, ctx.now))}${acked}</small></div></li>`;
   });
   const more = alerts.length > 12 ? `<li class="none">${alerts.length - 12} more in OpsGenie</li>` : '';
   const list = rows.length ? `<ul class="alist">${rows.join('')}${more}</ul>` : `<p class="empty ok">${ICONS.check}No open alerts.</p>`;
@@ -304,7 +306,7 @@ export function meetingsSection(state, ctx) {
     const now = Date.parse(m.startTime) <= ctx.now && Date.parse(m.endTime) > ctx.now;
     const join = webLink(m.joinUrl);
     const button = join ? `<a class="btn ${now ? '' : 'btn-secondary '}btn-sm" href="${escapeHtml(join)}" target="_blank" rel="noopener noreferrer">${ICONS.video}${now ? 'Join' : '<span class="sr">Join</span>'}</a>` : '';
-    return `${head}<li class="mt${now ? ' now' : ''}"><time>${escapeHtml(time(m.startTime))}</time><div><b>${escapeHtml(m.subject || 'Meeting')}</b><small>${now ? 'Now · ' : ''}${escapeHtml(time(m.startTime))}–${escapeHtml(time(m.endTime))}${m.organizer ? ` · ${escapeHtml(m.organizer)}` : ''}</small></div>${button}</li>`;
+    return `${head}<li class="mt${now ? ' now' : ''}" data-key="${escapeHtml(`${m.subject}@${m.startTime}`)}"><time>${escapeHtml(time(m.startTime))}</time><div><b>${escapeHtml(m.subject || 'Meeting')}</b><small>${now ? 'Now · ' : ''}${escapeHtml(time(m.startTime))}–${escapeHtml(time(m.endTime))}${m.organizer ? ` · ${escapeHtml(m.organizer)}` : ''}</small></div>${button}</li>`;
   });
   return `<ul class="mlist">${rows.join('')}</ul>`;
 }
@@ -358,11 +360,13 @@ const NAV = [
   ['meetings', 'Meetings', 'Meetings'],
 ];
 
+// The cards in their default order, with their default width in columns of a 12-column grid. Each visitor can
+// move and resize them; the layout is kept in their browser (localStorage), never on the server.
 const SECTIONS = [
-  ['mrs', 'Merge requests'],
-  ['sprint', 'Active sprint'],
-  ['alerts', 'Alerts and on-call'],
-  ['meetings', 'Meetings'],
+  ['mrs', 'Merge requests', 8],
+  ['alerts', 'Alerts and on-call', 4],
+  ['sprint', 'Active sprint', 8],
+  ['meetings', 'Meetings', 4],
 ];
 
 /** The body of the dashboard page (inside the common header and footer). */
@@ -371,15 +375,17 @@ export function dashboardBody({ data, ctx, csrf, filter, updated }) {
   const counts = navCounts(data, ctx);
   const badge = (k) => (counts[k] ? `<span class="badge${k === 'alerts' ? ' badge-bad' : ''}" data-count="${k}">${counts[k]}</span>` : `<span class="badge" data-count="${k}" hidden></span>`);
   const nav = (short) => NAV.map(([k, label, brief]) => `<button type="button" data-view-to="${k}"${short && brief !== label ? ` aria-label="${label}"` : ''}${short ? '' : ` title="${label}"`}>${ICONS[k]}<span>${short ? brief : label}</span>${k === 'mrs' || k === 'alerts' ? badge(k) : ''}</button>`).join('');
-  const box = ([k, title]) => `<section class="box box-${k}" data-sec="${k}" aria-labelledby="h-${k}"><header><h2 id="h-${k}">${ICONS[k]}${title}</h2></header><div class="box-body" data-sec-body="${k}">${s[k]}</div></section>`;
-  const main = SECTIONS.slice(0, 2).map(box).join('');
-  const side = SECTIONS.slice(2).map(box).join('');
+  const box = ([k, title, span]) =>
+    `<section class="box box-${k}" data-sec="${k}" data-span="${span}" style="--span:${span}" aria-labelledby="h-${k}">` +
+    `<header><h2 id="h-${k}">${ICONS[k]}${title}</h2><span class="tools"><button type="button" class="tool" data-hide title="Hide this card" aria-label="Hide ${title}">${ICONS.hide}</button><button type="button" class="tool grip" data-grip draggable="true" title="Drag to move" aria-label="Move ${title}: arrow keys">${ICONS.grip}</button></span></header>` +
+    `<div class="box-body" data-sec-body="${k}">${s[k]}</div><span class="rs" data-resize title="Drag to resize, double-click to reset" aria-hidden="true"></span></section>`;
+  const cards = SECTIONS.map(box).join('');
   return (
     `<div class="dash" id="dash" data-view="overview" data-mrf="${escapeHtml(filter)}">` +
-    `<nav class="side" aria-label="Dashboard">${nav(false)}<button type="button" class="updated" data-refresh title="Updated ${escapeHtml(updated)}, refreshes every minute. Click to refresh now.">${ICONS.refresh}<span id="dash-updated">${escapeHtml(updated)}</span></button><button type="button" class="collapse" data-collapse aria-expanded="true" title="Collapse sidebar">${ICONS.collapse}<span>Collapse</span></button></nav>` +
+    `<nav class="side" aria-label="Dashboard">${nav(false)}<button type="button" class="updated" data-layout-reset hidden title="Put the cards back in their default places and sizes">${ICONS.overview}<span>Reset layout</span></button><button type="button" class="updated" data-refresh title="Updated ${escapeHtml(updated)}, refreshes every minute. Click to refresh now.">${ICONS.refresh}<span id="dash-updated">${escapeHtml(updated)}</span></button><button type="button" class="collapse" data-collapse aria-expanded="true" title="Collapse sidebar">${ICONS.collapse}<span>Collapse</span></button></nav>` +
     `<div class="dmain"><h1 class="sr">Dashboard</h1>` +
     `<div class="stats" data-sec-body="stats">${s.stats}</div>` +
-    `<div class="grid"><div class="col-main">${main}</div><div class="col-side">${side}</div></div></div>` +
+    `<div class="hidden-bar" data-hidden-bar hidden></div><div class="grid" data-grid>${cards}</div></div>` +
     `<nav class="tabbar" aria-label="Dashboard sections">${nav(true)}</nav>` +
     `<input type="hidden" id="dash-csrf" value="${escapeHtml(csrf)}"><div class="toasts" id="toasts" role="status" aria-live="polite"></div></div>`
   );
@@ -397,6 +403,7 @@ export const DASHBOARD_CSS = [
   '.side button,.tabbar button{display:flex;align-items:center;gap:.6rem;border:0;background:none;font:inherit;color:var(--text);padding:.45rem .6rem;border-radius:6px;cursor:pointer;text-align:left;transition:background .15s}',
   '.side button:hover{background:var(--subtle)}.side button[aria-current=true]{background:var(--panel);box-shadow:inset 0 0 0 1px var(--line);font-weight:600}',
   '.badge{margin-left:auto;background:var(--run-bg);color:var(--run);border-radius:999px;font-size:.72rem;padding:0 .45rem;font-weight:700;font-variant-numeric:tabular-nums}.badge-bad{background:var(--closed-bg);color:var(--closed)}.badge[hidden]{display:none}',
+  '.side [data-layout-reset]{margin-top:auto!important}.side [data-layout-reset]:not([hidden])+[data-refresh]{margin-top:0!important}',
   '.side .updated{min-height:0;padding:.2rem .6rem;gap:.4rem;color:var(--muted);font-size:.72rem;opacity:.7;font-variant-numeric:tabular-nums;transition:opacity .15s}.side .updated:hover{opacity:1;background:none}.side .updated .di{width:12px;height:12px}.updated.busy .di{animation:tl-spin .8s linear infinite}',
   
   '.dmain{padding:1.25rem max(1.5rem,env(safe-area-inset-right,0px)) 2rem 1.5rem;display:grid;gap:1.1rem;align-content:start;min-width:0}',
@@ -405,10 +412,18 @@ export const DASHBOARD_CSS = [
   '.stat:nth-child(2){animation-delay:.05s}.stat:nth-child(3){animation-delay:.1s}.stat:nth-child(4){animation-delay:.15s}',
   '.stat:hover{transform:translateY(-2px);box-shadow:var(--shadow);border-color:var(--line-strong)}.stat .k{font-size:.78rem;color:var(--muted);display:flex;gap:.4rem;align-items:center}',
   '.stat .v{font-size:1.7rem;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums}.stat .s{font-size:.78rem;color:var(--muted)}.stat-accent .v{color:var(--run)}.stat-bad .v{color:var(--closed)}',
-  '.grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:1.1rem;align-items:start}.col-main,.col-side{display:grid;gap:1.1rem;min-width:0}',
-  '.box{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;animation:tl-rise .45s var(--ease) both}.col-side .box{animation-delay:.1s}',
+  '.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:1.1rem;align-items:stretch;grid-auto-flow:row dense}',
+  '.box{grid-column:span var(--span,12);display:flex;flex-direction:column;position:relative;min-width:0;transition:box-shadow .2s,opacity .2s,transform .2s}.box-body{flex:1;min-height:0;overflow:auto}',
+  '.box>header .tools{margin-left:auto;display:flex;gap:.1rem;opacity:0;transition:opacity .15s}.box:hover .tools,.box .tools:focus-within{opacity:1}',
+  '.tool{border:0;background:none;color:var(--muted);cursor:pointer;padding:.2rem;border-radius:4px;display:grid;place-items:center;transition:background .15s,color .15s}.tool:hover{background:var(--subtle);color:var(--text)}.grip{cursor:grab}.grip:active{cursor:grabbing}',
+  '.dash[data-view=overview] .box.is-hidden{display:none}.dash:not([data-view=overview]) .hidden-bar{display:none}',
+  '.hidden-bar{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center;font-size:.78rem;color:var(--muted);margin-bottom:-.35rem}.hidden-bar[hidden]{display:none}.hidden-bar button{font:inherit;color:var(--muted);background:none;border:1px dashed var(--line-strong);border-radius:999px;padding:.05rem .6rem;cursor:pointer;transition:color .15s,border-color .15s}.hidden-bar button:hover{color:var(--text);border-color:var(--text)}',
+  '.box.moving{opacity:.45;transform:scale(.98)}.box.drop-before{box-shadow:-4px 0 0 0 var(--btn)}.box.drop-after{box-shadow:4px 0 0 0 var(--btn)}',
+  '.rs{position:absolute;right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize;opacity:0;transition:opacity .15s;background:linear-gradient(135deg,transparent 0 55%,var(--line-strong) 55% 62%,transparent 62% 72%,var(--line-strong) 72% 79%,transparent 79%)}.box:hover .rs,.box.resizing .rs{opacity:1}',
+  '.box.resizing{box-shadow:0 0 0 2px var(--btn);transition:none}.dash.layouting{user-select:none;-webkit-user-select:none}',
+  '.box{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;animation:tl-rise .45s var(--ease) both}.box:nth-child(2){animation-delay:.05s}.box:nth-child(n+3){animation-delay:.1s}',
   '.box>header{display:flex;flex-wrap:wrap;gap:.25rem .75rem;align-items:baseline;padding:.7rem 1rem;border-bottom:1px solid var(--line)}.box>header h2{margin:0;font-size:.98rem;display:flex;gap:.45rem;align-items:center;flex:1}.box>header small{color:var(--muted);font-size:.75rem}',
-  '.box-body.tl-changed{animation:tl-flash 1.2s var(--ease)}',
+  
   '.empty{color:var(--muted);padding:1.25rem 1rem;margin:0;text-align:center}.empty.ok{display:flex;gap:.5rem;align-items:center;justify-content:center;color:var(--ok)}',
   '.chips{display:flex;gap:.3rem;flex-wrap:wrap;padding:.6rem 1rem;border-bottom:1px solid var(--line);background:var(--subtle)}',
   '.chips button{font:inherit;font-size:.8rem;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:999px;padding:.15rem .65rem;cursor:pointer;display:inline-flex;gap:.35rem;align-items:center;transition:background .15s,color .15s,border-color .15s}',
@@ -418,7 +433,8 @@ export const DASHBOARD_CSS = [
   '.mrrow .av{margin:0;width:28px;height:28px}.mrmain{min-width:0}.mrmain .t{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mrmain .t a{color:var(--text)}.mrmain .m{font-size:.8rem;color:var(--muted);display:flex;flex-wrap:wrap;gap:.1rem .4rem}',
   '.muted-link{color:var(--muted)}.mrside{display:flex;gap:.6rem;align-items:center}',
   '.dot{width:20px;height:20px;border-radius:50%;display:grid;place-items:center}.dot .di{width:12px;height:12px;stroke-width:2.6}.dot-ok{background:var(--ok-bg);color:var(--ok)}.dot-bad{background:var(--closed-bg);color:var(--closed)}.dot-run{background:var(--run-bg);color:var(--run)}.dot-idle{background:var(--draft-bg);color:var(--draft)}',
-  '.appr{display:inline-flex;gap:.25rem;align-items:center;font-size:.8rem;color:var(--muted);font-variant-numeric:tabular-nums}.appr .di{width:14px;height:14px}.appr-ok{color:var(--ok)}',
+  '.ci-ic{display:block;flex:none}.ci-none{width:16px;height:16px;border-radius:50%;border:1.5px dashed var(--line-strong);flex:none}.appr-badge{display:block;flex:none;height:18px;width:auto}.side [hidden]{display:none!important}',
+  '.tl-new{animation:tl-new 1.6s var(--ease)}@keyframes tl-new{0%,30%{background:var(--run-bg)}100%{background:transparent}}',
   '.btn-sm{padding:.2rem .6rem;font-size:.82rem;width:auto}.btn-sm .di{width:14px;height:14px}.btn-sm[data-busy]::before{content:"";width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:tl-spin .7s linear infinite}.btn-sm[data-busy] .di{display:none}',
   '.mrlist .empty{display:none}',
   '.dash[data-mrf=review] .mrrow:not([data-f~=review]),.dash[data-mrf=mine] .mrrow:not([data-f~=mine]),.dash[data-mrf=human] .mrrow:not([data-f~=human]),.dash[data-mrf=bots] .mrrow:not([data-f~=bots]){display:none}',
@@ -442,11 +458,10 @@ export const DASHBOARD_CSS = [
   '@keyframes tl-toast{from{opacity:0;transform:translateY(12px) scale(.96)}to{opacity:1;transform:none}}',
   // one section at a time when a section is picked; everything on the overview
   '.dash:not([data-view=overview]) .stats{display:none}.dash[data-view=mrs] .box:not([data-sec=mrs]),.dash[data-view=sprint] .box:not([data-sec=sprint]),.dash[data-view=alerts] .box:not([data-sec=alerts]),.dash[data-view=meetings] .box:not([data-sec=meetings]){display:none}',
-  '.dash:not([data-view=overview]) .grid{grid-template-columns:1fr}.dash[data-view=mrs] .col-side,.dash[data-view=sprint] .col-side,.dash[data-view=alerts] .col-main,.dash[data-view=meetings] .col-main{display:none}',
-  '@media (min-width:110rem){.dash[data-view=overview] .grid{grid-template-columns:minmax(0,1.25fr) minmax(0,1.2fr) minmax(0,.9fr)}.dash[data-view=overview] .col-main{display:contents}}',
-  '@media (max-width:68rem){.grid{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}',
+  '.dash:not([data-view=overview]) .box{grid-column:1/-1;height:auto!important}.dash:not([data-view=overview]) .tools,.dash:not([data-view=overview]) .rs{display:none}',
+    '@media (max-width:68rem){.grid .box{grid-column:1/-1;height:auto!important}.tools .grip,.rs{display:none!important}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}',
   '@media (max-width:48rem){.dash,.dash.collapsed{grid-template-columns:1fr}.side{display:none}.dmain{padding:1rem max(1rem,env(safe-area-inset-right,0px)) 5.5rem max(1rem,env(safe-area-inset-left,0px))}',
-  '.board{grid-template-columns:repeat(3,minmax(11rem,1fr));overflow-x:auto;scroll-snap-type:x mandatory}.col{scroll-snap-align:start}.mrside .appr{display:none}',
+  '.board{grid-template-columns:repeat(3,minmax(11rem,1fr));overflow-x:auto;scroll-snap-type:x mandatory}.col{scroll-snap-align:start}.mrside .appr-badge{display:none}',
   '.tabbar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--panel);border-top:1px solid var(--line);padding:.3rem max(.25rem,env(safe-area-inset-right,0px)) calc(.3rem + env(safe-area-inset-bottom,0px)) max(.25rem,env(safe-area-inset-left,0px))}',
   '.tabbar button{flex:1;flex-direction:column;gap:.1rem;font-size:.68rem;color:var(--muted);padding:.3rem 0;position:relative;text-align:center;justify-content:center}.tabbar button[aria-current=true]{color:var(--accent)}.tabbar .di{width:20px;height:20px}',
   '.tabbar .badge{position:absolute;top:0;left:calc(50% + 4px);margin:0;font-size:.6rem;padding:0 .3rem}.toasts{bottom:calc(4.75rem + env(safe-area-inset-bottom,0px))}}',
@@ -466,12 +481,33 @@ function toast(t){var r=document.getElementById('toasts');if(!r||!t)return;var e
 function view(v){d.setAttribute('data-view',v);mark();try{sessionStorage.setItem('tl-view',v)}catch(e){}window.scrollTo({top:0,behavior:'smooth'})}
 function collapse(on){d.classList.toggle('collapsed',on);var c=document.querySelector('[data-collapse]');if(c){c.setAttribute('aria-expanded',String(!on));c.title=on?'Expand sidebar':'Collapse sidebar'}try{localStorage.setItem('tl-side',on?'1':'0')}catch(e){}}
 try{if(localStorage.getItem('tl-side')==='1'){d.style.transition='none';collapse(true);requestAnimationFrame(function(){requestAnimationFrame(function(){d.style.transition=''})})}}catch(e){}
+var G=d.querySelector('[data-grid]'),LK='tl-layout',DEF={};if(G)G.querySelectorAll('[data-sec]').forEach(function(b){DEF[b.getAttribute('data-sec')]=+b.getAttribute('data-span')});
+function boxes(){return G?Array.prototype.slice.call(G.querySelectorAll('[data-sec]')):[]}
+function readL(){try{var l=JSON.parse(localStorage.getItem(LK)||'null');return l&&typeof l==='object'?l:null}catch(e){return null}}
+function hbar(){var bar=d.querySelector('[data-hidden-bar]');if(!bar)return;var hs=boxes().filter(function(b){return b.classList.contains('is-hidden')});bar.textContent='';if(!hs.length){bar.hidden=true;return}bar.hidden=false;var lab=document.createElement('span');lab.textContent='Hidden:';bar.appendChild(lab);hs.forEach(function(b){var t=document.createElement('button');t.type='button';t.setAttribute('data-unhide',b.getAttribute('data-sec'));t.title='Show this card again';var h=b.querySelector('h2');t.textContent=h?h.textContent:b.getAttribute('data-sec');bar.appendChild(t)})}
+function saveL(){var l={order:boxes().map(function(b){return b.getAttribute('data-sec')}),span:{},height:{},hidden:boxes().filter(function(b){return b.classList.contains('is-hidden')}).map(function(b){return b.getAttribute('data-sec')})};boxes().forEach(function(b){var k=b.getAttribute('data-sec'),sp=+b.style.getPropertyValue('--span');if(sp&&sp!==DEF[k])l.span[k]=sp;if(b.style.height)l.height[k]=parseInt(b.style.height,10)});var custom=l.order.join()!==Object.keys(DEF).join()||Object.keys(l.span).length||Object.keys(l.height).length||l.hidden.length;hbar();try{if(custom)localStorage.setItem(LK,JSON.stringify(l));else localStorage.removeItem(LK)}catch(e){}var r=document.querySelector('[data-layout-reset]');if(r)r.hidden=!custom}
+function applyL(l){if(!G)return;var by={};boxes().forEach(function(b){by[b.getAttribute('data-sec')]=b});var order=(l&&Array.isArray(l.order)?l.order:[]).filter(function(k){return by[k]});Object.keys(by).forEach(function(k){if(order.indexOf(k)<0)order.push(k)});order.forEach(function(k){G.appendChild(by[k])});boxes().forEach(function(b){var k=b.getAttribute('data-sec'),sp=l&&l.span&&+l.span[k],h=l&&l.height&&+l.height[k];b.style.setProperty('--span',String(sp>=3&&sp<=12?sp:DEF[k]));b.style.height=h>=120&&h<=4000?h+'px':'';b.classList.toggle('is-hidden',!!(l&&Array.isArray(l.hidden)&&l.hidden.indexOf(k)>=0))});hbar();var r=document.querySelector('[data-layout-reset]');if(r)r.hidden=!l}
+applyL(readL());
+function wide(){return window.matchMedia('(min-width:68.01rem)').matches&&d.getAttribute('data-view')==='overview'}
+var drag=null;
+d.addEventListener('dragstart',function(e){var g=e.target.closest&&e.target.closest('[data-grip]');if(!g||!wide())return;drag=g.closest('[data-sec]');drag.classList.add('moving');d.classList.add('layouting');try{e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',drag.getAttribute('data-sec'));e.dataTransfer.setDragImage(drag,24,24)}catch(x){}});
+function clearDrop(){boxes().forEach(function(b){b.classList.remove('drop-before','drop-after')})}
+d.addEventListener('dragover',function(e){if(!drag)return;var t=e.target.closest&&e.target.closest('[data-sec]');if(!t||t===drag)return;e.preventDefault();var r=t.getBoundingClientRect(),after=e.clientX>r.left+r.width/2;clearDrop();t.classList.add(after?'drop-after':'drop-before')});
+d.addEventListener('drop',function(e){if(!drag)return;var t=e.target.closest&&e.target.closest('[data-sec]');e.preventDefault();if(t&&t!==drag){var after=t.classList.contains('drop-after');G.insertBefore(drag,after?t.nextSibling:t);saveL()}});
+d.addEventListener('dragend',function(){if(drag)drag.classList.remove('moving');drag=null;clearDrop();d.classList.remove('layouting')});
+d.addEventListener('keydown',function(e){var g=e.target.closest&&e.target.closest('[data-grip]');if(!g||!wide())return;var b=g.closest('[data-sec]'),all=boxes(),i=all.indexOf(b);if(e.key==='ArrowLeft'||e.key==='ArrowUp'){if(i>0)G.insertBefore(b,all[i-1])}else if(e.key==='ArrowRight'||e.key==='ArrowDown'){if(i<all.length-1)G.insertBefore(b,all[i+1].nextSibling)}else return;e.preventDefault();g.focus();saveL()});
+var rz=null;
+d.addEventListener('pointerdown',function(e){var h=e.target.closest&&e.target.closest('[data-resize]');if(!h||!wide()||e.button>0)return;e.preventDefault();var b=h.closest('[data-sec]'),gr=G.getBoundingClientRect(),gap=parseFloat(getComputedStyle(G).columnGap)||0;rz={b:b,top:b.getBoundingClientRect().top,left:b.getBoundingClientRect().left,col:(gr.width+gap)/12,gap:gap};b.classList.add('resizing');d.classList.add('layouting');try{h.setPointerCapture(e.pointerId)}catch(x){}});
+d.addEventListener('pointermove',function(e){if(!rz)return;var sp=Math.max(3,Math.min(12,Math.round((e.clientX-rz.left+rz.gap)/rz.col)));rz.b.style.setProperty('--span',String(sp));rz.b.style.height=Math.max(120,Math.round(e.clientY-rz.top))+'px'});
+function endRz(){if(!rz)return;rz.b.classList.remove('resizing');d.classList.remove('layouting');rz=null;saveL()}
+d.addEventListener('pointerup',endRz);d.addEventListener('pointercancel',endRz);
+d.addEventListener('dblclick',function(e){var h=e.target.closest&&e.target.closest('[data-resize]');if(!h)return;var b=h.closest('[data-sec]');b.style.setProperty('--span',String(DEF[b.getAttribute('data-sec')]));b.style.height='';saveL()});
 try{var sv=sessionStorage.getItem('tl-view'),sf=sessionStorage.getItem('tl-mrf');if(sv)d.setAttribute('data-view',sv);if(sf)d.setAttribute('data-mrf',sf)}catch(e){}if(location.hash==='#overview'){d.setAttribute('data-view','overview');try{history.replaceState(null,'',location.pathname)}catch(e){}}mark();
 document.addEventListener('click',function(e){document.querySelectorAll('[data-account-menu][open]').forEach(function(m){if(!m.contains(e.target))m.removeAttribute('open')})});document.addEventListener('keydown',function(e){if(e.key==='Escape')document.querySelectorAll('[data-account-menu][open]').forEach(function(m){m.removeAttribute('open')})});
-document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
+document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the row above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
 function pill(cls,text,title){var s=document.createElement('span');s.className='pill '+cls;s.textContent=text;if(title)s.title=title;return s}
 function approve(b){if(b.disabled)return;b.disabled=true;b.setAttribute('data-busy','');busy++;var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('project',b.getAttribute('data-project'));body.set('iid',b.getAttribute('data-iid'));body.set('sha',b.getAttribute('data-sha'));
 fetch(B+'/approve',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:body.toString()}).then(function(r){return r.json().catch(function(){return {status:'unknown',text:'The answer could not be read. Check the merge request in GitLab.'}})}).then(function(r){var ok=r.status==='approved'||r.status==='already';b.replaceWith(ok?pill('pill-ok','Approved',r.text):r.status==='unknown'?pill('pill-idle','Check GitLab',r.text):pill('pill-bad','Not approved',r.text));toast(r.text)}).catch(function(){b.replaceWith(pill('pill-idle','Check GitLab'));toast('The connection was lost. Nothing is repeated automatically: check the merge request in GitLab.')}).then(function(){busy--;setTimeout(refresh,1500)})}
-function refresh(){if(document.hidden||busy)return;var rb=document.querySelector('[data-refresh]');if(rb)rb.classList.add('busy');fetch(B+'/data',{credentials:'same-origin',cache:'no-store'}).then(function(r){if(r.status===401){var u=document.getElementById('dash-updated');if(u)u.textContent='Signed out';if(rb)rb.title='Signed out. Reload the page to sign in again.';return null}return r.ok?r.json():null}).then(function(x){if(!x||busy)return;var s=x.sections||{};for(var k in s){var e=document.querySelector('[data-sec-body="'+k+'"]');if(e&&e.innerHTML!==s[k]){e.innerHTML=s[k];if(k!=='stats'){e.classList.remove('tl-changed');void e.offsetWidth;e.classList.add('tl-changed')}}}var c=x.counts||{};for(var n in c){document.querySelectorAll('[data-count="'+n+'"]').forEach(function(el){el.textContent=c[n];el.hidden=!c[n]})}if(x.csrf){csrf.value=x.csrf;document.querySelectorAll('[data-csrf]').forEach(function(i){i.value=x.csrf})}var u=document.getElementById('dash-updated');if(u&&x.updated){u.textContent=x.updated;if(rb)rb.title='Updated '+x.updated+', refreshes every minute. Click to refresh now.'}mark()}).catch(function(){}).then(function(){if(rb)rb.classList.remove('busy')})}
+function refresh(){if(document.hidden||busy)return;var rb=document.querySelector('[data-refresh]');if(rb)rb.classList.add('busy');fetch(B+'/data',{credentials:'same-origin',cache:'no-store'}).then(function(r){if(r.status===401){var u=document.getElementById('dash-updated');if(u)u.textContent='Signed out';if(rb)rb.title='Signed out. Reload the page to sign in again.';return null}return r.ok?r.json():null}).then(function(x){if(!x||busy)return;var s=x.sections||{};for(var k in s){var e=document.querySelector('[data-sec-body="'+k+'"]');if(!e||e.innerHTML===s[k])continue;var old={};e.querySelectorAll('[data-key]').forEach(function(n){old[n.getAttribute('data-key')]=1});var had=Object.keys(old).length;e.innerHTML=s[k];if(had)e.querySelectorAll('[data-key]').forEach(function(n){if(!old[n.getAttribute('data-key')])n.classList.add('tl-new')})}var c=x.counts||{};for(var n in c){document.querySelectorAll('[data-count="'+n+'"]').forEach(function(el){el.textContent=c[n];el.hidden=!c[n]})}if(x.csrf){csrf.value=x.csrf;document.querySelectorAll('[data-csrf]').forEach(function(i){i.value=x.csrf})}var u=document.getElementById('dash-updated');if(u&&x.updated){u.textContent=x.updated;if(rb)rb.title='Updated '+x.updated+', refreshes every minute. Click to refresh now.'}mark()}).catch(function(){}).then(function(){if(rb)rb.classList.remove('busy')})}
 setInterval(refresh,60000);document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh()})})();`;
 }

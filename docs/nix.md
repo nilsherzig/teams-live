@@ -562,8 +562,12 @@ signed-in start page:
 
 Who may open it: a GitLab user who signs in and is an active member of `gitlab.group` (checked with their own
 token), and on `oauth.allowed_users` when that list is set. The session cookie is HttpOnly and SameSite=Strict and
-lasts as long as GitLab's token (at most eight hours); "Sign out" ends it. The page refreshes its sections every
-minute while it is visible. On a phone the sidebar becomes a bottom tab bar.
+lasts 14 days: the GitLab token is renewed with its refresh token before it expires, and the membership is checked
+again each time; a refused renewal or "Sign out" ends it. Sessions are kept across restarts in
+`dashboard-sessions.json` in the state directory, encrypted with a key derived from the OAuth client secret (mode
+0600); a new client secret simply signs everyone out. The page refreshes its sections every minute while it is
+visible. Cards can be moved (drag the grip, or arrow keys on it) and resized (drag the corner, double-click to
+reset); the layout is kept in the browser's local storage only. On a phone the sidebar becomes a bottom tab bar.
 
 The dashboard uses the same OAuth application and callback; the proxy must forward the dashboard path and its sub-paths (`/data`, `/approve`, `/signin`, `/signout`). With `dashboard.path = "/dashboard"` the proxy can also send `/` there, so the host itself opens the dashboard.
 
