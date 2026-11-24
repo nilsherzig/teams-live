@@ -170,7 +170,7 @@ export const ICONS = {
   edit: svg('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>'),
   grip: svg('<circle cx="9" cy="6" r="1.2"/><circle cx="15" cy="6" r="1.2"/><circle cx="9" cy="12" r="1.2"/><circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="18" r="1.2"/><circle cx="15" cy="18" r="1.2"/>'),
   refresh: svg('<path d="M20 11a8 8 0 0 0-14.6-4.5M4 4v4h4M4 13a8 8 0 0 0 14.6 4.5M20 20v-4h-4"/>'),
-  collapse: svg('<rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16M15.5 10l-2 2 2 2"/>'),
+  collapse: svg('<path d="M11 7l-5 5 5 5M18 7l-5 5 5 5"/>'),
   signout: svg('<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/>'),
   phone: svg('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a1 1 0 0 1-1 1A16 16 0 0 1 4 5a1 1 0 0 1 1-1z"/>'),
 };
@@ -441,7 +441,7 @@ export function dashboardBody({ data, ctx, csrf, filter, updated }) {
   const cards = SECTIONS.map(box).join('');
   return (
     `<div class="dash" id="dash" data-view="overview" data-mrf="${escapeHtml(filter)}">` +
-    `<nav class="side" aria-label="Dashboard">${nav(false)}<button type="button" class="edit-toggle" data-edit-toggle aria-pressed="false" title="Customize: move, resize and hide cards">${ICONS.edit}<span>Customize</span></button><button type="button" class="updated" data-refresh title="Updated ${escapeHtml(updated)}, refreshes every minute. Click to refresh now.">${ICONS.refresh}<span id="dash-updated">${escapeHtml(updated)}</span></button><button type="button" class="collapse" data-collapse aria-expanded="true" title="Collapse sidebar">${ICONS.collapse}<span>Collapse</span></button></nav>` +
+    `<nav class="side" aria-label="Dashboard">${nav(false)}<div class="side-foot"><button type="button" class="sync" data-refresh title="Updated ${escapeHtml(updated)}, refreshes every minute. Click to refresh now.">${ICONS.refresh}<span id="dash-updated">${escapeHtml(updated)}</span></button><button type="button" class="side-toggle" data-collapse aria-expanded="true" title="Collapse sidebar" aria-label="Collapse sidebar">${ICONS.collapse}</button></div></nav>` +
     `<div class="dmain"><h1 class="sr">Dashboard</h1>` +
     `<div class="stats" data-sec-body="stats">${s.stats}</div>` +
     `<div class="editbar" data-editbar><span class="hint">${ICONS.edit}Drag a card by its header to move it, drag its corner to resize it.</span><span class="hidden-bar" data-hidden-bar hidden></span><span class="sp"></span><button type="button" class="btn btn-secondary btn-sm" data-layout-reset disabled>Reset layout</button><button type="button" class="btn btn-sm" data-edit-done>Done</button></div>` +
@@ -453,20 +453,26 @@ export function dashboardBody({ data, ctx, csrf, filter, updated }) {
 }
 
 
+/** The page action in the top bar, next to the account: switches the layout edit mode. */
+export const CUSTOMIZE_BUTTON = `<button type="button" class="hdr-btn" data-edit-toggle aria-pressed="false" title="Customize the dashboard: move, resize and hide cards" aria-label="Customize the dashboard">${ICONS.edit}</button>`;
+
 export const DASHBOARD_CSS = [
+  '.hdr-btn{margin-left:auto;display:grid;place-items:center;width:32px;height:32px;border:0;border-radius:6px;background:none;color:var(--bar-text);opacity:.8;cursor:pointer;transition:background .15s,opacity .15s}.hdr-btn:hover{background:rgba(255,255,255,.1);opacity:1}.hdr-btn[aria-pressed=true]{background:var(--btn);opacity:1}.hdr-btn .di{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}.hdr-btn+.header-account{margin-left:.5rem}',
   '.shell.dashboard{max-width:none;padding:0}body:has(.dash) .brand{margin-bottom:0}',
   '.dash{display:grid;grid-template-columns:13.5rem minmax(0,1fr);gap:0;min-height:70vh;transition:grid-template-columns .3s var(--ease)}',
-  '.side span{white-space:nowrap;overflow:hidden;transition:opacity .2s}.side button{position:relative;min-height:36px}.collapse{color:var(--muted);font-size:.85rem}.collapse .di{transition:transform .3s var(--ease)}',
-  '.dash.collapsed{grid-template-columns:3.75rem minmax(0,1fr)}.dash.collapsed .side span{opacity:0;width:0}.dash.collapsed .side button{justify-content:center;gap:0;padding-inline:0}.dash.collapsed .collapse .di{transform:rotate(180deg)}',
+  '.side span{white-space:nowrap;overflow:hidden;transition:opacity .2s}.side button{position:relative;min-height:36px}',
+  '.dash.collapsed{grid-template-columns:3.75rem minmax(0,1fr)}.dash.collapsed .side span{opacity:0;width:0}.dash.collapsed .side button{justify-content:center;gap:0;padding-inline:0}',
+  '.side-foot{margin-top:auto;display:flex;align-items:center;gap:.25rem;padding-top:.5rem;border-top:1px solid var(--line)}',
+  '.side .side-foot button{min-height:30px;border-radius:6px;color:var(--muted)}.side .sync{flex:1;gap:.4rem;padding:.25rem .5rem;font-size:.75rem;font-variant-numeric:tabular-nums}.side .sync .di{width:13px;height:13px}.side .sync.busy .di{animation:tl-spin .8s linear infinite}',
+  '.side .side-toggle{flex:none;width:30px;justify-content:center;padding:0}.side .side-foot button:hover{background:var(--panel);color:var(--text)}.side-toggle .di{transition:transform .3s var(--ease)}',
+  '.dash.collapsed .side-foot{flex-direction:column;align-items:stretch}.dash.collapsed .side .sync{flex:none;padding:.25rem 0}.dash.collapsed .side-toggle{width:auto}.dash.collapsed .side-toggle .di{transform:rotate(180deg)}',
   '.dash.collapsed .side .badge{position:absolute;top:1px;right:2px;margin:0;font-size:.6rem;padding:0 .3rem;opacity:1;width:auto}',
   '.dash .di{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}.dash .di.spin{animation:tl-spin 1.6s linear infinite}',
-  '.side{position:sticky;top:49px;align-self:start;height:calc(100vh - 49px);overflow-y:auto;display:flex;flex-direction:column;gap:.15rem;padding:.75rem .6rem 1rem max(.6rem,env(safe-area-inset-left,0px));background:var(--subtle);border-right:1px solid var(--line)}.side .updated{margin-top:auto!important}',
+  '.side{position:sticky;top:49px;align-self:start;height:calc(100vh - 49px);overflow-y:auto;display:flex;flex-direction:column;gap:.15rem;padding:.75rem .6rem 1rem max(.6rem,env(safe-area-inset-left,0px));background:var(--subtle);border-right:1px solid var(--line)}',
   '.side button,.tabbar button{display:flex;align-items:center;gap:.6rem;border:0;background:none;font:inherit;color:var(--text);padding:.45rem .6rem;border-radius:6px;cursor:pointer;text-align:left;transition:background .15s}',
   '.side button:hover{background:var(--subtle)}.side button[aria-current=true]{background:var(--panel);box-shadow:inset 0 0 0 1px var(--line);font-weight:600}',
   '.badge{margin-left:auto;background:var(--run-bg);color:var(--run);border-radius:999px;font-size:.72rem;padding:0 .45rem;font-weight:700;font-variant-numeric:tabular-nums}.badge-bad{background:var(--closed-bg);color:var(--closed)}.badge[hidden]{display:none}',
-    '.side .updated{min-height:0;padding:.2rem .6rem;gap:.4rem;color:var(--muted);font-size:.72rem;opacity:.7;font-variant-numeric:tabular-nums;transition:opacity .15s}.side .updated:hover{opacity:1;background:none}.side .updated .di{width:12px;height:12px}.updated.busy .di{animation:tl-spin .8s linear infinite}',
-  
-  '.dmain{padding:1.25rem max(1.5rem,env(safe-area-inset-right,0px)) 2rem 1.5rem;display:grid;gap:1.1rem;align-content:start;min-width:0}',
+    '.dmain{padding:1.25rem max(1.5rem,env(safe-area-inset-right,0px)) 2rem 1.5rem;display:grid;gap:1.1rem;align-content:start;min-width:0}',
     '.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.75rem}',
   '.stat{font:inherit;color:inherit;text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.8rem .95rem;display:grid;gap:.1rem;cursor:pointer;transition:transform .15s,box-shadow .15s,border-color .15s;animation:tl-rise .4s var(--ease) both}',
   '.stat:nth-child(2){animation-delay:.05s}.stat:nth-child(3){animation-delay:.1s}.stat:nth-child(4){animation-delay:.15s}',
@@ -479,7 +485,6 @@ export const DASHBOARD_CSS = [
   '.box.lifted{position:fixed;z-index:35;margin:0;pointer-events:none;box-shadow:var(--shadow-lg);transform:rotate(.6deg) scale(1.015);outline-color:var(--btn)!important;animation:none!important}.box.lifted>header{cursor:grabbing}',
   '.box-ph{grid-column:span var(--span,12);border:2px dashed var(--btn);border-radius:8px;background:var(--run-bg);opacity:.55}',
   '.editbar{display:flex;flex-wrap:wrap;gap:.5rem .75rem;align-items:center;padding:.55rem .75rem;border:1px solid var(--line);border-radius:8px;background:var(--subtle);font-size:.85rem;animation:tl-rise .25s var(--ease)}.editbar .hint{display:inline-flex;gap:.4rem;align-items:center;color:var(--muted)}.editbar .sp{flex:1}.editbar .hidden-bar{margin:0}',
-  '.side .edit-toggle+.updated{margin-top:0!important}.side .edit-toggle{margin-top:auto!important;color:var(--muted);font-size:.85rem}.side .edit-toggle[aria-pressed=true]{background:var(--run-bg);color:var(--run)}',
   '.tool{border:0;background:none;color:var(--muted);cursor:pointer;padding:.2rem;border-radius:4px;display:grid;place-items:center;transition:background .15s,color .15s}.tool:hover{background:var(--subtle);color:var(--text)}.grip{cursor:grab}.grip:active{cursor:grabbing}',
   '.dash[data-view=overview] .box.is-hidden{display:none}.dash:not([data-view=overview]) .hidden-bar{display:none}',
   '.hidden-bar{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center;font-size:.78rem;color:var(--muted);margin-bottom:-.35rem}.hidden-bar[hidden]{display:none}.hidden-bar button{font:inherit;color:var(--muted);background:none;border:1px dashed var(--line-strong);border-radius:999px;padding:.05rem .6rem;cursor:pointer;transition:color .15s,border-color .15s}.hidden-bar button:hover{color:var(--text);border-color:var(--text)}',
