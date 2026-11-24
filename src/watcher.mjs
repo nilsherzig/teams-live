@@ -7472,6 +7472,12 @@ export class MergeRequestWatcher {
           avatars = {};
         }
       }
+      // Initials for a responder without a photo (as on the dashboard), so every row has a picture.
+      if (this.richMessages && this.avatarService && !this.suppressAvatars) {
+        for (const p of queues.flatMap((q) => q.people)) {
+          if (!isImageDataUri(avatars[p.name])) avatars[p.name] = fallbackAvatar(p.name);
+        }
+      }
       const message = this.richMessage(text, () =>
         buildOnCallCard({ queues: queues.map((q) => ({ label: q.label, people: q.people.map((p) => p.name), avatars })), fallbackText: text })
       );
