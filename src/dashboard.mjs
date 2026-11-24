@@ -466,9 +466,8 @@ export function issueDetail(i, ctx) {
       ['Created', escapeHtml(when(i.created, ctx))],
       ['Updated', escapeHtml(when(i.updated, ctx))],
     ]) +
-    (i.description ? `<div class="dtext rich">${jiraWikiToHtml(clip(i.description, 20000))}</div>` : '<p class="note">No description.</p>') +
-    (url ? `<p class="links"><a class="btn btn-secondary" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open in Jira ${ICONS.ext}</a></p>` : '');
-  return { title: `${i.key} · ${i.summary}`, html };
+    (i.description ? `<div class="dtext rich">${jiraWikiToHtml(clip(i.description, 20000))}</div>` : '<p class="note">No description.</p>');
+  return { title: `${i.key} · ${i.summary}`, html, url, urlLabel: 'Open in Jira' };
 }
 
 /** An OpsGenie alert for the drawer: `{title, html}`. */
@@ -489,9 +488,8 @@ export function alertDetail(a, ctx) {
       ['Tags', (a.tags || []).slice(0, 30).map((t) => `<span class="lbl">${escapeHtml(t)}</span>`).join(' ')],
     ]) +
     (a.description ? `<div class="dtext">${escapeHtml(clip(a.description, 4000))}</div>` : '') +
-    (details.length ? `<h3 class="dsub">Details</h3>${facts(details.map(([k, v]) => [k, escapeHtml(clip(typeof v === 'string' ? v : JSON.stringify(v), 400))]))}` : '') +
-    (url ? `<p class="links"><a class="btn btn-secondary" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open in OpsGenie ${ICONS.ext}</a></p>` : '');
-  return { title: a.message || 'Alert', html };
+    (details.length ? `<h3 class="dsub">Details</h3>${facts(details.map(([k, v]) => [k, escapeHtml(clip(typeof v === 'string' ? v : JSON.stringify(v), 400))]))}` : '');
+  return { title: a.message || 'Alert', html, url, urlLabel: 'Open in OpsGenie' };
 }
 
 /** The numbers at the top: what waits for the user, their own merge requests, their sprint tickets, open alerts. */
@@ -577,7 +575,7 @@ export function dashboardBody({ data, ctx, csrf, filter, updated, footer = '' })
     `<div class="editbar" data-editbar><span class="hint">${ICONS.edit}Drag a card by its header: onto a card to stack it, to a card's side for a new column, onto a "New row" strip for a row of its own. Drag a card's corner or the column gaps to resize.</span><span class="hidden-bar" data-hidden-bar hidden></span><span class="sp"></span><button type="button" class="btn btn-secondary btn-sm" data-layout-reset disabled>Reset layout</button><button type="button" class="btn btn-sm" data-edit-done>Done</button></div>` +
     `<div class="layout" data-layout data-default="${escapeHtml(JSON.stringify(DEFAULT_LAYOUT))}">${layout}</div>${footer}</div>` +
     `<nav class="tabbar" aria-label="Dashboard sections">${nav(true)}</nav>` +
-    `<div class="drawer" data-drawer hidden><div class="drawer-bg" data-drawer-close></div><aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title"><header><h2 id="drawer-title"></h2><button type="button" class="tool" data-drawer-close aria-label="Close">${ICONS.close}</button></header><div class="drawer-body" data-drawer-body></div></aside></div>` +
+    `<div class="drawer" data-drawer hidden><div class="drawer-bg" data-drawer-close></div><aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title"><header><h2 id="drawer-title"></h2><a class="tool" data-drawer-link href="#" target="_blank" rel="noopener noreferrer" hidden>${ICONS.ext}</a><button type="button" class="tool" data-drawer-close aria-label="Close">${ICONS.close}</button></header><div class="drawer-body" data-drawer-body></div></aside></div>` +
     `<input type="hidden" id="dash-csrf" value="${escapeHtml(csrf)}"><div class="toasts" id="toasts" role="status" aria-live="polite"></div></div>`
   );
 }
@@ -644,7 +642,8 @@ export const DASHBOARD_CSS = [
   '.tchip{display:inline-flex;align-items:center;gap:.25rem;font:600 .72rem var(--mono);color:var(--run);background:var(--run-bg);border:0;border-radius:4px;padding:.05rem .35rem;cursor:pointer;transition:filter .15s}.tchip:hover{filter:brightness(1.15)}.tchip .di{width:12px;height:12px}',
   '.drawer{position:fixed;inset:0;z-index:40}.drawer[hidden]{display:none}.drawer-bg{position:absolute;inset:0;background:rgba(0,0,0,.35);animation:tl-fade .2s var(--ease)}@keyframes tl-fade{from{opacity:0}}',
   '.drawer-panel{position:absolute;top:0;right:0;bottom:0;width:min(36rem,100vw);background:var(--panel);border-left:1px solid var(--line);box-shadow:var(--shadow-lg);display:flex;flex-direction:column;animation:tl-slide .28s var(--ease);padding-bottom:env(safe-area-inset-bottom,0px)}@keyframes tl-slide{from{transform:translateX(100%)}}',
-  '.drawer-panel>header{display:flex;gap:.75rem;align-items:flex-start;padding:1rem 1.1rem .85rem;border-bottom:1px solid var(--line)}.drawer-panel h2{margin:0;font-size:1.05rem;line-height:1.35;flex:1;overflow-wrap:anywhere}',
+  '.drawer-panel>header .tool{flex:none;width:30px;height:30px}.drawer-panel>header .tool .di{width:16px;height:16px}.drawer-panel>header .tool[hidden]{display:none}',
+  '.drawer-panel>header{display:flex;gap:.35rem;align-items:flex-start;padding:1rem 1.1rem .85rem;border-bottom:1px solid var(--line)}.drawer-panel h2{margin:0;font-size:1.05rem;line-height:1.35;flex:1;overflow-wrap:anywhere}',
   '.drawer-body{padding:1rem 1.1rem 1.5rem;overflow:auto;flex:1}.dfacts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.45rem 1rem;margin:0 0 1rem;font-size:.88rem}.dfacts dt{color:var(--muted)}.dfacts dd{margin:0;overflow-wrap:anywhere}.dfacts .av{width:18px;height:18px}',
   '.dtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.88rem;line-height:1.55;background:var(--subtle);border:1px solid var(--line);border-radius:6px;padding:.75rem .85rem;max-height:50vh;overflow:auto}.dsub{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.1rem 0 .5rem}',
   '.dtext.rich{white-space:normal;max-height:none;overflow:visible}.rich>:first-child{margin-top:0}.rich>:last-child{margin-bottom:0}.rich p{margin:.5rem 0}.rich h3,.rich h4,.rich h5,.rich h6{margin:1rem 0 .35rem;font-size:.92rem;font-weight:700}.rich h3{font-size:1rem}.rich ul,.rich ol{margin:.35rem 0;padding-left:1.3rem}.rich li{margin:.15rem 0}',
@@ -708,8 +707,8 @@ fetch(B+'/move',{method:'POST',credentials:'same-origin',cache:'no-store',header
 d.addEventListener('pointerup',tkDrop);d.addEventListener('pointercancel',tkDrop);
 var dr=d.querySelector('[data-drawer]'),dlast=null,dreq=0;
 function closeDetail(){if(!dr||dr.hidden)return;dr.hidden=true;document.body.style.overflow='';if(dlast&&dlast.focus)dlast.focus()}
-function openDetail(el){if(!dr)return;var issue=el.getAttribute('data-issue'),alertId=el.getAttribute('data-alert'),n=++dreq;dlast=el;var t=dr.querySelector('#drawer-title'),body=dr.querySelector('[data-drawer-body]');t.textContent=issue||'Alert';body.innerHTML='<div class="sk" style="width:60%"></div><div class="sk" style="width:85%"></div><div class="sk" style="width:40%"></div><div class="sk" style="height:120px"></div>';dr.hidden=false;document.body.style.overflow='hidden';var c=dr.querySelector('.drawer-panel [data-drawer-close]');if(c)c.focus();
-fetch(B+(issue?'/issue?key='+encodeURIComponent(issue):'/alert?id='+encodeURIComponent(alertId)),{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(x){if(n!==dreq)return;if(!x){body.innerHTML='';var p=document.createElement('p');p.className='note';p.textContent='Could not load the details right now.';body.appendChild(p);return}t.textContent=x.title||'';body.innerHTML=x.html||''}).catch(function(){if(n===dreq)body.textContent='Could not load the details right now.'})}
+function openDetail(el){if(!dr)return;var issue=el.getAttribute('data-issue'),alertId=el.getAttribute('data-alert'),n=++dreq;dlast=el;var t=dr.querySelector('#drawer-title'),body=dr.querySelector('[data-drawer-body]');var lk=dr.querySelector('[data-drawer-link]');if(lk){lk.hidden=true;lk.removeAttribute('href')}t.textContent=issue||'Alert';body.innerHTML='<div class="sk" style="width:60%"></div><div class="sk" style="width:85%"></div><div class="sk" style="width:40%"></div><div class="sk" style="height:120px"></div>';dr.hidden=false;document.body.style.overflow='hidden';var c=dr.querySelector('.drawer-panel [data-drawer-close]');if(c)c.focus();
+fetch(B+(issue?'/issue?key='+encodeURIComponent(issue):'/alert?id='+encodeURIComponent(alertId)),{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(x){if(n!==dreq)return;if(!x){body.innerHTML='';var p=document.createElement('p');p.className='note';p.textContent='Could not load the details right now.';body.appendChild(p);return}t.textContent=x.title||'';body.innerHTML=x.html||'';if(lk&&x.url&&/^https?:/.test(x.url)){lk.href=x.url;lk.title=x.urlLabel||'Open';lk.setAttribute('aria-label',x.urlLabel||'Open');lk.hidden=false}}).catch(function(){if(n===dreq)body.textContent='Could not load the details right now.'})}
 d.addEventListener('keydown',function(e){if(e.key==='Escape'&&dr&&!dr.hidden){closeDetail();return}if(e.key==='Escape'&&editing()&&!mv&&!rz){setEdit(false);return}var el=e.target;if((e.key==='Enter'||e.key===' ')&&el&&el.matches&&el.matches('[role=button][data-issue],[role=button][data-alert]')){e.preventDefault();openDetail(el)}});
 function collapse(on){d.classList.toggle('collapsed',on);var c=document.querySelector('[data-collapse]');if(c){c.setAttribute('aria-expanded',String(!on));c.title=on?'Expand sidebar':'Collapse sidebar'}try{localStorage.setItem('tl-side',on?'1':'0')}catch(e){}}
 try{if(localStorage.getItem('tl-side')==='1'){d.style.transition='none';collapse(true);requestAnimationFrame(function(){requestAnimationFrame(function(){d.style.transition=''})})}}catch(e){}
