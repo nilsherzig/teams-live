@@ -36,7 +36,8 @@ export const PAGE_CSS = [
   '@keyframes tl-menu{from{opacity:0;transform:scale(.96) translateY(-4px)}to{opacity:1;transform:none}}',
   '.menu-who{display:grid;padding:.45rem .6rem .55rem;border-bottom:1px solid var(--line);margin-bottom:.3rem}.menu-who span{color:var(--muted);font-size:.85rem}',
   '.menu-theme{white-space:nowrap;display:flex;align-items:center;gap:.5rem;padding:.35rem .6rem .45rem}.menu-theme>span:first-child{font-size:.85rem;color:var(--muted);flex:1}.theme-seg{flex:none;display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}.theme-seg button{flex:none;white-space:nowrap;font:inherit;font-size:.78rem;border:0;background:none;color:var(--muted);padding:.2rem .55rem;cursor:pointer;transition:background .15s,color .15s}.theme-seg button+button{border-left:1px solid var(--line)}.theme-seg button:hover{color:var(--text)}.theme-seg button[aria-pressed=true]{background:var(--run-bg);color:var(--run);font-weight:600}',
-  '.menu-item{display:block;width:100%;text-align:left;font:inherit;color:var(--text);background:none;border:0;border-radius:6px;padding:.45rem .6rem;cursor:pointer}.menu-item:hover{background:var(--subtle);text-decoration:none}.menu-sep{border-top:1px solid var(--line);margin:.3rem 0}.account-menu form{margin:0}',
+  '.account-menu svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.menu-item svg,.menu-theme>span:first-child svg{color:var(--muted)}.theme-seg button{display:inline-flex;align-items:center;gap:.3rem}.theme-seg svg{width:13px;height:13px}.menu-theme>span:first-child{display:inline-flex;align-items:center;gap:.6rem}',
+  '.menu-item{display:flex;align-items:center;gap:.6rem;width:100%;text-align:left;font:inherit;color:var(--text);background:none;border:0;border-radius:6px;padding:.45rem .6rem;cursor:pointer}.menu-item:hover{background:var(--subtle);text-decoration:none}.menu-sep{border-top:1px solid var(--line);margin:.3rem 0}.account-menu form{margin:0}',
   '.shell{flex:1;display:flex;flex-direction:column;width:100%;max-width:46rem;margin:0 auto;padding:0 max(1rem,env(safe-area-inset-right,0px)) 0 max(1rem,env(safe-area-inset-left,0px))}.shell.wide{max-width:60rem}',
   '.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:1.25rem 1.35rem 1.35rem;box-shadow:var(--shadow);animation:tl-rise .45s var(--ease) both}',
   '@keyframes tl-rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}',
@@ -113,6 +114,17 @@ export const SECTION_ICONS = {
   commit: SVG('<circle cx="12" cy="12" r="3.5"/><path d="M3 12h5.5M15.5 12H21"/>'),
 };
 
+/** Line icons of the account menu. */
+export const MENU_ICONS = {
+  profile: SVG('<circle cx="12" cy="8" r="3.5"/><path d="M5 20c1-3.5 3.8-5 7-5s6 1.5 7 5"/>'),
+  dashboard: SVG('<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/>'),
+  theme: SVG('<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/>'),
+  auto: SVG('<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 20h8M12 17v3"/>'),
+  light: SVG('<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>'),
+  dark: SVG('<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>'),
+  signout: SVG('<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/>'),
+};
+
 /** The status picture next to the title of a finished page: a drawn checkmark, a warning or a cross. */
 export function heroIcon(tone) {
   const path = { ok: '<path d="M5 12.5l4.5 4.5L19 7.5"/>', warn: '<path d="M12 6.5v7M12 17.5v.01"/>', error: '<path d="M7 7l10 10M17 7L7 17"/>' }[tone];
@@ -148,7 +160,7 @@ export function headerAccount(user, host, avatar = '', items = '') {
   const photo = picture(avatar || fallbackAvatar(name), '', 'account-avatar', 32);
   const url = safeLink(`https://${host}/${encodeURIComponent(user.username)}`, host);
   const profile = url
-    ? `<a class="menu-item" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" aria-label="GitLab account ${escapeHtml(user.username)}">Your GitLab profile</a>`
+    ? `<a class="menu-item" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" aria-label="GitLab account ${escapeHtml(user.username)}">${MENU_ICONS.profile}Your GitLab profile</a>`
     : '';
   return (
     `<details class="header-account" data-account-menu><summary title="${escapeHtml(name)}" aria-label="Account menu of ${escapeHtml(user.username)}">${photo}</summary>` +
