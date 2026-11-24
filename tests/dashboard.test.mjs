@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { liveScript } from '../src/approve-page.mjs';
 import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
-import { alertsSection, dashboardScript, defaultFilter, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, webLink } from '../src/dashboard.mjs';
+import { alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -314,7 +314,7 @@ test('moving a ticket: one transition for a ticket on the board, after Origin an
     const { cookie } = await signIn(base);
     const html = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
     assert.match(html, /data-col="inReview"/);
-    assert.match(html, /data-issue="ABC-1" draggable="true"/);
+    assert.match(html, /data-issue="ABC-1" role="button"/);
     const csrf = /id="dash-csrf" value="([^"]+)"/.exec(html)[1];
     const post = (body, origin = ORIGIN) => fetch(`${base}/approve/dashboard/move`, { method: 'POST', headers: { ...FORM, Accept: 'application/json', Cookie: cookie, Origin: origin }, body: new URLSearchParams(body).toString() });
     assert.equal((await post({ csrf, key: 'ABC-1', to: 'inReview' }, 'https://evil.example.com')).status, 403);
@@ -332,4 +332,15 @@ test('the page script parses (a syntax error would leave the whole page inert)',
   assert.doesNotThrow(() => new Function(dashboardScript('/dashboard')));
   assert.doesNotThrow(() => new Function(liveScript('/approve/state')));
   assert.doesNotThrow(() => new Function(BATCH_APPROVAL_SCRIPT));
+});
+
+test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {
+  const html = jiraWikiToHtml('h2. Why\nRead it on [the docs|https://docs.example.com] in {{group/docs}}, *now*.\n* a <b>\n** b\n# one\n{code}\n<script>x</script>\n{code}\n[bad|javascript:alert(1)]');
+  assert.match(html, /<h4>Why<\/h4>/);
+  assert.match(html, /<a href="https:\/\/docs\.example\.com\/" target="_blank" rel="noopener noreferrer">the docs<\/a>/);
+  assert.match(html, /<code>group\/docs<\/code>, <strong>now<\/strong>/);
+  assert.match(html, /<ul><li>a &lt;b&gt;<ul><li>b<\/li><\/ul><\/li><\/ul><ol><li>one<\/li><\/ol>/);
+  assert.match(html, /<pre>&lt;script&gt;x&lt;\/script&gt;<\/pre>/);
+  assert.ok(!html.includes('href="javascript'), 'no script links');
+  assert.ok(!/<script/i.test(html));
 });
