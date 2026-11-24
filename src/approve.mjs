@@ -68,7 +68,7 @@ import { FAVICON } from './favicon.mjs';
 
 /** The page footer: just the project on GitHub. */
 const FOOTER = `<footer class="foot"><a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">${GITHUB_MARK}teams-live on GitHub</a></footer>`;
-import { CUSTOMIZE_BUTTON, DASHBOARD_CSS, alertDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, renderSections } from './dashboard.mjs';
+import { CUSTOMIZE_BUTTON, DASHBOARD_CSS, alertDetail, approveButton, fetchMrDetail, mrDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, renderSections } from './dashboard.mjs';
 
 const FULL_WARN_INTERVAL_MS = 10 * 60 * 1000;
 const log = createLogger('approve');
@@ -864,12 +864,12 @@ export class ApproveServer {
     if (this.dashboard && this.dashPath !== legacy && (pathname === legacy || pathname.startsWith(`${legacy}/`))) return '/dashboard-moved';
     if (this.dashboard && (pathname === this.dashPath || pathname.startsWith(`${this.dashPath}/`))) {
       const sub = pathname.slice(this.dashPath.length);
-      return ['', '/data', '/approve', '/signin', '/signout', '/issue', '/alert', '/move'].includes(sub) ? `/dashboard${sub}` : null;
+      return ['', '/data', '/approve', '/signin', '/signout', '/issue', '/alert', '/mr', '/move'].includes(sub) ? `/dashboard${sub}` : null;
     }
     if (this.basePath && (pathname === this.basePath || pathname.startsWith(`${this.basePath}/`))) {
       pathname = pathname.slice(this.basePath.length) || '/';
     }
-    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/issue', '/dashboard/alert', '/dashboard/move', '/dashboard/approve', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
+    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/issue', '/dashboard/alert', '/dashboard/mr', '/dashboard/move', '/dashboard/approve', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
   }
 
   readForm(req) {
@@ -1544,10 +1544,10 @@ export class ApproveServer {
         return this.json(res, 502, {});
       }
     }
-    if (route === '/dashboard/issue' || route === '/dashboard/alert') {
+    if (route === '/dashboard/issue' || route === '/dashboard/alert' || route === '/dashboard/mr') {
       if (method !== 'GET') return notAllowed('GET');
       if (!session) return this.json(res, 401, {});
-      return this.dashboardDetail(route === '/dashboard/issue' ? 'issue' : 'alert', req, res, session);
+      return this.dashboardDetail(route.slice('/dashboard/'.length), req, res, session);
     }
     if (route === '/dashboard/move') {
       if (method !== 'POST') return notAllowed('POST');
@@ -1715,6 +1715,7 @@ export class ApproveServer {
     const data = await this.dashboardData(session);
     let id;
     let allowed;
+    if (kind === 'mr') return this.dashboardMrDetail(String(params.get('ref') || ''), res, session, data);
     if (kind === 'issue') {
       id = String(params.get('key') || '').toUpperCase();
       const keys = new Set();
@@ -1747,6 +1748,32 @@ export class ApproveServer {
       return this.json(res, 200, kind === 'issue' ? issueDetail(item, ctx) : alertDetail(item, ctx));
     } catch (err) {
       log(`Dashboard could not read ${kind} ${id}: ${err.message}`);
+      return this.json(res, 502, {});
+    }
+  }
+
+  /** The detail panel of a merge request the visitor's dashboard lists, read with the visitor's own token. */
+  async dashboardMrDetail(ref, res, session, data) {
+    const listed = (data.mrs.items || []).find((mr) => `${mr.project}!${mr.iid}` === ref);
+    if (!listed) return this.json(res, 404, {});
+    const key = `mr:${sha256Hex(session.sid)}:${ref}`;
+    const now = this.now();
+    let hit = this.dashSourceCache.get(key);
+    if (!hit || now - hit.at > 30_000) {
+      hit = { at: now, promise: fetchMrDetail(this.gitlabHost, session.accessToken, listed.project, listed.iid) };
+      this.dashSourceCache.set(key, hit);
+      hit.promise.catch(() => { if (this.dashSourceCache.get(key) === hit) this.dashSourceCache.delete(key); });
+    }
+    try {
+      const detail = await hit.promise;
+      const names = [detail.mr.author, ...(detail.mr.reviewers || [])].filter(Boolean).map((u) => u.name || u.username);
+      if (names.length && this.avatarWarm) { try { await this.avatarWarm(names); } catch { /* initials */ } }
+      const avatars = {};
+      for (const n of names) { try { const u = this.avatarOf?.(n); if (u) avatars[n] = u; } catch { /* initials */ } }
+      const ctx = { now: this.now(), timeZone: this.dashboard.timeZone, avatars, host: this.gitlabHost };
+      return this.json(res, 200, mrDetail(detail, ctx, approveButton(listed, session.user.username)));
+    } catch (err) {
+      log(`Dashboard could not read ${ref} for ${session.user.username}: ${err.message}`);
       return this.json(res, 502, {});
     }
   }
@@ -1814,7 +1841,7 @@ export class ApproveServer {
     const data = await this.dashboardData(session);
     const ctx = await this.dashboardCtx(session, data);
     const csrf = this.csrf.issue(session.sid, 'dashboard', `who=${session.user.username}`);
-    const body = dashboardBody({ footer: FOOTER, data, ctx, csrf, filter: defaultFilter(data.mrs.items || [], session.user.username), updated: this.dashboardUpdated(data.at) });
+    const body = dashboardBody({ data, ctx, csrf, filter: defaultFilter(data.mrs.items || [], session.user.username), updated: this.dashboardUpdated(data.at) });
     const html = this.documentHtml({ title: 'Dashboard', kicker: 'Dashboard', shell: 'shell dashboard', main: `<main>${body}<script>${this.dashboardScript}</script></main>`, css: DASHBOARD_CSS, dashLink: false, actions: CUSTOMIZE_BUTTON, footer: false, menu: `<div class="menu-sep"></div><form method="post" action="${escapeHtml(`${this.origin}${this.dashPath}/signout`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}" data-csrf><button class="menu-item" type="submit">Sign out</button></form>` });
     return this.send(res, 200, html, { script: 'dashboard' });
   }

@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { liveScript } from '../src/approve-page.mjs';
 import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
-import { alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, webLink } from '../src/dashboard.mjs';
+import { alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -343,4 +343,31 @@ test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped
   assert.match(html, /<pre>&lt;script&gt;x&lt;\/script&gt;<\/pre>/);
   assert.ok(!html.includes('href="javascript'), 'no script links');
   assert.ok(!/<script/i.test(html));
+});
+
+test('merge request details: only listed ones, read with the visitor\'s token, with GitLab\'s link', async () => {
+  await withDashboard({}, async ({ base, seen }) => {
+    const { cookie } = await signIn(base);
+    const html = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
+    assert.match(html, /data-mr="group\/app!7"/);
+    const get = (ref) => fetch(`${base}/approve/dashboard/mr?ref=${encodeURIComponent(ref)}`, { headers: { Cookie: cookie } });
+    assert.equal((await get('group/app!8')).status, 404, 'not on the dashboard');
+    assert.equal((await get('other/app!7')).status, 404);
+    const res = await get('group/app!7');
+    assert.equal(res.status, 200);
+    const d = await res.json();
+    assert.ok(d.html.includes('Branches') && d.urlLabel === 'Open in GitLab');
+    assert.match(d.html, /data-approve data-project="group\/app" data-iid="7"/, 'the Approve button comes along');
+    const read = seen.filter((c) => c.url.endsWith('/merge_requests/7'));
+    assert.ok(read.length && read.every((c) => c.options.headers.Authorization === 'Bearer tok'));
+  });
+});
+
+test('GitLab descriptions: Markdown becomes HTML, Renovate HTML is dropped, links are http(s) only', () => {
+  const html = markdownToHtml('## Release notes\n<details><summary>v4.25.0</summary>\n\n- **fix** a [bug](https://example.com/b) in `x`\n  - nested\n1. one\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```\n<script>no</script>\n```\n</details>\n<!-- hidden -->\n[bad](javascript:alert(1)) <img src=x onerror=alert(1)> <b>bold</b>');
+  assert.match(html, /<h4>Release notes<\/h4>/);
+  assert.match(html, /<li><strong>fix<\/strong> a <a href="https:\/\/example\.com\/b"[^>]*>bug<\/a> in <code>x<\/code><ul><li>nested<\/li><\/ul><\/li><\/ul><ol><li>one<\/li><\/ol>/);
+  assert.match(html, /<table><tr><th>a<\/th><th>b<\/th><\/tr><tr><td>1<\/td><td>2<\/td><\/tr><\/table>/);
+  assert.match(html, /<pre>&lt;script&gt;no&lt;\/script&gt;<\/pre>/);
+  assert.ok(!/hidden|<img|<details|onerror|href="javascript/i.test(html));
 });

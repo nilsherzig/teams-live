@@ -9,7 +9,7 @@
 // Data in, HTML out, plus two small GitLab reads (membership and one GraphQL query). Every value that reaches
 // the HTML goes through `escapeHtml`, every link through `safeLink` (GitLab host) or `webLink` (http(s) only).
 
-import { avatarImg, escapeHtml, safeLink } from './approve-page.mjs';
+import { GITHUB_MARK, avatarImg, escapeHtml, safeLink } from './approve-page.mjs';
 import { approvalBadge } from './approval-badges.mjs';
 import { ciStatusIcon, ciStatusInfo } from './cards.mjs';
 
@@ -112,6 +112,17 @@ export function normalizeMr(n) {
   };
 }
 
+/** One merge request for the detail panel, read with the visitor's token: itself, its approvals, its pipeline's jobs. */
+export async function fetchMrDetail(host, token, project, iid) {
+  const base = `v4/projects/${encodeURIComponent(project)}/merge_requests/${encodeURIComponent(iid)}`;
+  const [mr, approvals] = await Promise.all([gitlabRequest(host, token, base), gitlabRequest(host, token, `${base}/approvals`).catch(() => null)]);
+  let jobs = [];
+  if (mr?.head_pipeline?.id) {
+    jobs = await gitlabRequest(host, token, `v4/projects/${encodeURIComponent(project)}/pipelines/${encodeURIComponent(mr.head_pipeline.id)}/jobs?per_page=100`).catch(() => []);
+  }
+  return { mr, approvals, jobs: Array.isArray(jobs) ? jobs : [] };
+}
+
 /** Bot-made merge requests (Renovate, service accounts, dependency updates): the same rules as `/mrs`. */
 export function isBotMr(mr) {
   const username = lower(mr.author?.username);
@@ -204,6 +215,16 @@ export function defaultFilter(mrs, username) {
   return mrs.some((mr) => mrFilters(mr, username).includes('review')) ? 'review' : 'human';
 }
 
+/** The inline Approve button for a listed merge request, or '' (approved already, not allowed, draft, failed pipeline). */
+export function approveButton(mr, username) {
+  const me = lower(username);
+  const filters = mrFilters(mr, username);
+  if (mr.approvedBy.some((u) => u.username === me)) return '';
+  if (!(filters.includes('review') || (mr.canApprove && !filters.includes('mine') && !mr.draft))) return '';
+  if (!(mr.canApprove && mr.sha && mr.pipeline !== 'failed')) return '';
+  return `<button class="btn btn-secondary btn-sm" type="button" data-approve data-project="${escapeHtml(mr.project)}" data-iid="${escapeHtml(mr.iid)}" data-sha="${escapeHtml(mr.sha)}" aria-label="Approve ${escapeHtml(mr.project)}!${escapeHtml(mr.iid)}">${ICONS.thumb}Approve</button>`;
+}
+
 function mrRow(mr, { username, host, avatars, now }) {
   const me = lower(username);
   const filters = mrFilters(mr, username);
@@ -217,17 +238,11 @@ function mrRow(mr, { username, host, avatars, now }) {
   const state = mr.approved || (required > 0 && given >= required) ? true : false;
   const badgeLabel = `${state ? 'Approved' : required > 0 ? `${given} of ${required} approvals` : 'Not approved yet'}${names.length ? ` (by ${names.join(', ')})` : ''}`;
   const badge = img(approvalBadge({ approved: state, approvalsGiven: given, approvalsRequired: required }), badgeLabel, 18, 'appr-badge');
-  let action = '';
-  if (!approvedByMe && (filters.includes('review') || (mr.canApprove && !filters.includes('mine') && !mr.draft))) {
-    action =
-      mr.canApprove && mr.sha && mr.pipeline !== 'failed'
-        ? `<button class="btn btn-secondary btn-sm" type="button" data-approve data-project="${escapeHtml(mr.project)}" data-iid="${escapeHtml(mr.iid)}" data-sha="${escapeHtml(mr.sha)}" aria-label="Approve ${escapeHtml(mr.project)}!${escapeHtml(mr.iid)}">${ICONS.thumb}Approve</button>`
-        : '';
-  }
+  const action = approveButton(mr, username);
   const title = `${mr.draft ? '<span class="pill pill-draft">Draft</span> ' : ''}${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(mr.title)}</a>` : escapeHtml(mr.title)}`;
   const ref = projectUrl ? `<a class="muted-link" href="${escapeHtml(projectUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(mr.project)}</a>!${escapeHtml(mr.iid)}` : `${escapeHtml(mr.project)}!${escapeHtml(mr.iid)}`;
   return (
-    `<li class="mrrow" data-f="${filters.join(' ')}" data-key="${escapeHtml(`${mr.project}!${mr.iid}`)}">` +
+    `<li class="mrrow" data-f="${filters.join(' ')}" data-key="${escapeHtml(`${mr.project}!${mr.iid}`)}" data-mr="${escapeHtml(`${mr.project}!${mr.iid}`)}" tabindex="0" aria-label="${escapeHtml(`Details of ${mr.project}!${mr.iid}: ${mr.title}`)}">` +
     `${avatarImg(mr.author.name, avatars)}` +
     `<div class="mrmain"><span class="t">${title}</span><span class="m">${(mr.issues || []).map((k) => `<button type="button" class="tchip" data-issue="${escapeHtml(k)}" title="Preview ${escapeHtml(k)}">${ICONS.ticket}${escapeHtml(k)}</button>`).join('')}<span>${ref}</span><span>· ${escapeHtml(mr.author.name)}</span><span>· ${escapeHtml(ago(mr.updatedAt, now))}</span></span></div>` +
     `<div class="mrside">${pipelineIcon(mr.pipeline)}${badge}${action}</div>` +
@@ -452,6 +467,173 @@ export function jiraWikiToHtml(src) {
   return out.join('');
 }
 
+/**
+ * GitLab Markdown (a merge request description) as safe HTML. HTML comments, images and wrapper tags (details,
+ * summary, div, p, br, …, which Renovate uses) are dropped first; the rest is escaped, and only known Markdown
+ * becomes tags: headings, lists (nested by indent), fenced code, quotes, tables, rules, **bold**, *italic*,
+ * ~~strike~~, `code` and [text](url) links (http(s) only).
+ */
+export function markdownToHtml(src) {
+  const text = String(src ?? '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<img\b[^>]*>/gi, '')
+    .replace(/<\/?(details|summary|div|p|span|sup|sub|small|center|b|strong|i|em|code|br|hr|table|thead|tbody|tr|td|th|a)\b[^>]*>/gi, (t) => (/^<br|^<\/?(p|div|summary|tr)\b/i.test(t) ? '\n' : ''));
+  const lines = text.split('\n');
+  const out = [];
+  let para = [];
+  let list = [];
+  const inline = (raw) => {
+    const codes = [];
+    let t = escapeHtml(raw).replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
+    t = t.replace(/!?\[([^\]]*)\]\(([^)\s]+)(?:\s+&quot;[^)]*&quot;)?\)/g, (whole, label, target) => {
+      const href = webLink(target.replace(/&amp;/g, '&'));
+      return href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${label || escapeHtml(href)}</a>` : label || whole;
+    });
+    t = t
+      .replace(/\*\*(?=\S)([^*]*?\S)\*\*|__(?=\S)([^_]*?\S)__/g, (_, a, b) => `<strong>${a ?? b}</strong>`)
+      .replace(/(^|[\s(>])[*_](?=\S)([^*_\n]*?\S)[*_](?=$|[\s.,;:!?)<])/g, '$1<em>$2</em>')
+      .replace(/~~(?=\S)([^~]*?\S)~~/g, '<del>$1</del>');
+    return t.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[Number(i)]}</code>`);
+  };
+  const flushPara = () => {
+    if (para.length) out.push(`<p>${para.map(inline).join('<br>')}</p>`);
+    para = [];
+  };
+  const flushList = () => {
+    if (!list.length) return;
+    let html = '';
+    const open = [];
+    for (const { depth, kind, text: item } of list) {
+      while (open.length > depth) html += `</li></${open.pop()}>`;
+      if (open.length === depth && open[depth - 1] !== kind) html += `</li></${open.pop()}>`;
+      else if (open.length === depth && depth > 0) html += '</li>';
+      while (open.length < depth) {
+        open.push(kind);
+        html += `<${kind}>`;
+      }
+      html += `<li>${inline(item)}`;
+    }
+    while (open.length) html += `</li></${open.pop()}>`;
+    out.push(html);
+    list = [];
+  };
+  const flush = () => {
+    flushPara();
+    flushList();
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = /^\s*(```|~~~)/.exec(line);
+    if (fence) {
+      flush();
+      const body = [];
+      while (i + 1 < lines.length && !lines[i + 1].trim().startsWith(fence[1])) body.push(lines[++i]);
+      i++;
+      out.push(`<pre>${escapeHtml(body.join('\n'))}</pre>`);
+      continue;
+    }
+    const h = /^\s*(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+    if (h) {
+      flush();
+      const level = Math.min(6, h[1].length + 2);
+      out.push(`<h${level}>${inline(h[2])}</h${level}>`);
+      continue;
+    }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
+      flush();
+      out.push('<hr>');
+      continue;
+    }
+    if (/^\s*>/.test(line)) {
+      flush();
+      const body = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) body.push(lines[i++].replace(/^\s*>\s?/, ''));
+      i--;
+      out.push(`<blockquote>${body.map(inline).join('<br>')}</blockquote>`);
+      continue;
+    }
+    if (/^\s*\|/.test(line) && /^\s*\|?\s*:?-{2,}/.test(lines[i + 1] || '')) {
+      flush();
+      const split = (r) => r.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+      const head = split(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(split(lines[i++]));
+      i--;
+      out.push(`<div class="tbl"><table><tr>${head.map((c) => `<th>${inline(c)}</th>`).join('')}</tr>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</table></div>`);
+      continue;
+    }
+    const li = /^(\s*)([-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(.*)$/.exec(line);
+    if (li) {
+      flushPara();
+      list.push({ depth: Math.floor(li[1].replace(/\t/g, '  ').length / 2) + 1, kind: /\d/.test(li[2]) ? 'ol' : 'ul', text: li[3] });
+      continue;
+    }
+    if (!line.trim()) {
+      flush();
+      continue;
+    }
+    if (list.length) flushList();
+    para.push(line.trim());
+  }
+  flush();
+  return out.join('');
+}
+
+const MR_STATE = { opened: ['ok', 'Open'], merged: ['merged', 'Merged'], closed: ['bad', 'Closed'], locked: ['idle', 'Locked'] };
+const MERGE_TEXT = { mergeable: 'Ready to merge', not_approved: 'Approval required', ci_still_running: 'Pipeline running', ci_must_pass: 'Pipeline must succeed', conflict: 'Merge conflicts', need_rebase: 'Needs a rebase', draft_status: 'Draft', discussions_not_resolved: 'Unresolved threads', checking: 'Checking', not_open: 'Not open', blocked_status: 'Blocked by another merge request', requested_changes: 'Changes requested' };
+
+/** A merge request for the detail panel: `{title, html, url}`; `approve` is the row's Approve button, if any. */
+export function mrDetail({ mr, approvals, jobs }, ctx, approve = '') {
+  const host = ctx.host;
+  const url = safeLink(mr.web_url, host);
+  const project = mr.references?.full ? mr.references.full.replace(/!\d+$/, '') : String(mr.web_url || '').replace(/^https?:\/\/[^/]+\//, '').replace(/\/-\/merge_requests\/.*$/, '');
+  const draft = mr.draft || mr.work_in_progress;
+  const [tone, stateText] = MR_STATE[mr.state] || ['idle', mr.state || 'Unknown'];
+  const person = (u) => (u ? `<span class="who">${avatarImg(u.name || u.username, ctx.avatars)}${escapeHtml(u.name || u.username)}</span>` : '');
+  const approvedBy = (approvals?.approved_by || []).map((a) => a.user).filter(Boolean);
+  const required = Number(approvals?.approvals_required) || 0;
+  const given = approvedBy.length;
+  const ok = approvals?.approved === true || (required > 0 && given >= required);
+  const badge = img(approvalBadge({ approved: ok, approvalsGiven: given, approvalsRequired: required }), ok ? 'Approved' : `${given} of ${required} approvals`, 18, 'appr-badge');
+  const pipe = mr.head_pipeline;
+  const pipeUrl = safeLink(pipe?.web_url, host);
+  const stages = [];
+  for (const j of jobs || []) {
+    let st = stages.find((x) => x.name === j.stage);
+    if (!st) stages.push((st = { name: j.stage, jobs: [] }));
+    st.jobs.push(j);
+  }
+  const stageStatus = (st) => {
+    const ss = st.jobs.map((j) => j.status);
+    for (const k of ['failed', 'running', 'pending', 'created', 'manual', 'canceled', 'skipped']) if (ss.includes(k) && !(k === 'failed' && st.jobs.every((j) => j.status !== 'failed' || j.allow_failure))) return k;
+    return ss.every((x) => x === 'success' || x === 'skipped') ? 'success' : ss[0] || 'created';
+  };
+  const pipeline = pipe?.status
+    ? `<span class="pipe">${img(ciStatusIcon(pipe.status), `Pipeline: ${ciStatusInfo(pipe.status).label}`, 16, 'ci-ic')}${pipeUrl ? `<a href="${escapeHtml(pipeUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(ciStatusInfo(pipe.status).label)} #${escapeHtml(pipe.id)}</a>` : escapeHtml(ciStatusInfo(pipe.status).label)}</span>` +
+      (stages.length ? `<span class="stages">${stages.map((st) => `<span class="stage" title="${escapeHtml(`${st.name}: ${st.jobs.map((j) => `${j.name} (${j.status})`).join(', ')}`)}">${img(ciStatusIcon(stageStatus(st)), '', 14, 'ci-ic')}${escapeHtml(st.name)}</span>`).join('')}</span>` : '')
+    : '<span class="note">No pipeline</span>';
+  const branch = (b) => `<code>${escapeHtml(b)}</code>`;
+  const html =
+    `<div class="dhead"><span class="pill pill-${tone === 'merged' ? 'merged' : tone}">${escapeHtml(stateText)}</span>${draft ? '<span class="pill pill-draft">Draft</span>' : ''}<span class="dref">${escapeHtml(project)}!${escapeHtml(mr.iid)}</span></div>` +
+    facts([
+      ['Branches', `${branch(mr.source_branch)} → ${branch(mr.target_branch)}`],
+      ['Author', person(mr.author)],
+      ['Reviewers', (mr.reviewers || []).map(person).join(' ')],
+      ['Approvals', `<span class="appr-line">${badge}${approvedBy.length ? `<span class="note">by ${approvedBy.map((u) => escapeHtml(u.name || u.username)).join(', ')}</span>` : ''}</span>`],
+      ['Pipeline', pipeline],
+      ['Merge status', escapeHtml(MERGE_TEXT[String(mr.detailed_merge_status || '').toLowerCase()] || String(mr.detailed_merge_status || '').replace(/_/g, ' '))],
+      ['Changes', mr.changes_count ? escapeHtml(`${mr.changes_count} file(s)`) : ''],
+      ['Labels', (mr.labels || []).map((l) => `<span class="lbl">${escapeHtml(l)}</span>`).join(' ')],
+      ['Created', escapeHtml(when(mr.created_at, ctx))],
+      ['Updated', escapeHtml(when(mr.updated_at, ctx))],
+    ]) +
+    (approve ? `<p class="dactions">${approve}</p>` : '') +
+    (mr.description && mr.description.trim() ? `<div class="dtext rich">${markdownToHtml(clip(mr.description, 20000))}</div>` : '<p class="note">No description.</p>');
+  return { title: mr.title || `Merge request !${mr.iid}`, html, url, urlLabel: 'Open in GitLab' };
+}
+
 /** A Jira ticket for the preview drawer: `{title, html}`, everything escaped, the link to Jira at the end. */
 export function issueDetail(i, ctx) {
   const url = webLink(i.url);
@@ -553,8 +735,8 @@ const SECTIONS = [
 // The default layout: rows of columns (relative widths) holding stacks of cards. Each visitor can rearrange it.
 export const DEFAULT_LAYOUT = { rows: [{ cols: [{ w: 8, cards: ['mrs', 'sprint'] }, { w: 4, cards: ['alerts', 'meetings'] }] }] };
 
-/** The body of the dashboard page (inside the common header and footer). */
-export function dashboardBody({ data, ctx, csrf, filter, updated, footer = '' }) {
+/** The body of the dashboard page (inside the common header). */
+export function dashboardBody({ data, ctx, csrf, filter, updated }) {
   const s = renderSections(data, ctx);
   const counts = navCounts(data, ctx);
   const badge = (k) => (counts[k] ? `<span class="badge${k === 'alerts' ? ' badge-bad' : ''}" data-count="${k}">${counts[k]}</span>` : `<span class="badge" data-count="${k}" hidden></span>`);
@@ -569,11 +751,11 @@ export function dashboardBody({ data, ctx, csrf, filter, updated, footer = '' })
     .join('');
   return (
     `<div class="dash" id="dash" data-view="overview" data-mrf="${escapeHtml(filter)}">` +
-    `<nav class="side" aria-label="Dashboard">${nav(false)}<div class="side-foot"><button type="button" class="sync" data-refresh title="Updated ${escapeHtml(updated)}, refreshes every minute. Click to refresh now.">${ICONS.refresh}<span id="dash-updated">${escapeHtml(updated)}</span></button><button type="button" class="side-toggle" data-collapse aria-expanded="true" title="Collapse sidebar" aria-label="Collapse sidebar">${ICONS.collapse}</button></div></nav>` +
+    `<nav class="side" aria-label="Dashboard">${nav(false)}<div class="side-foot"><button type="button" class="sync" data-refresh title="Updated ${escapeHtml(updated)}, refreshes every minute. Click to refresh now.">${ICONS.refresh}<span id="dash-updated">${escapeHtml(updated)}</span></button><a class="side-gh" href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer" title="teams-live on GitHub" aria-label="teams-live on GitHub">${GITHUB_MARK}</a><button type="button" class="side-toggle" data-collapse aria-expanded="true" title="Collapse sidebar" aria-label="Collapse sidebar">${ICONS.collapse}</button></div></nav>` +
     `<div class="dmain"><h1 class="sr">Dashboard</h1>` +
     `<div class="stats" data-sec-body="stats">${s.stats}</div>` +
     `<div class="editbar" data-editbar><span class="hint">${ICONS.edit}Drag a card by its header: onto a card to stack it, to a card's side for a new column, onto a "New row" strip for a row of its own. Drag a card's corner or the column gaps to resize.</span><span class="hidden-bar" data-hidden-bar hidden></span><span class="sp"></span><button type="button" class="btn btn-secondary btn-sm" data-layout-reset disabled>Reset layout</button><button type="button" class="btn btn-sm" data-edit-done>Done</button></div>` +
-    `<div class="layout" data-layout data-default="${escapeHtml(JSON.stringify(DEFAULT_LAYOUT))}">${layout}</div>${footer}</div>` +
+    `<div class="layout" data-layout data-default="${escapeHtml(JSON.stringify(DEFAULT_LAYOUT))}">${layout}</div></div>` +
     `<nav class="tabbar" aria-label="Dashboard sections">${nav(true)}</nav>` +
     `<div class="drawer" data-drawer hidden><div class="drawer-bg" data-drawer-close></div><aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title"><header><h2 id="drawer-title"></h2><a class="tool" data-drawer-link href="#" target="_blank" rel="noopener noreferrer" hidden>${ICONS.ext}</a><button type="button" class="tool" data-drawer-close aria-label="Close">${ICONS.close}</button></header><div class="drawer-body" data-drawer-body></div></aside></div>` +
     `<input type="hidden" id="dash-csrf" value="${escapeHtml(csrf)}"><div class="toasts" id="toasts" role="status" aria-live="polite"></div></div>`
@@ -592,6 +774,7 @@ export const DASHBOARD_CSS = [
   '.dash.collapsed{--sw:3.75rem;grid-template-columns:3.75rem minmax(0,1fr)}.dash.collapsed .side span{opacity:0;width:0}.dash.collapsed .side button{justify-content:center;gap:0;padding-inline:0}',
   '.side-foot{margin-top:auto;display:flex;align-items:center;gap:.25rem;padding-top:.5rem;border-top:1px solid var(--line)}',
   '.side .side-foot button{min-height:30px;border-radius:6px;color:var(--muted)}.side .sync{flex:1;gap:.4rem;padding:.25rem .5rem;font-size:.75rem;font-variant-numeric:tabular-nums}.side .sync .di{width:13px;height:13px}.side .sync.busy .di{animation:tl-spin .8s linear infinite}',
+  '.side-gh{flex:none;width:30px;height:30px;display:grid;place-items:center;border-radius:6px;color:var(--muted);transition:background .15s,color .15s}.side-gh:hover{background:var(--panel);color:var(--text);text-decoration:none}.side-gh svg{width:15px;height:15px}.dash.collapsed .side-gh{width:auto}',
   '.side .side-toggle{flex:none;width:30px;justify-content:center;padding:0}.side .side-foot button:hover{background:var(--panel);color:var(--text)}.side-toggle .di{transition:transform .3s var(--ease)}',
   '.dash.collapsed .side-foot{flex-direction:column;align-items:stretch}.dash.collapsed .side .sync{flex:none;padding:.25rem 0}.dash.collapsed .side-toggle{width:auto}.dash.collapsed .side-toggle .di{transform:rotate(180deg)}',
   '.dash.collapsed .side .badge{position:absolute;top:1px;right:2px;margin:0;font-size:.6rem;padding:0 .3rem;opacity:1;width:auto}',
@@ -646,6 +829,9 @@ export const DASHBOARD_CSS = [
   '.drawer-panel>header{display:flex;gap:.35rem;align-items:flex-start;padding:1rem 1.1rem .85rem;border-bottom:1px solid var(--line)}.drawer-panel h2{margin:0;font-size:1.05rem;line-height:1.35;flex:1;overflow-wrap:anywhere}',
   '.drawer-body{padding:1rem 1.1rem 1.5rem;overflow:auto;flex:1}.dfacts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.45rem 1rem;margin:0 0 1rem;font-size:.88rem}.dfacts dt{color:var(--muted)}.dfacts dd{margin:0;overflow-wrap:anywhere}.dfacts .av{width:18px;height:18px}',
   '.dtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.88rem;line-height:1.55;background:var(--subtle);border:1px solid var(--line);border-radius:6px;padding:.75rem .85rem;max-height:50vh;overflow:auto}.dsub{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.1rem 0 .5rem}',
+  '.dhead{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:0 0 .9rem}.dref{font:.82rem var(--mono);color:var(--muted)}.who{display:inline-flex;align-items:center;margin-right:.6rem}.who .av{width:18px;height:18px}',
+  '.pipe{display:inline-flex;gap:.4rem;align-items:center}.stages{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem}.stage{display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;border:1px solid var(--line);border-radius:999px;padding:.05rem .5rem .05rem .25rem;background:var(--subtle)}.appr-line{display:inline-flex;flex-wrap:wrap;gap:.5rem;align-items:center}',
+  '.dactions{margin:0 0 1rem}.rich hr{border:0;border-top:1px solid var(--line);margin:.75rem 0}.mrrow[data-mr]{cursor:pointer}.mrrow[data-mr]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
   '.dtext.rich{white-space:normal;max-height:none;overflow:visible}.rich>:first-child{margin-top:0}.rich>:last-child{margin-bottom:0}.rich p{margin:.5rem 0}.rich h3,.rich h4,.rich h5,.rich h6{margin:1rem 0 .35rem;font-size:.92rem;font-weight:700}.rich h3{font-size:1rem}.rich ul,.rich ol{margin:.35rem 0;padding-left:1.3rem}.rich li{margin:.15rem 0}',
   '.rich code{font:.85em var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0 .25rem}.rich pre{font:.8rem/1.45 var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:.6rem .75rem;overflow:auto;white-space:pre}.rich blockquote{margin:.5rem 0;padding:.1rem .75rem;border-left:3px solid var(--line-strong);color:var(--muted)}',
   '.rich .tbl{overflow-x:auto}.rich table{border-collapse:collapse;font-size:.82rem;margin:.5rem 0}.rich th,.rich td{border:1px solid var(--line);padding:.25rem .5rem;text-align:left;vertical-align:top}.rich th{background:var(--panel)}.rich a{overflow-wrap:anywhere}',
@@ -707,9 +893,9 @@ fetch(B+'/move',{method:'POST',credentials:'same-origin',cache:'no-store',header
 d.addEventListener('pointerup',tkDrop);d.addEventListener('pointercancel',tkDrop);
 var dr=d.querySelector('[data-drawer]'),dlast=null,dreq=0;
 function closeDetail(){if(!dr||dr.hidden)return;dr.hidden=true;document.body.style.overflow='';if(dlast&&dlast.focus)dlast.focus()}
-function openDetail(el){if(!dr)return;var issue=el.getAttribute('data-issue'),alertId=el.getAttribute('data-alert'),n=++dreq;dlast=el;var t=dr.querySelector('#drawer-title'),body=dr.querySelector('[data-drawer-body]');var lk=dr.querySelector('[data-drawer-link]');if(lk){lk.hidden=true;lk.removeAttribute('href')}t.textContent=issue||'Alert';body.innerHTML='<div class="sk" style="width:60%"></div><div class="sk" style="width:85%"></div><div class="sk" style="width:40%"></div><div class="sk" style="height:120px"></div>';dr.hidden=false;document.body.style.overflow='hidden';var c=dr.querySelector('.drawer-panel [data-drawer-close]');if(c)c.focus();
-fetch(B+(issue?'/issue?key='+encodeURIComponent(issue):'/alert?id='+encodeURIComponent(alertId)),{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(x){if(n!==dreq)return;if(!x){body.innerHTML='';var p=document.createElement('p');p.className='note';p.textContent='Could not load the details right now.';body.appendChild(p);return}t.textContent=x.title||'';body.innerHTML=x.html||'';if(lk&&x.url&&/^https?:/.test(x.url)){lk.href=x.url;lk.title=x.urlLabel||'Open';lk.setAttribute('aria-label',x.urlLabel||'Open');lk.hidden=false}}).catch(function(){if(n===dreq)body.textContent='Could not load the details right now.'})}
-d.addEventListener('keydown',function(e){if(e.key==='Escape'&&dr&&!dr.hidden){closeDetail();return}if(e.key==='Escape'&&editing()&&!mv&&!rz){setEdit(false);return}var el=e.target;if((e.key==='Enter'||e.key===' ')&&el&&el.matches&&el.matches('[role=button][data-issue],[role=button][data-alert]')){e.preventDefault();openDetail(el)}});
+function openDetail(el){if(!dr)return;var issue=el.getAttribute('data-issue'),alertId=el.getAttribute('data-alert'),mrk=el.getAttribute('data-mr'),n=++dreq;dlast=el;var t=dr.querySelector('#drawer-title'),body=dr.querySelector('[data-drawer-body]');var lk=dr.querySelector('[data-drawer-link]');if(lk){lk.hidden=true;lk.removeAttribute('href')}t.textContent=issue||mrk||'Alert';body.innerHTML='<div class="sk" style="width:60%"></div><div class="sk" style="width:85%"></div><div class="sk" style="width:40%"></div><div class="sk" style="height:120px"></div>';dr.hidden=false;document.body.style.overflow='hidden';var c=dr.querySelector('.drawer-panel [data-drawer-close]');if(c)c.focus();
+var q=mrk?'/mr?ref='+encodeURIComponent(mrk):issue?'/issue?key='+encodeURIComponent(issue):'/alert?id='+encodeURIComponent(alertId);fetch(B+q,{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(x){if(n!==dreq)return;if(!x){body.innerHTML='';var p=document.createElement('p');p.className='note';p.textContent='Could not load the details right now.';body.appendChild(p);return}t.textContent=x.title||'';body.innerHTML=x.html||'';if(lk&&x.url&&/^https?:/.test(x.url)){lk.href=x.url;lk.title=x.urlLabel||'Open';lk.setAttribute('aria-label',x.urlLabel||'Open');lk.hidden=false}}).catch(function(){if(n===dreq)body.textContent='Could not load the details right now.'})}
+d.addEventListener('keydown',function(e){if(e.key==='Escape'&&dr&&!dr.hidden){closeDetail();return}if(e.key==='Escape'&&editing()&&!mv&&!rz){setEdit(false);return}var el=e.target;if((e.key==='Enter'||e.key===' ')&&el&&el.matches&&el.matches('[role=button][data-issue],[role=button][data-alert],.mrrow[data-mr]')){e.preventDefault();openDetail(el)}});
 function collapse(on){d.classList.toggle('collapsed',on);var c=document.querySelector('[data-collapse]');if(c){c.setAttribute('aria-expanded',String(!on));c.title=on?'Expand sidebar':'Collapse sidebar'}try{localStorage.setItem('tl-side',on?'1':'0')}catch(e){}}
 try{if(localStorage.getItem('tl-side')==='1'){d.style.transition='none';collapse(true);requestAnimationFrame(function(){requestAnimationFrame(function(){d.style.transition=''})})}}catch(e){}
 var L=d.querySelector('[data-layout]'),LK='tl-layout2',DEFL=null,BOX={};try{DEFL=JSON.parse(L.getAttribute('data-default'))}catch(e){}
@@ -762,7 +948,7 @@ d.addEventListener('dblclick',function(e){if(!editing())return;var h=e.target.cl
 try{if(localStorage.getItem('tl-nodraft')==='1')d.setAttribute('data-nodraft','1')}catch(e){}
 try{var sv=sessionStorage.getItem('tl-view'),sf=sessionStorage.getItem('tl-mrf');if(sv)d.setAttribute('data-view',sv);if(sf)d.setAttribute('data-mrf',sf)}catch(e){}if(location.hash==='#overview'){d.setAttribute('data-view','overview');try{history.replaceState(null,'',location.pathname)}catch(e){}}mark();
 document.addEventListener('click',function(e){document.querySelectorAll('[data-account-menu][open]').forEach(function(m){if(!m.contains(e.target))m.removeAttribute('open')})});document.addEventListener('keydown',function(e){if(e.key==='Escape')document.querySelectorAll('[data-account-menu][open]').forEach(function(m){m.removeAttribute('open')})});
-document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var di=e.target.closest('[data-issue],[data-alert]');if(di&&di.dataset.dragged)return;if(di&&!e.target.closest('a')){e.preventDefault();openDetail(di);return}if(e.target.closest('[data-drawer-close]')){closeDetail();return}if(e.target.closest('[data-nodraft-toggle]')){nodraft(d.getAttribute('data-nodraft')!=='1');return}if(e.target.closest('[data-edit-toggle]')){setEdit(!editing());return}if(e.target.closest('[data-edit-done]')){setEdit(false);return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the toolbar above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
+document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var mrr=e.target.closest('.mrrow[data-mr]');if(mrr&&!e.target.closest('a,button')){openDetail(mrr);return}var di=e.target.closest('[data-issue],[data-alert]');if(di&&di.dataset.dragged)return;if(di&&!e.target.closest('a')){e.preventDefault();openDetail(di);return}if(e.target.closest('[data-drawer-close]')){closeDetail();return}if(e.target.closest('[data-nodraft-toggle]')){nodraft(d.getAttribute('data-nodraft')!=='1');return}if(e.target.closest('[data-edit-toggle]')){setEdit(!editing());return}if(e.target.closest('[data-edit-done]')){setEdit(false);return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the toolbar above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
 function pill(cls,text,title){var s=document.createElement('span');s.className='pill '+cls;s.textContent=text;if(title)s.title=title;return s}
 function approve(b){if(b.disabled)return;b.disabled=true;b.setAttribute('data-busy','');busy++;var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('project',b.getAttribute('data-project'));body.set('iid',b.getAttribute('data-iid'));body.set('sha',b.getAttribute('data-sha'));
 fetch(B+'/approve',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:body.toString()}).then(function(r){return r.json().catch(function(){return {status:'unknown',text:'The answer could not be read. Check the merge request in GitLab.'}})}).then(function(r){var ok=r.status==='approved'||r.status==='already';b.replaceWith(ok?pill('pill-ok','Approved',r.text):r.status==='unknown'?pill('pill-idle','Check GitLab',r.text):pill('pill-bad','Not approved',r.text));toast(r.text)}).catch(function(){b.replaceWith(pill('pill-idle','Check GitLab'));toast('The connection was lost. Nothing is repeated automatically: check the merge request in GitLab.')}).then(function(){busy--;setTimeout(refresh,1500)})}
