@@ -98,7 +98,7 @@ export const PAGE_CSS = [
   '.mr-facts .fact{grid-template-columns:24px minmax(0,1fr);gap:.15rem .6rem}.mr-facts .fact dt{grid-column:2}.mr-facts .fact dd{grid-column:2}.mr-facts .wic{grid-row:span 2}',
   '.actions{position:sticky;bottom:0;margin:1rem -1rem -1.25rem;padding:.85rem 1rem calc(.85rem + env(safe-area-inset-bottom,0px));background:var(--panel);border-top:1px solid var(--line)}.actions form>p{margin:.2rem 0 .6rem}',
   '.brand .sep,.brand .kicker{display:none}.brand .word{white-space:nowrap}.btn{width:100%}.links .btn{flex:1 1 12rem}.batch-bar{margin:1rem -1rem -1.25rem;padding-inline:1rem;border-radius:0}.batch-bar .btn{justify-self:stretch}.header-account .account-name{display:none}.foot{padding:0 1rem}}',
-  '@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}.hero path{stroke-dashoffset:0}}',
+  '@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-delay:0s!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}.hero path{stroke-dashoffset:0}}',
 ].join('');
 
 const SVG = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${d}</svg>`;
