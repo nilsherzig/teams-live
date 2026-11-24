@@ -1975,7 +1975,7 @@ export class ApproveServer {
       }
     }
     const refresh = await this.refresh(record);
-    return { code: 200, title: 'Approved', body: `${summary}<p>Approved in GitLab as your account.</p><p class="note">${escapeHtml(refresh)}</p>${this.followLinks(record)}` };
+    return { code: 200, title: 'Approved', body: `${summary}<p>Approved in GitLab as your account.</p><p class="note">${escapeHtml(refresh)}</p>` };
   }
 
   async sendApproval(record, result, { ip = '', signedIn = null } = {}) {

@@ -16,6 +16,7 @@ async function withFlow({ oauth = { clientId: 'cid', clientSecret: 'sec', allowe
   const approvals = [];
   const gitlab = {
     host: GL,
+    mrLink: (project, iid) => `https://${GL}/${project}/-/merge_requests/${iid}`,
     mr: { state: 'opened', draft: false, sha: SHA, title: 'Example change', author: { username: 'author' } },
     async getCurrentUser() {
       return { id: 1, username: 'owner' };
@@ -124,6 +125,7 @@ test('sign-in runs the authorization code flow with PKCE and then offers the app
     const csrf = /name="csrf" value="([^"]+)"/.exec(page)[1];
     const res = await fetch(`${ctx.base}/approve/confirm`, { method: 'POST', headers: { ...FORM, Origin: ORIGIN, Cookie: ctx.cookie }, body: new URLSearchParams({ csrf, user: '9', cred: 'oauth' }).toString() });
     assert.equal(res.status, 200);
+    assert.equal(((await res.text()).match(/>View merge request in GitLab<\/a>/g) || []).length, 1);
     assert.equal(ctx.approvals.length, 1);
     assert.equal(ctx.approvals[0].options.headers.Authorization, 'Bearer tok');
     assert.deepEqual(JSON.parse(ctx.approvals[0].options.body), { sha: SHA });
