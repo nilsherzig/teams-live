@@ -8,7 +8,7 @@ import { GitLabClient } from '../src/gitlab.mjs';
 const HOST = 'git.example.com';
 const json = (status, body = {}) => new Response(JSON.stringify(body), { status });
 
-async function statusOf(state, { approvalsStatus = 200 } = {}) {
+async function statusOf(state, { approvalsStatus = 200, approvals = null } = {}) {
   const original = globalThis.fetch;
   const paths = [];
   globalThis.fetch = async (url) => {
@@ -17,7 +17,7 @@ async function statusOf(state, { approvalsStatus = 200 } = {}) {
     paths.push(path);
     if (path.endsWith('/approvals')) {
       return approvalsStatus === 200
-        ? json(200, { approved: true, approvals_required: 1, approvals_left: 0, approved_by: [{ user: { name: 'Bob Example', username: 'bob' } }] })
+        ? json(200, approvals || { approved: true, approvals_required: 1, approvals_left: 0, approved_by: [{ user: { name: 'Bob Example', username: 'bob' } }] })
         : json(approvalsStatus, {});
     }
     if (path.endsWith('/pipelines')) return json(200, []);
@@ -49,4 +49,12 @@ test('a closed merge request does the same, and a failed approvals lookup stays 
   assert.equal(failed.result.status, 'merged');
   assert.equal(failed.result.approvalKnown, false);
   assert.deepEqual(failed.result.approvedBy, []);
+});
+
+test('without approval rules an open merge request nobody approved is pending, though GitLab says approved', async () => {
+  // A push resets the approvals; a project without rules still reports approved: true with no approvers.
+  const { result } = await statusOf('opened', { approvals: { approved: true, approvals_required: 0, approvals_left: 0, approved_by: [] } });
+  assert.equal(result.approved, false);
+  assert.equal(result.status, 'pending');
+  assert.deepEqual(result.approvedBy, []);
 });

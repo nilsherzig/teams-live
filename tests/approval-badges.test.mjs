@@ -113,6 +113,11 @@ test('getApprovalSummary: counts next to the approvers, unknown when the lookup 
   assert.equal(none.approved, true);
   assert.equal(none.approvalsRequired, null);
 
+  // required=0 and nobody approved (a push reset the approvals): GitLab still says approved, the card must not.
+  client.getApprovals = async () => ({ approved: true, approvals_required: 0, approvals_left: 0, approved_by: [] });
+  const reset = await client.getApprovalSummary('g/p', 1);
+  assert.equal(reset.approved, false);
+
   client.getApprovals = async () => {
     throw new Error('boom');
   };
