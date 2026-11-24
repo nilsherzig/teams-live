@@ -371,3 +371,11 @@ test('GitLab descriptions: Markdown becomes HTML, Renovate HTML is dropped, link
   assert.match(html, /<pre>&lt;script&gt;no&lt;\/script&gt;<\/pre>/);
   assert.ok(!/hidden|<img|<details|onerror|href="javascript/i.test(html));
 });
+
+test('without approval rules a merge request is approved only once someone approved it (as on the cards)', () => {
+  const ctx = { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' };
+  const none = normalizeMr(node({ approved: true, approvalsRequired: 0, approvalsLeft: 0, approvedBy: { nodes: [] } }));
+  assert.match(mrsSection({ items: [none] }, ctx), /alt="Not approved yet"/, 'GitLab says approved, but nobody did (approval reset by a push)');
+  const one = normalizeMr(node({ approved: true, approvalsRequired: 0, approvalsLeft: 0, approvedBy: { nodes: [{ username: 'carol', name: 'Carol' }] } }));
+  assert.match(mrsSection({ items: [one] }, ctx), /alt="Approved \(by Carol\)"/);
+});

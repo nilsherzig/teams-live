@@ -235,7 +235,8 @@ function mrRow(mr, { username, host, avatars, now }) {
   const required = mr.required ?? 0;
   // The approval badge of the Teams card ("Approved", "1 of 2 Approvals", "Not approved yet"); who approved in its tooltip.
   const names = mr.approvedBy.map((u) => (u.username === me ? 'you' : u.name));
-  const state = mr.approved || (required > 0 && given >= required) ? true : false;
+  // Without approval rules GitLab calls every merge request approved; like the cards, it then takes one approver.
+  const state = required > 0 ? mr.approved || given >= required : given > 0;
   const badgeLabel = `${state ? 'Approved' : required > 0 ? `${given} of ${required} approvals` : 'Not approved yet'}${names.length ? ` (by ${names.join(', ')})` : ''}`;
   const badge = img(approvalBadge({ approved: state, approvalsGiven: given, approvalsRequired: required }), badgeLabel, 18, 'appr-badge');
   const action = approveButton(mr, username);
@@ -597,7 +598,7 @@ export function mrDetail({ mr, approvals, jobs }, ctx, approve = '') {
   const approvedBy = (approvals?.approved_by || []).map((a) => a.user).filter(Boolean);
   const required = Number(approvals?.approvals_required) || 0;
   const given = approvedBy.length;
-  const ok = approvals?.approved === true || (required > 0 && given >= required);
+  const ok = required > 0 ? approvals?.approved === true || given >= required : given > 0;
   const badge = img(approvalBadge({ approved: ok, approvalsGiven: given, approvalsRequired: required }), ok ? 'Approved' : `${given} of ${required} approvals`, 18, 'appr-badge');
   const pipe = mr.head_pipeline;
   const pipeUrl = safeLink(pipe?.web_url, host);
