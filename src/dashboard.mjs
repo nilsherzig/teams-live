@@ -161,6 +161,8 @@ export const ICONS = {
   thumb: svg('<path d="M7 11v9H4v-9zM7 11l4-8a2 2 0 0 1 2 2v4h5.5a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.3 20H7"/>'),
   video: svg('<rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3"/>'),
   ext: svg('<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>'),
+  collapse: svg('<rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16M15.5 10l-2 2 2 2"/>'),
+  signout: svg('<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/>'),
   phone: svg('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a1 1 0 0 1-1 1A16 16 0 0 1 4 5a1 1 0 0 1 1-1z"/>'),
 };
 
@@ -363,17 +365,17 @@ const SECTIONS = [
 ];
 
 /** The body of the dashboard page (inside the common header and footer). */
-export function dashboardBody({ data, ctx, csrf, filter, updated, signOutAction }) {
+export function dashboardBody({ data, ctx, csrf, filter, updated }) {
   const s = renderSections(data, ctx);
   const counts = navCounts(data, ctx);
   const badge = (k) => (counts[k] ? `<span class="badge${k === 'alerts' ? ' badge-bad' : ''}" data-count="${k}">${counts[k]}</span>` : `<span class="badge" data-count="${k}" hidden></span>`);
-  const nav = (short) => NAV.map(([k, label, brief]) => `<button type="button" data-view-to="${k}"${short && brief !== label ? ` aria-label="${label}"` : ''}>${ICONS[k]}<span>${short ? brief : label}</span>${k === 'mrs' || k === 'alerts' ? badge(k) : ''}</button>`).join('');
+  const nav = (short) => NAV.map(([k, label, brief]) => `<button type="button" data-view-to="${k}"${short && brief !== label ? ` aria-label="${label}"` : ''}${short ? '' : ` title="${label}"`}>${ICONS[k]}<span>${short ? brief : label}</span>${k === 'mrs' || k === 'alerts' ? badge(k) : ''}</button>`).join('');
   const box = ([k, title, source]) => `<section class="box box-${k}" data-sec="${k}" aria-labelledby="h-${k}"><header><h2 id="h-${k}">${ICONS[k]}${title}</h2><small>${source}</small></header><div class="box-body" data-sec-body="${k}">${s[k]}</div></section>`;
   const main = SECTIONS.slice(0, 2).map(box).join('');
   const side = SECTIONS.slice(2).map(box).join('');
   return (
     `<div class="dash" id="dash" data-view="overview" data-mrf="${escapeHtml(filter)}">` +
-    `<nav class="side" aria-label="Dashboard">${nav(false)}<form method="post" action="${escapeHtml(signOutAction)}" class="signout"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}" data-csrf><button type="submit">Sign out</button></form></nav>` +
+    `<nav class="side" aria-label="Dashboard">${nav(false)}<button type="button" class="collapse" data-collapse aria-expanded="true" title="Collapse sidebar">${ICONS.collapse}<span>Collapse</span></button></nav>` +
     `<div class="dmain"><div class="hello"><h1>${escapeHtml(greeting(ctx))}</h1><small><span id="dash-updated">Updated ${escapeHtml(updated)}</span> · refreshes every minute</small></div>` +
     `<div class="stats" data-sec-body="stats">${s.stats}</div>` +
     `<div class="grid"><div class="col-main">${main}</div><div class="col-side">${side}</div></div></div>` +
@@ -391,13 +393,16 @@ function greeting(ctx) {
 
 export const DASHBOARD_CSS = [
   '.shell.dashboard{max-width:80rem;padding:0 max(1rem,env(safe-area-inset-right,0px)) 3rem max(1rem,env(safe-area-inset-left,0px))}',
-  '.dash{display:grid;grid-template-columns:13.5rem minmax(0,1fr);gap:0;min-height:70vh}',
+  '.dash{display:grid;grid-template-columns:13.5rem minmax(0,1fr);gap:0;min-height:70vh;transition:grid-template-columns .3s var(--ease)}',
+  '.side span{white-space:nowrap;overflow:hidden;transition:opacity .2s}.side button{position:relative;min-height:36px}.collapse{color:var(--muted);font-size:.85rem}.collapse .di{transition:transform .3s var(--ease)}',
+  '.dash.collapsed{grid-template-columns:3.5rem minmax(0,1fr)}.dash.collapsed .side span{opacity:0;width:0}.dash.collapsed .side button{justify-content:center;gap:0;padding-inline:0}.dash.collapsed .collapse .di{transform:rotate(180deg)}',
+  '.dash.collapsed .side .badge{position:absolute;top:1px;right:2px;margin:0;font-size:.6rem;padding:0 .3rem;opacity:1;width:auto}',
   '.dash .di{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}.dash .di.spin{animation:tl-spin 1.6s linear infinite}',
   '.side{position:sticky;top:3.5rem;align-self:start;display:grid;gap:.15rem;padding:.25rem 1rem 1rem 0}',
   '.side button,.tabbar button{display:flex;align-items:center;gap:.6rem;border:0;background:none;font:inherit;color:var(--text);padding:.45rem .6rem;border-radius:6px;cursor:pointer;text-align:left;transition:background .15s}',
   '.side button:hover{background:var(--subtle)}.side button[aria-current=true]{background:var(--panel);box-shadow:inset 0 0 0 1px var(--line);font-weight:600}',
   '.badge{margin-left:auto;background:var(--run-bg);color:var(--run);border-radius:999px;font-size:.72rem;padding:0 .45rem;font-weight:700;font-variant-numeric:tabular-nums}.badge-bad{background:var(--closed-bg);color:var(--closed)}.badge[hidden]{display:none}',
-  '.signout{margin-top:1rem;border-top:1px solid var(--line);padding-top:.5rem}.signout button{color:var(--muted);font-size:.85rem}',
+  '.collapse{margin-top:1rem;border-top:1px solid var(--line)!important;border-radius:0 0 6px 6px!important;padding-top:.6rem!important}',
   '.dmain{padding:0 0 2rem;display:grid;gap:1.1rem;align-content:start;min-width:0}',
   '.hello{display:flex;flex-wrap:wrap;gap:.25rem 1rem;align-items:baseline}.hello h1{margin:0;flex:1;min-width:12rem}.hello small{color:var(--muted)}',
   '.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.75rem}',
@@ -463,8 +468,11 @@ export function dashboardScript(dashPath) {
 function mark(){var v=d.getAttribute('data-view'),f=d.getAttribute('data-mrf');document.querySelectorAll('[data-view-to]').forEach(function(b){if(b.closest('.side,.tabbar'))b.setAttribute('aria-current',String(b.getAttribute('data-view-to')===v))});document.querySelectorAll('[data-mrf-to]').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-mrf-to')===f))})}
 function toast(t){var r=document.getElementById('toasts');if(!r||!t)return;var e=document.createElement('div');e.className='toast';e.textContent=t;r.appendChild(e);setTimeout(function(){e.classList.add('out');setTimeout(function(){e.remove()},320)},3600)}
 function view(v){d.setAttribute('data-view',v);mark();try{sessionStorage.setItem('tl-view',v)}catch(e){}window.scrollTo({top:0,behavior:'smooth'})}
-try{var sv=sessionStorage.getItem('tl-view'),sf=sessionStorage.getItem('tl-mrf');if(sv)d.setAttribute('data-view',sv);if(sf)d.setAttribute('data-mrf',sf)}catch(e){}mark();
-document.addEventListener('click',function(e){var v=e.target.closest('[data-view-to]');if(v){view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
+function collapse(on){d.classList.toggle('collapsed',on);var c=document.querySelector('[data-collapse]');if(c){c.setAttribute('aria-expanded',String(!on));c.title=on?'Expand sidebar':'Collapse sidebar'}try{localStorage.setItem('tl-side',on?'1':'0')}catch(e){}}
+try{if(localStorage.getItem('tl-side')==='1'){d.style.transition='none';collapse(true);requestAnimationFrame(function(){requestAnimationFrame(function(){d.style.transition=''})})}}catch(e){}
+try{var sv=sessionStorage.getItem('tl-view'),sf=sessionStorage.getItem('tl-mrf');if(sv)d.setAttribute('data-view',sv);if(sf)d.setAttribute('data-mrf',sf)}catch(e){}if(location.hash==='#overview'){d.setAttribute('data-view','overview');try{history.replaceState(null,'',location.pathname)}catch(e){}}mark();
+document.addEventListener('click',function(e){document.querySelectorAll('[data-account-menu][open]').forEach(function(m){if(!m.contains(e.target))m.removeAttribute('open')})});document.addEventListener('keydown',function(e){if(e.key==='Escape')document.querySelectorAll('[data-account-menu][open]').forEach(function(m){m.removeAttribute('open')})});
+document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
 function pill(cls,text,title){var s=document.createElement('span');s.className='pill '+cls;s.textContent=text;if(title)s.title=title;return s}
 function approve(b){if(b.disabled)return;b.disabled=true;b.setAttribute('data-busy','');busy++;var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('project',b.getAttribute('data-project'));body.set('iid',b.getAttribute('data-iid'));body.set('sha',b.getAttribute('data-sha'));
 fetch(B+'/approve',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:body.toString()}).then(function(r){return r.json().catch(function(){return {status:'unknown',text:'The answer could not be read. Check the merge request in GitLab.'}})}).then(function(r){var ok=r.status==='approved'||r.status==='already';b.replaceWith(ok?pill('pill-ok','Approved',r.text):r.status==='unknown'?pill('pill-idle','Check GitLab',r.text):pill('pill-bad','Not approved',r.text));toast(r.text)}).catch(function(){b.replaceWith(pill('pill-idle','Check GitLab'));toast('The connection was lost. Nothing is repeated automatically: check the merge request in GitLab.')}).then(function(){busy--;setTimeout(refresh,1500)})}

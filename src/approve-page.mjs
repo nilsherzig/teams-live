@@ -25,11 +25,17 @@ export const PAGE_CSS = [
   'a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:4px}',
   // the top bar: the tanuki, the product, what this page is for, and who is signed in
   '.brand{position:sticky;top:0;z-index:10;margin:0 0 1.5rem;padding:.55rem max(1rem,env(safe-area-inset-right,0px)) .55rem max(1rem,env(safe-area-inset-left,0px));background:var(--bar);color:var(--bar-text);font-size:.9rem}.brand .in{display:flex;align-items:center;gap:.5rem;max-width:44rem;margin:0 auto;min-height:32px}.brand.wide .in{max-width:58rem}.brand.dashboard .in{max-width:78rem}',
+  '.brand .home{display:inline-flex;align-items:center;gap:.5rem;color:var(--bar-text);border-radius:6px;padding:.15rem .35rem;margin:-.15rem -.35rem;transition:background .15s}.brand .home:hover{background:rgba(255,255,255,.1);text-decoration:none}.brand .home svg{transition:transform .3s var(--spring)}.brand .home:hover svg{transform:rotate(-8deg) scale(1.08)}',
   '.brand svg{flex:none}.brand .word{font-weight:700}.brand .sep{opacity:.45}.brand .kicker{opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}.brand a.word{color:var(--bar-text)}',
   '.live-dot{display:inline-flex;align-items:center;gap:.4rem;font-size:.78rem;opacity:.85;margin-left:auto;white-space:nowrap}.live-dot i{width:7px;height:7px;border-radius:50%;background:#52b87a;position:relative}.live-dot i::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:2px solid #52b87a;animation:tl-ping 2s var(--ease) infinite}',
   '@keyframes tl-ping{0%{transform:scale(.4);opacity:.9}100%{transform:scale(1.4);opacity:0}}',
   '.dash-link{margin-left:auto;color:var(--bar-text);font-weight:600;padding:.25rem .65rem;border-radius:6px;transition:background .15s}.dash-link:hover{background:rgba(255,255,255,.12);color:var(--bar-text);text-decoration:none}.live-dot+.dash-link,.dash-link+.header-account{margin-left:.5rem}',
-  '.header-account{margin-left:auto;display:inline-flex;align-items:center;gap:.5rem;color:var(--bar-text);font-weight:600}.live-dot+.header-account{margin-left:.75rem}.header-account:hover{color:var(--bar-text);text-decoration:none}.account-avatar{width:32px;height:32px;border-radius:50%;object-fit:cover;box-shadow:0 0 0 2px rgba(255,255,255,.2)}',
+  '.header-account{margin-left:auto;display:inline-flex;align-items:center;gap:.5rem;color:var(--bar-text);font-weight:600}.live-dot+.header-account{margin-left:.75rem}.account-avatar{width:32px;height:32px;border-radius:50%;object-fit:cover;box-shadow:0 0 0 2px rgba(255,255,255,.2);display:block;transition:box-shadow .15s}',
+  '.header-account{position:relative}.header-account summary{list-style:none;cursor:pointer;border-radius:50%}.header-account summary::-webkit-details-marker{display:none}.header-account summary:hover .account-avatar,.header-account[open] .account-avatar{box-shadow:0 0 0 2px var(--btn)}',
+  '.account-menu{position:absolute;right:0;top:calc(100% + 8px);z-index:20;min-width:14rem;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow-lg);padding:.35rem;font-weight:400;transform-origin:top right;animation:tl-menu .16s var(--ease)}',
+  '@keyframes tl-menu{from{opacity:0;transform:scale(.96) translateY(-4px)}to{opacity:1;transform:none}}',
+  '.menu-who{display:grid;padding:.45rem .6rem .55rem;border-bottom:1px solid var(--line);margin-bottom:.3rem}.menu-who span{color:var(--muted);font-size:.85rem}',
+  '.menu-item{display:block;width:100%;text-align:left;font:inherit;color:var(--text);background:none;border:0;border-radius:6px;padding:.45rem .6rem;cursor:pointer}.menu-item:hover{background:var(--subtle);text-decoration:none}.menu-sep{border-top:1px solid var(--line);margin:.3rem 0}.account-menu form{margin:0}',
   '.shell{max-width:46rem;margin:0 auto;padding:0 max(1rem,env(safe-area-inset-right,0px)) 3rem max(1rem,env(safe-area-inset-left,0px))}.shell.wide{max-width:60rem}',
   '.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:1.25rem 1.35rem 1.35rem;box-shadow:var(--shadow);animation:tl-rise .45s var(--ease) both}',
   '@keyframes tl-rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}',
@@ -126,14 +132,23 @@ export function avatarImg(name, avatars = {}) {
   return picture(avatars?.[name] || fallbackAvatar(name), name, 'av', 20);
 }
 
-/** A session-local account link for the common page header. */
-export function headerAccount(user, host, avatar = '') {
+/**
+ * The signed-in account in the page header: the picture, which opens a small menu with the name, the GitLab profile
+ * and whatever the page adds (`items`: ready HTML, such as the dashboard link or the sign-out form). A native
+ * <details> element, so it works without a script; the dashboard script also closes it on an outside click.
+ */
+export function headerAccount(user, host, avatar = '', items = '') {
   if (!user?.username) return '';
   const name = user.name || user.username;
   const photo = picture(avatar || fallbackAvatar(name), '', 'account-avatar', 32);
   const url = safeLink(`https://${host}/${encodeURIComponent(user.username)}`, host);
-  const content = `<span class="account-name">${escapeHtml(user.username)}</span>${photo}`;
-  return url ? `<a class="header-account" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" aria-label="GitLab account ${escapeHtml(user.username)}">${content}</a>` : `<span class="header-account">${content}</span>`;
+  const profile = url
+    ? `<a class="menu-item" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" aria-label="GitLab account ${escapeHtml(user.username)}">Your GitLab profile</a>`
+    : '';
+  return (
+    `<details class="header-account" data-account-menu><summary title="${escapeHtml(name)}" aria-label="Account menu of ${escapeHtml(user.username)}">${photo}</summary>` +
+    `<div class="account-menu" role="menu"><div class="menu-who"><b>${escapeHtml(name)}</b><span>@${escapeHtml(user.username)}</span></div>${profile}${items}</div></details>`
+  );
 }
 
 /** http(s) link on the GitLab host only: anything else (another host, a javascript: URL) yields ''. */

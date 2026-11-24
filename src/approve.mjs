@@ -828,13 +828,13 @@ export class ApproveServer {
   }
 
   /** The HTML document every page shares: head, top bar with the signed-in account, the shell and the footer. */
-  documentHtml({ title, kicker, footer, live = false, shell = 'shell', main, css = '', dashLink = true }) {
+  documentHtml({ title, kicker, footer, live = false, shell = 'shell', main, css = '', dashLink = true, menu = '' }) {
     const user = this.requestContext.getStore()?.user;
     let avatar = '';
     try { if (user) avatar = this.avatarOf?.(user.name || user.username) || ''; } catch { /* Fall back to initials. */ }
-    const account = user ? headerAccount(user, this.gitlabHost, avatar) : '';
-    const dash = this.dashboard && user && dashLink ? `<a class="dash-link" href="${escapeHtml(this.dashPath)}">Dashboard</a>` : '';
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}${css}</style></head><body><header class="${shell.replace(/\bshell\b/, 'brand')}"><div class="in">${TANUKI}<span class="word">teams-live</span><span class="sep" aria-hidden="true">/</span><span class="kicker">${kicker}</span>${live ? '<span class="live-dot" title="This page keeps itself up to date"><i></i>Live</span>' : ''}${dash}${account}</div></header><div class="${shell}">${main}<footer class="foot">Served by your <a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">teams-live</a> instance. Nothing here is GitLab itself; ${footer}</footer></div></body></html>`;
+    const items = `${this.dashboard && dashLink ? `<a class="menu-item" href="${escapeHtml(this.dashPath)}">Dashboard</a>` : ''}${menu}`;
+    const account = user ? headerAccount(user, this.gitlabHost, avatar, items) : '';
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}${css}</style></head><body><header class="${shell.replace(/\bshell\b/, 'brand')}"><div class="in">${this.dashboard ? `<a class="home" href="${escapeHtml(`${this.dashPath}#overview`)}" data-home aria-label="teams-live dashboard">${TANUKI}<span class="word">teams-live</span></a>` : `${TANUKI}<span class="word">teams-live</span>`}<span class="sep" aria-hidden="true">/</span><span class="kicker">${kicker}</span>${live ? '<span class="live-dot" title="This page keeps itself up to date"><i></i>Live</span>' : ''}${account}</div></header><div class="${shell}">${main}<footer class="foot">Served by your <a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">teams-live</a> instance. Nothing here is GitLab itself; ${footer}</footer></div></body></html>`;
   }
 
   /** The static script that exchanges the fragment token for a session. */
@@ -1620,8 +1620,8 @@ export class ApproveServer {
     const data = await this.dashboardData(session);
     const ctx = this.dashboardCtx(session, data);
     const csrf = this.csrf.issue(session.sid, 'dashboard', `who=${session.user.username}`);
-    const body = dashboardBody({ data, ctx, csrf, filter: defaultFilter(data.mrs.items || [], session.user.username), updated: this.dashboardUpdated(data.at), signOutAction: `${this.origin}${this.dashPath}/signout` });
-    const html = this.documentHtml({ title: 'Dashboard', kicker: 'Dashboard', footer: 'merge requests are read as you, everything else by the bot.', shell: 'shell dashboard', main: `<main>${body}<script>${this.dashboardScript}</script></main>`, css: DASHBOARD_CSS, dashLink: false });
+    const body = dashboardBody({ data, ctx, csrf, filter: defaultFilter(data.mrs.items || [], session.user.username), updated: this.dashboardUpdated(data.at) });
+    const html = this.documentHtml({ title: 'Dashboard', kicker: 'Dashboard', footer: 'merge requests are read as you, everything else by the bot.', shell: 'shell dashboard', main: `<main>${body}<script>${this.dashboardScript}</script></main>`, css: DASHBOARD_CSS, dashLink: false, menu: `<div class="menu-sep"></div><form method="post" action="${escapeHtml(`${this.origin}${this.dashPath}/signout`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}" data-csrf><button class="menu-item" type="submit">Sign out</button></form>` });
     return this.send(res, 200, html, { script: 'dashboard' });
   }
 
