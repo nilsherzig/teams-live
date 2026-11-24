@@ -348,8 +348,10 @@ and approvers, pipeline and auto-merge state; the header shows the number
 merged. The card updates as the merge requests change. Its **Approve all**
 action opens a confirmation page
 which checks each eligible request separately and reports the result for each.
-**Open all** opens a page with the links and a button to open them in tabs;
-the browser may require pop-ups to be allowed. Both actions use the optional
+**Open all** opens a separate page that immediately attempts to open the links
+in tabs, then closes itself when the browser permits it. If the browser blocks
+pop-ups, the page retains the unopened links and a retry button. Both actions
+use the optional
 approval server; **Approve all** also requires GitLab OAuth. Each action accepts
 at most 20 requests. For large groups, the card falls back to a lighter
 representation or text to fit Teams' limit; the text fallback has no buttons.

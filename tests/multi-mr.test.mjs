@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import { buildMultiMrCard } from '../src/card-multi-mr.mjs';
 import { ApproveServer } from '../src/approve.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
@@ -78,20 +79,43 @@ test('bulk confirmation rechecks heads and approves only the still-valid item', 
   } finally { globalThis.fetch = originalFetch; await server.stop(); }
 });
 
-test('open-all page offers each link and a user-initiated button', async () => {
+test('open-all has its own route and retries only links blocked on page load', async () => {
   const gitlab = { host: 'gitlab.example.com', mrLink: (project, iid) => `https://gitlab.example.com/${project}/-/merge_requests/${iid}` };
   const server = new ApproveServer({ gitlab, baseUrl: `${origin}/approve`, port: 0 });
   await server.start();
   try {
-    const token = server.batchLinkFor(items, 'open').split('#')[1];
+    const link = server.batchLinkFor(items, 'open');
+    assert.match(link, /\/approve\/open#/);
+    const token = link.split('#')[1];
     const base = `http://127.0.0.1:${server.port}/approve`;
+    const entry = await fetch(`${base}/open`);
+    assert.match(await entry.text(), /\/open\/view/);
     const boot = await fetch(`${base}/session`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: origin }, body: new URLSearchParams({ token }) });
     const cookie = /tl_approve=[^;]+/.exec(boot.headers.get('set-cookie'))[0];
-    const response = await fetch(`${base}/confirm`, { headers: { Cookie: cookie } });
+    const response = await fetch(`${base}/open/view`, { headers: { Cookie: cookie } });
     const body = await response.text();
     assert.match(body, /id="open-all"/);
     assert.equal((body.match(/data-mr-link href/g) || []).length, 2);
     assert.match(response.headers.get('content-security-policy'), /script-src 'sha256-/);
+    const script = /<script>([\s\S]*?)<\/script>/.exec(body)[1];
+    const opened = [];
+    const anchors = ['https://gitlab.example.com/1', 'https://gitlab.example.com/2'].map((href) => ({ href, marked: false, setAttribute() { this.marked = true; } }));
+    const button = { hidden: false, addEventListener(_event, handler) { this.click = handler; } };
+    const note = { textContent: '' };
+    let allow = false;
+    let closed = false;
+    const window = { open() { if (!allow && opened.length) return null; return { location: { replace(url) { opened.push(url); } } }; }, close() { closed = true; } };
+    const document = { getElementById(id) { return id === 'open-all' ? button : note; }, querySelectorAll() { return anchors.filter((a) => !a.marked); } };
+    vm.runInNewContext(script, { window, document });
+    assert.deepEqual(opened, [anchors[0].href]);
+    assert.equal(closed, false, 'blocked tabs keep the fallback page open');
+    assert.match(note.textContent, /Allow pop-ups/);
+    allow = true;
+    button.click();
+    assert.deepEqual(opened, anchors.map((a) => a.href), 'retry does not reopen successful tabs');
+    assert.equal(closed, true);
+    assert.equal(button.hidden, true);
+    assert.equal((await fetch(`${base}/confirm`, { headers: { Cookie: cookie } })).status, 200, 'old open-all links continue to work');
   } finally { await server.stop(); }
 });
 

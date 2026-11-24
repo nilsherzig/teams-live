@@ -661,10 +661,12 @@ export class ApproveServer {
     this.server = null;
     this.script = this.bootstrapScript();
     this.scriptHash = `sha256-${crypto.createHash('sha256').update(this.script).digest('base64')}`;
+    this.openBootstrapScript = this.bootstrapScript('/open/view');
+    this.openBootstrapHash = `sha256-${crypto.createHash('sha256').update(this.openBootstrapScript).digest('base64')}`;
     // The script that keeps an open page current (the state endpoint is `<base>/state`).
     this.liveScript = liveScript(`${this.basePath}/state`);
     this.liveHash = `sha256-${crypto.createHash('sha256').update(this.liveScript).digest('base64')}`;
-    this.openAllScript = `document.getElementById('open-all').addEventListener('click',function(){document.querySelectorAll('[data-mr-link]').forEach(function(a){window.open(a.href,'_blank','noopener,noreferrer')});document.getElementById('open-note').textContent='If tabs did not open, allow pop-ups or use the links below.'})`;
+    this.openAllScript = `(function(){var button=document.getElementById('open-all'),note=document.getElementById('open-note');function openPending(){var pending=document.querySelectorAll('[data-mr-link]:not([data-opened])');pending.forEach(function(a){var w=window.open('','_blank');if(!w)return;try{w.opener=null;w.location.replace(a.href);a.setAttribute('data-opened','true')}catch(e){try{w.close()}catch(ignore){}}});if(document.querySelectorAll('[data-mr-link]:not([data-opened])').length){note.textContent='Some tabs could not be opened. Allow pop-ups and retry, or open the remaining links below.'}else{note.textContent='All tabs opened. You can close this tab.';button.hidden=true;window.close()}}button.addEventListener('click',openPending);openPending()})();`;
     this.openAllHash = `sha256-${crypto.createHash('sha256').update(this.openAllScript).digest('base64')}`;
     // Links on the pages point at the GitLab host only.
     this.gitlabHost = typeof gitlab.host === 'string' ? gitlab.host : '';
@@ -695,7 +697,7 @@ export class ApproveServer {
 
   batchLinkFor(items, action) {
     const token = this.store.batchLinkFor(items, action === 'open' ? 'batch-open' : 'batch-approve');
-    return token ? `${this.origin}${this.basePath}/#${token}` : null;
+    return token ? `${this.origin}${this.basePath}${action === 'open' ? '/open' : '/'}#${token}` : null;
   }
 
   /**
@@ -770,7 +772,7 @@ export class ApproveServer {
       'Referrer-Policy': 'same-origin',
       'Cross-Origin-Opener-Policy': 'same-origin',
       // img-src data: only: the pictures are embedded (card icons, profile pictures), never fetched.
-      'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'unsafe-inline'; ${script ? `script-src '${script === 'live' ? this.liveHash : script === 'open-all' ? this.openAllHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
+      'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'unsafe-inline'; ${script ? `script-src '${script === 'live' ? this.liveHash : script === 'open-all' ? this.openAllHash : script === 'open-bootstrap' ? this.openBootstrapHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
       ...extra,
     };
   }
@@ -796,9 +798,9 @@ export class ApproveServer {
   }
 
   /** The static script that exchanges the fragment token for a session. */
-  bootstrapScript() {
+  bootstrapScript(destination = '/confirm') {
     const base = JSON.stringify(`${this.basePath}`);
-    return `(function(){var B=${base},m=document.getElementById('msg');function say(t){m.textContent=t}var h=location.hash.replace(/^#/,'');try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}if(!/^[A-Za-z0-9_-]{43}$/.test(h)){say('This link is incomplete. Use the button on the Teams card.');return}fetch(B+'/session',{method:'POST',credentials:'same-origin',cache:'no-store',referrerPolicy:'no-referrer',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'token='+h}).then(function(r){if(r.ok){location.replace(B+'/confirm');return}if(r.status===410){say('This link was already used or the merge request changed. Use the button on the current Teams card.')}else if(r.status===429){say('Too many attempts. Try again in a minute.')}else if(r.status===404){say('This link is unknown or has expired. Use the button on the current Teams card.')}else{say('The link could not be opened. Nothing was changed.')}}).catch(function(){say('The link could not be opened. Nothing was changed.')})})();`;
+    return `(function(){var B=${base},m=document.getElementById('msg');function say(t){m.textContent=t}var h=location.hash.replace(/^#/,'');try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}if(!/^[A-Za-z0-9_-]{43}$/.test(h)){say('This link is incomplete. Use the button on the Teams card.');return}fetch(B+'/session',{method:'POST',credentials:'same-origin',cache:'no-store',referrerPolicy:'no-referrer',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'token='+h}).then(function(r){if(r.ok){location.replace(B+${JSON.stringify(destination)});return}if(r.status===410){say('This link was already used or the merge request changed. Use the button on the current Teams card.')}else if(r.status===429){say('Too many attempts. Try again in a minute.')}else if(r.status===404){say('This link is unknown or has expired. Use the button on the current Teams card.')}else{say('The link could not be opened. Nothing was changed.')}}).catch(function(){say('The link could not be opened. Nothing was changed.')})})();`;
   }
 
   /** Route below the base path ("/", "/session", "/confirm") or null. */
@@ -812,7 +814,7 @@ export class ApproveServer {
     if (this.basePath && (pathname === this.basePath || pathname.startsWith(`${this.basePath}/`))) {
       pathname = pathname.slice(this.basePath.length) || '/';
     }
-    return ['/', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback'].includes(pathname) ? pathname : null;
+    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback'].includes(pathname) ? pathname : null;
   }
 
   readForm(req) {
@@ -929,14 +931,14 @@ export class ApproveServer {
       return;
     }
     const head = method === 'HEAD';
-    if (route === '/') {
+    if (route === '/' || route === '/open') {
       if (method === 'POST') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: 'GET, HEAD' } });
       const body = this.page(
         'Opening link',
         '<p id="msg">Opening the link…</p><noscript><p>JavaScript is required to open this link.</p></noscript>',
-        { script: `<script>${this.script}</script>`, kind: 'generic' },
+        { script: `<script>${route === '/open' ? this.openBootstrapScript : this.script}</script>`, kind: 'generic' },
       );
-      return this.send(res, 200, body, { head, script: true });
+      return this.send(res, 200, body, { head, script: route === '/open' ? 'open-bootstrap' : true });
     }
     if (route === '/session') {
       if (method !== 'POST') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: 'POST' } });
@@ -952,12 +954,18 @@ export class ApproveServer {
       if (method === 'HEAD') return this.send(res, 200, '', { head: true });
       return route === '/oauth/start' ? this.oauthStart(req, res) : this.oauthCallback(req, res);
     }
-    // /confirm
+    // /open/view and /confirm require a session created from the capability.
     if (method === 'HEAD') return this.send(res, 200, '', { head: true });
     const session = this.sessionOf(req);
     if (!session) {
       return this.send(res, 401, this.page('Link not opened', '<p>Open the link from the Teams card again. Nothing was changed.</p>', { tone: 'warn' }));
     }
+    if (route === '/open/view') {
+      if (method !== 'GET') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: 'GET, HEAD' } });
+      if (session.record.action !== 'batch-open') return this.send(res, 404, this.page('Not found', '<p>Nothing here.</p>', { tone: 'warn' }));
+      return this.showBatchOpen(res, session.record);
+    }
+    // Old open-all links still lead here after bootstrap.
     if (session.record.action === 'batch-open') return this.showBatchOpen(res, session.record);
     if (session.record.action === 'batch-approve') return method === 'GET' ? this.showBatchApproval(res, session) : this.approveBatch(req, res, session);
     if (method === 'GET') return this.showConfirmation(res, session);
@@ -1473,7 +1481,7 @@ export class ApproveServer {
       const url = safeLink(this.gitlab.mrLink(item.project, item.iid), this.gitlabHost);
       return url ? `<li><a data-mr-link href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.project)} !${escapeHtml(item.iid)}</a></li>` : '';
     }).join('');
-    const body = `<p>Open the merge requests in separate tabs.</p><button id="open-all" class="btn" type="button">Open all</button><p id="open-note" class="note"></p><ul>${links}</ul><noscript><p>Open the links above individually.</p></noscript>`;
+    const body = `<p>Opening the merge requests in separate tabs.</p><button id="open-all" class="btn" type="button">Open remaining</button><p id="open-note" class="note"></p><ul>${links}</ul><noscript><p>Open the links above individually.</p></noscript>`;
     return this.send(res, 200, this.page('Open merge requests', body, { kind: 'generic', script: `<script>${this.openAllScript}</script>` }), { script: 'open-all' });
   }
 
