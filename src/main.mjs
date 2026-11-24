@@ -298,6 +298,7 @@ async function main() {
           oauth = await ensureOAuthApplication({ gitlab, baseUrl: apCfg.base_url, stateFile: path.join(config.gitlab.state_dir, 'gitlab-oauth.json') });
           log('GitLab OAuth application is ready');
         } catch (err) {
+          if (!configuredOauth) throw new Error(`GitLab OAuth automatic setup failed: ${err.message}`);
           log.warn(`GitLab OAuth automatic setup failed${configuredOauth ? '; using configured credentials' : ''}: ${err.message}`);
         }
       }
