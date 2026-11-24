@@ -27,6 +27,7 @@ test('multi-MR card links titles and references, shows people, merged progress a
 test('bulk confirmation rechecks heads and approves only the still-valid item', async () => {
   const writes = [];
   const heads = { 1: sha, 2: sha };
+  const drafts = { 1: false, 2: false };
   const gitlab = {
     host: 'gitlab.example.com',
     mrLink: (project, iid) => `https://gitlab.example.com/${project}/-/merge_requests/${iid}`,
@@ -52,7 +53,7 @@ test('bulk confirmation rechecks heads and approves only the still-valid item', 
       writes.push({ project: 'group/app', iid, sha: JSON.parse(options.body).sha });
       return Response.json({});
     }
-    return Response.json({ state: 'opened', sha: heads[iid], author: { username: 'author' } });
+    return Response.json({ state: 'opened', sha: heads[iid], draft: drafts[iid], author: { username: 'author' } });
   };
   try {
     const url = server.batchLinkFor(items, 'approve');
@@ -62,6 +63,13 @@ test('bulk confirmation rechecks heads and approves only the still-valid item', 
     const start = await fetch(`${base}/oauth/start`, { headers: { Cookie: cookie }, redirect: 'manual' });
     const state = new URL(start.headers.get('location')).searchParams.get('state');
     await fetch(`${base}/oauth/callback?code=example&state=${state}`);
+    drafts[1] = drafts[2] = true;
+    const blocked = await (await fetch(`${base}/confirm`, { headers: { Cookie: cookie } })).text();
+    assert.match(blocked, /❌ 2 of 2 merge request\(s\) cannot be approved/);
+    assert.equal((blocked.match(/❌ <strong>/g) || []).length, 2);
+    assert.match(blocked, /No approvals were sent/);
+    assert.doesNotMatch(blocked, /<button class="btn" type="submit">/);
+    drafts[1] = drafts[2] = false;
     const html = await (await fetch(`${base}/confirm`, { headers: { Cookie: cookie } })).text();
     assert.match(html, /Approve 2 eligible/);
     const fields = Object.fromEntries([...html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map((m) => [m[1], m[2]]));
@@ -75,6 +83,9 @@ test('bulk confirmation rechecks heads and approves only the still-valid item', 
     assert.equal(response.status, 200);
     assert.deepEqual(writes, [{ project: 'group/app', iid: '1', sha }]);
     assert.match(result, /merge request changed/i);
+    assert.match(result, /❌ 1 of 2 merge request\(s\) were not confirmed as approved/);
+    assert.match(result, /✅ <strong>group\/app !1<\/strong>: Approved/);
+    assert.match(result, /❌ <strong>group\/app !2<\/strong>:/);
     assert.equal(server.store.byId(newer.record.id).status, 'open', 'an old batch cannot stale the new card link');
   } finally { globalThis.fetch = originalFetch; await server.stop(); }
 });

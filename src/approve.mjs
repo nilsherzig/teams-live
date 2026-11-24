@@ -1513,13 +1513,15 @@ export class ApproveServer {
     if (!session.accessToken) return this.signInPage(res);
     const items = await this.batchPreflight(session.record, session);
     const ready = items.filter((item) => item.status === 'ready');
+    const blocked = items.filter((item) => item.status !== 'ready' && item.status !== 'already');
     const actors = ready.map(({ record, actor }) => ({ id: record.id, user: actor.user, cred: actor.cred }));
     const encoded = Buffer.from(JSON.stringify(actors)).toString('base64url');
     const bind = this.bindOf({ user: 'batch', cred: encoded }, session.user);
     const csrf = this.csrf.issue(session.sid, session.record.id, bind);
-    const rows = items.map(({ item, result, status, reason }) => `<li><strong>${escapeHtml(item.project)} !${escapeHtml(item.iid)}</strong>: ${escapeHtml(status === 'ready' ? `Ready · @${result.user?.username || result.user?.name || 'configured account'}` : reason || status)}</li>`).join('');
-    const form = ready.length ? `<form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="actors" value="${escapeHtml(encoded)}"><p>Approve ${ready.length} eligible merge request(s) with the accounts shown above?</p><button class="btn" type="submit">👍 Approve all</button></form>` : '<p>There are no eligible merge requests to approve.</p>';
-    return this.send(res, 200, this.page('Approve merge requests', `<ul>${rows}</ul>${this.whoHtml(session.user)}${form}`, { kind: 'approve' }));
+    const rows = items.map(({ item, result, status, reason }) => `<li>${status === 'ready' ? '⏳' : status === 'already' ? '✅' : '❌'} <strong>${escapeHtml(item.project)} !${escapeHtml(item.iid)}</strong>: ${escapeHtml(status === 'ready' ? `Ready · @${result.user?.username || result.user?.name || 'GitLab user'}` : status === 'already' ? 'Already approved by you' : reason || status)}</li>`).join('');
+    const warning = blocked.length ? `<p class="callout">❌ ${blocked.length} of ${items.length} merge request(s) cannot be approved. No approval has been sent yet.</p>` : '';
+    const form = ready.length ? `<form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="actors" value="${escapeHtml(encoded)}"><p>Approve ${ready.length} eligible merge request(s) with the accounts shown above?</p><button class="btn" type="submit">👍 Approve ${ready.length === items.length ? 'all' : 'eligible'}</button></form>` : '<p>No approvals were sent. There are no eligible merge requests to approve.</p>';
+    return this.send(res, 200, this.page('Approve merge requests', `${warning}<ul>${rows}</ul>${this.whoHtml(session.user)}${form}`, { kind: 'approve', tone: blocked.length ? 'warn' : 'neutral' }));
   }
 
   async approveBatch(req, res, session) {
@@ -1539,23 +1541,26 @@ export class ApproveServer {
       let outcome;
       try { outcome = await this.withLock(key, async () => {
         const checked = await userApprovalPreflight(this.gitlabHost, { ...item, status: 'open' }, session);
-        if (checked.status !== 'ready') return checked.reason || checked.status;
+        if (checked.status === 'already') return { status: 'already', text: 'Already approved by you' };
+        if (checked.status !== 'ready') return { status: 'failed', text: checked.reason || checked.status };
         const link = this.store.linkFor({ ...item, action: 'approve' });
-        if (!link) return 'Already approved or unavailable';
+        if (!link) return { status: 'failed', text: 'Approval link unavailable' };
         const shown = actors.find((a) => a.id === link.record.id);
-        if (!shown) return 'Not included in the confirmation';
+        if (!shown) return { status: 'failed', text: 'Not included in the confirmation' };
         const result = checked;
         const actor = actorOf(result);
-        if (result.status !== 'ready') return result.reason || result.status;
-        if (!actor || actor.user !== shown.user || actor.cred !== shown.cred) return 'Account changed; review again';
+        if (!actor || actor.user !== shown.user || actor.cred !== shown.cred) return { status: 'failed', text: 'Account changed; review again' };
         const denied = this.signInDenied(session.user, result.mr, 'approve');
-        if (denied) return denied;
+        if (denied) return { status: 'failed', text: denied };
         const sent = await this.sendUserApproval(link.record, result, session);
-        return sent.title;
-      }); } catch { outcome = 'Outcome unknown; check this merge request in GitLab before retrying'; }
-      outcomes.push(`<li><strong>${escapeHtml(item.project)} !${escapeHtml(item.iid)}</strong>: ${escapeHtml(outcome)}</li>`);
+        return { status: sent.code === 200 ? 'approved' : sent.title === 'Outcome unknown' ? 'unknown' : 'failed', text: sent.title === 'Outcome unknown' ? 'Outcome unknown; check this merge request in GitLab before retrying' : sent.title };
+      }); } catch { outcome = { status: 'unknown', text: 'Outcome unknown; check this merge request in GitLab before retrying' }; }
+      outcomes.push({ item, ...outcome });
     }
-    return this.send(res, 200, this.page('Approval results', `<ul>${outcomes.join('')}</ul>`, { kind: 'approve' }));
+    const incomplete = outcomes.filter(({ status }) => status === 'failed' || status === 'unknown').length;
+    const heading = incomplete ? `❌ ${incomplete} of ${outcomes.length} merge request(s) were not confirmed as approved.` : '✅ All merge requests are approved.';
+    const rows = outcomes.map(({ item, status, text }) => `<li>${status === 'unknown' ? '⚠️' : status === 'failed' ? '❌' : '✅'} <strong>${escapeHtml(item.project)} !${escapeHtml(item.iid)}</strong>: ${escapeHtml(text)}</li>`).join('');
+    return this.send(res, 200, this.page('Approval results', `<p class="callout">${heading}</p><ul>${rows}</ul>`, { kind: 'approve', tone: incomplete ? 'warn' : 'ok' }));
   }
 
   async showConfirmation(res, session) {
