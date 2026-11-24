@@ -239,7 +239,9 @@ function mrRow(mr, { username, host, avatars, now }) {
   const badgeLabel = `${state ? 'Approved' : required > 0 ? `${given} of ${required} approvals` : 'Not approved yet'}${names.length ? ` (by ${names.join(', ')})` : ''}`;
   const badge = img(approvalBadge({ approved: state, approvalsGiven: given, approvalsRequired: required }), badgeLabel, 18, 'appr-badge');
   const action = approveButton(mr, username);
-  const title = `${mr.draft ? '<span class="pill pill-draft">Draft</span> ' : ''}${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(mr.title)}</a>` : escapeHtml(mr.title)}`;
+  // The title opens the detail panel (the row's click); the small icon next to it goes straight to GitLab.
+  const open = url ? `<a class="mr-ext" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Open in GitLab" aria-label="Open ${escapeHtml(mr.project)}!${escapeHtml(mr.iid)} in GitLab">${ICONS.ext}</a>` : '';
+  const title = `${mr.draft ? '<span class="pill pill-draft">Draft</span>' : ''}<span class="tt">${escapeHtml(mr.title)}</span>${open}`;
   const ref = projectUrl ? `<a class="muted-link" href="${escapeHtml(projectUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(mr.project)}</a>!${escapeHtml(mr.iid)}` : `${escapeHtml(mr.project)}!${escapeHtml(mr.iid)}`;
   return (
     `<li class="mrrow" data-f="${filters.join(' ')}" data-key="${escapeHtml(`${mr.project}!${mr.iid}`)}" data-mr="${escapeHtml(`${mr.project}!${mr.iid}`)}" tabindex="0" aria-label="${escapeHtml(`Details of ${mr.project}!${mr.iid}: ${mr.title}`)}">` +
@@ -816,7 +818,7 @@ export const DASHBOARD_CSS = [
   '.chips .n{font-variant-numeric:tabular-nums;color:var(--muted);font-weight:600}.chips button[aria-pressed=true]{background:var(--text);color:var(--panel);border-color:var(--text)}.chips button[aria-pressed=true] .n{color:inherit;opacity:.75}',
   '.mrlist,.alist,.mlist,.duty,.board ul{list-style:none;margin:0;padding:0}',
   '.mrrow{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:.7rem;align-items:center;padding:.65rem 1rem;border-top:1px solid var(--line);transition:background .15s;animation:tl-rise .3s var(--ease) both}.mrrow:first-child{border-top:0}.mrrow:hover{background:var(--subtle)}',
-  '.mrrow .av{margin:0;width:28px;height:28px}.mrmain{min-width:0}.mrmain .t{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mrmain .t a{color:var(--text)}.mrmain .m{font-size:.8rem;color:var(--muted);display:flex;flex-wrap:wrap;gap:.1rem .4rem}',
+  '.mrrow .av{margin:0;width:28px;height:28px}.mrmain{min-width:0}.mrmain .t{display:flex;align-items:center;gap:.35rem;font-weight:600;min-width:0}.mrmain .t .tt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.mrmain .t .pill{flex:none}.mr-ext{flex:none;display:grid;place-items:center;width:20px;height:20px;border-radius:4px;color:var(--muted);opacity:.55;transition:opacity .15s,background .15s,color .15s}.mr-ext .di{width:13px;height:13px}.mrrow:hover .mr-ext,.mr-ext:focus-visible{opacity:1}.mr-ext:hover{background:var(--subtle);color:var(--accent);text-decoration:none}.mrmain .m{font-size:.8rem;color:var(--muted);display:flex;flex-wrap:wrap;gap:.1rem .4rem}',
   '.muted-link{color:var(--muted)}.mrside{display:flex;gap:.6rem;align-items:center}',
   '.dot{width:20px;height:20px;border-radius:50%;display:grid;place-items:center}.dot .di{width:12px;height:12px;stroke-width:2.6}.dot-ok{background:var(--ok-bg);color:var(--ok)}.dot-bad{background:var(--closed-bg);color:var(--closed)}.dot-run{background:var(--run-bg);color:var(--run)}.dot-idle{background:var(--draft-bg);color:var(--draft)}',
   '.ci-ic{display:block;flex:none}.ci-none{width:16px;height:16px;border-radius:50%;border:1.5px dashed var(--line-strong);flex:none}.appr-badge{display:block;flex:none;height:18px;width:auto}.side [hidden]{display:none!important}',
