@@ -98,18 +98,21 @@ test('gitlab.approve defaults to off, has a 24 h link lifetime and ignores the f
   assert.equal(off.port, 3006);
   assert.equal(off.link_ttl_seconds, 86400);
   assert.equal(off.base_url, '');
+  assert.equal(off.oauth.state_file, '');
   for (const key of ['owner_users', 'user_header', 'proxy_secret', 'proxy_secret_header']) {
     assert.equal(key in off, false, `${key} is gone`);
   }
 
   const on = write({
     enable: true,
+    oauth: { auto_setup: true, state_file: '/var/lib/teams-live/state/oauth-gitlab.json' },
     base_url: 'https://approve.example.com/approve',
     link_ttl_seconds: 3600,
     owner_users: ['alice'],
     proxy_secret_file: '/nonexistent',
   });
   assert.equal(on.enable, true);
+  assert.equal(on.oauth.state_file, '/var/lib/teams-live/state/oauth-gitlab.json');
   assert.equal(on.base_url, 'https://approve.example.com/approve');
   assert.equal(on.link_ttl_seconds, 3600);
   assert.equal('owner_users' in on, false, 'former keys are not carried');

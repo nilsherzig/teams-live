@@ -493,6 +493,7 @@ authentication layer. The proxy may keep the path prefix or strip it.
 | `gitlab.reaction_approvers` | Who may approve a merge request with a 👍 reaction on its Teams message: `anyone` (default: whoever reacts, except the merge request's author, whose reaction is ignored; the reactor is named in the comment and shown on the card) or `self` (only the account teams-live runs as and configured admins). Note that with `anyone` any 👍 on a card approves it. |
 | `gitlab.approve.oauth.client_id`, `.client_secret` | Turns on [Sign in with GitLab](#sign-in-with-gitlab). Give the secret as `{ _secret = "/path"; }`. Off by default. |
 | `gitlab.approve.oauth.auto_setup` | Create and verify a user-owned GitLab OAuth application (false). Explicit credentials remain a fallback if automatic setup fails. |
+| `gitlab.approve.oauth.state_file` | Optional path for the managed application state; defaults to `gitlab-oauth.json` in the state directory. |
 | `gitlab.approve.oauth.allowed_users` | Optional list of GitLab user names allowed to confirm. Empty: any user that signs in. |
 
 #### Rebase and Merge buttons

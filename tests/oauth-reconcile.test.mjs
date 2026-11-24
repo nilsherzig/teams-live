@@ -65,3 +65,24 @@ test('saved credentials fail closed on remote drift and private-file errors', as
     await assert.rejects(ensureOAuthApplication(options), /private regular file/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a new callback can use a separate application without altering the old state', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oauth-test-'));
+  const oldState = path.join(dir, 'oauth.json');
+  const newState = path.join(dir, 'oauth-gitlab.json');
+  fs.writeFileSync(oldState, 'old-state', { mode: 0o600 });
+  let redirect;
+  const gitlab = { host: 'gitlab.example.com', token: 'fixture', async request(_endpoint, options = {}) {
+    if (options.method === 'POST') {
+      redirect = options.body.redirect_uri;
+      return { id: 8, application_id: 'new-client', secret: 'new-secret' };
+    }
+    return [{ application_name: 'teams-live (managed)', callback_url: 'https://teams.example.com/approve/oauth/callback' }];
+  } };
+  try {
+    await ensureOAuthApplication({ gitlab, baseUrl: 'https://teams.example.com/gitlab/approve', stateFile: newState });
+    assert.equal(redirect, 'https://teams.example.com/gitlab/approve/oauth/callback');
+    assert.equal(fs.readFileSync(oldState, 'utf8'), 'old-state');
+    assert.equal(fs.statSync(newState).mode & 0o777, 0o600);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

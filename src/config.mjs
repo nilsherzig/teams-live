@@ -356,6 +356,7 @@ export function loadConfig(configPath) {
     // host. `client_secret` comes from a `{ _secret: path }` reference. `allowed_users` (usernames) is optional.
     oauth: {
       auto_setup: rawApprove.oauth?.auto_setup === true,
+      state_file: (getString(rawApprove.oauth?.state_file) || '').trim(),
       client_id: (getString(rawApprove.oauth?.client_id) || process.env.TEAMS_GITLAB_APPROVE_OAUTH_CLIENT_ID || '').trim(),
       client_secret: (getString(rawApprove.oauth?.client_secret) || process.env.TEAMS_GITLAB_APPROVE_OAUTH_CLIENT_SECRET || '').trim(),
       allowed_users: Array.isArray(rawApprove.oauth?.allowed_users) ? rawApprove.oauth.allowed_users.map(String) : [],

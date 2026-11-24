@@ -295,7 +295,7 @@ async function main() {
       let oauth = configuredOauth;
       if (apCfg.oauth?.auto_setup) {
         try {
-          oauth = await ensureOAuthApplication({ gitlab, baseUrl: apCfg.base_url, stateFile: path.join(config.gitlab.state_dir, 'gitlab-oauth.json') });
+          oauth = await ensureOAuthApplication({ gitlab, baseUrl: apCfg.base_url, stateFile: apCfg.oauth.state_file || path.join(config.gitlab.state_dir, 'gitlab-oauth.json') });
           log('GitLab OAuth application is ready');
         } catch (err) {
           if (!configuredOauth) throw new Error(`GitLab OAuth automatic setup failed: ${err.message}`);
