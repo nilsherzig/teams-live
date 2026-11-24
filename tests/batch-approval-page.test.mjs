@@ -61,7 +61,7 @@ test('an individual approval with a lost response is not retried', async () => {
 test('a fully successful batch shows the requested success message', async () => {
   const status = { dataset: {} };
   const approval = { textContent: '' };
-  const itemButton = { dataset: {} };
+  const itemButton = { dataset: {}, parentElement: { hidden: false } };
   const card = { dataset: { status: 'ready', index: '0' }, querySelector: (s) => s === '[data-batch-status]' ? status : s === '[data-approve-item]' ? itemButton : approval };
   const bulk = { dataset: {}, hidden: false, hasAttribute: () => false };
   const progress = {};
@@ -72,4 +72,7 @@ test('a fully successful batch shows the requested success message', async () =>
   vm.runInNewContext(BATCH_APPROVAL_SCRIPT, { document, fetch: async () => ({ ok: true, json: async () => ({ status: 'approved', text: 'Approved' }) }), FormData: FakeFormData, URLSearchParams, Array, Error });
   await form.submit({ preventDefault() {}, submitter: bulk });
   assert.equal(message.textContent, '✅ All MRs were approved successfully.');
+  assert.equal(bulk.hidden, true);
+  assert.equal(itemButton.hidden, true);
+  assert.equal(itemButton.parentElement.hidden, true);
 });

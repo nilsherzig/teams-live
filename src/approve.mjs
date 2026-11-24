@@ -1496,14 +1496,16 @@ export class ApproveServer {
         await this.warmAvatars(mr, approvals);
       } catch { /* Keep the link usable when GitLab is unavailable. */ }
       const summary = renderSummary({ record: item, mr: mr ? { ...mr, web_url: mr.web_url || url } : null, approvals, host: this.gitlabHost, avatars: this.avatarsFor(mr, approvals), live: false });
-      const link = url ? `<div class="batch-actions"><a class="btn btn-secondary" data-mr-link href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open in GitLab</a></div>` : '';
-      return `<section class="batch-item">${summary}${link}</section>`;
+      const openLink = url ? `<a data-mr-link href="${escapeHtml(url)}" hidden tabindex="-1" aria-hidden="true"></a>` : '';
+      const approveUrl = this.oauth && item.sha ? this.linkFor({ ...item, action: 'approve' }) : null;
+      const approve = approveUrl ? `<a class="btn btn-secondary" href="${escapeHtml(approveUrl)}">👍 Approve</a>` : '<button class="btn btn-secondary" type="button" disabled>Cannot approve</button>';
+      return `<section class="batch-item">${summary}${openLink}<div class="batch-actions">${approve}</div></section>`;
     }))).join('');
     const approvable = record.items.filter((item) => item.sha);
     const approveUrl = this.oauth && approvable.length ? this.batchLinkFor(approvable, 'approve') : null;
     const approve = approveUrl ? `<p><a class="btn" href="${escapeHtml(approveUrl)}">👍 Approve all</a></p>` : '';
     const body = `<p>Opening the merge requests in separate tabs.</p><button id="open-all" class="btn" type="button">Open remaining</button><p id="open-note" class="note"></p><div class="batch-list">${links}</div><noscript><p>Open the links above individually.</p></noscript>${approve}`;
-    return this.send(res, 200, this.page('Open merge requests', body, { kind: 'generic', script: `<script>${this.openAllScript}</script>` }), { script: 'open-all' });
+    return this.send(res, 200, this.page('Open merge requests', body, { kind: 'approve', script: `<script>${this.openAllScript}</script>` }), { script: 'open-all' });
   }
 
   /** Reuse the existing per-head approval records and checks for every member. */
@@ -1545,11 +1547,11 @@ export class ApproveServer {
       const icon = status === 'ready' ? '⏳' : status === 'already' ? '✅' : '❌';
       const mr = result?.mr;
       const summary = renderSummary({ record: item, mr: mr ? { ...mr, web_url: mr.web_url || this.gitlab.mrLink?.(item.project, item.iid) } : null, approvals: result?.approvals, host: this.gitlabHost, avatars: this.avatarsFor(mr, result?.approvals), live: false });
-      const button = status === 'ready' ? `<button class="btn btn-secondary" type="submit" name="item_index" value="${index}" data-approve-item>👍 Approve</button>` : `<button class="btn btn-secondary" type="button" data-done="true" disabled>${status === 'already' ? 'Already approved' : 'Cannot approve'}</button>`;
-      return `<section class="batch-item" data-batch-item data-index="${index}" data-status="${escapeHtml(status)}">${summary}<div class="batch-status" data-batch-status data-status="${escapeHtml(status)}">${icon} ${escapeHtml(label)}</div><div class="batch-actions">${button}</div></section>`;
+      const action = status === 'ready' ? `<div class="batch-actions"><button class="btn btn-secondary" type="submit" name="item_index" value="${index}" data-approve-item>👍 Approve</button></div>` : '';
+      return `<section class="batch-item" data-batch-item data-index="${index}" data-status="${escapeHtml(status)}">${summary}<div class="batch-status" data-batch-status data-status="${escapeHtml(status)}">${icon} ${escapeHtml(label)}</div>${action}</section>`;
     }).join('');
     const warning = blocked.length ? `<p class="callout">❌ ${blocked.length} of ${items.length} merge request(s) cannot be approved.</p>` : '';
-    const action = ready.length ? `<p>Approve ${ready.length} eligible merge request(s) with the account shown above?</p><button id="batch-approve-all" class="btn" type="submit">👍 Approve ${ready.length === items.length ? 'all' : 'eligible'}</button>` : '<p>No approvals were sent. There are no eligible merge requests to approve.</p>';
+    const action = ready.length ? `<p id="batch-prompt">Approve ${ready.length} eligible merge request(s) with the account shown above?</p><button id="batch-approve-all" class="btn" type="submit">👍 Approve ${ready.length === items.length ? 'all' : 'eligible'}</button>` : '<p>No approvals were sent. There are no eligible merge requests to approve.</p>';
     const form = `<form id="batch-approval" method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="actors" value="${escapeHtml(encoded)}"><div class="batch-list">${rows}</div><p id="batch-message" class="batch-message" role="status" aria-live="polite"></p><progress id="batch-progress" class="batch-progress" hidden aria-label="Approval progress"></progress>${action}</form>`;
     return this.send(res, 200, this.page('Approve merge requests', `${warning}${form}`, { kind: 'approve', tone: blocked.length ? 'warn' : 'neutral', script: `<script>${BATCH_APPROVAL_SCRIPT}</script>` }), { script: 'batch' });
   }

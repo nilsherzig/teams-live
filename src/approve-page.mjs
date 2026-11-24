@@ -47,7 +47,7 @@ export const PAGE_CSS = [
   '.actions{margin-top:1rem}.hidden{display:none}',
   '.btn{display:inline-block;font:inherit;font-weight:600;color:#fff;background:var(--btn);border:1px solid var(--btn);border-radius:4px;padding:.45rem .9rem;cursor:pointer}.btn:hover{background:var(--btn-h);text-decoration:none}',
   '.btn-secondary{color:var(--text);background:var(--panel);border-color:var(--line)}.btn-secondary:hover{background:var(--bg)}',
-  '.btn:focus-visible{outline:3px solid var(--accent);outline-offset:2px}',
+  '.btn[hidden]{display:none}.btn:focus-visible{outline:3px solid var(--accent);outline-offset:2px}',
   '.links{display:flex;flex-wrap:wrap;gap:.5rem;margin:1rem 0 0}',
   '.foot{margin-top:1rem;color:var(--muted);font-size:.8rem}',
   '@media (max-width:30rem){.panel{padding:.9rem}.btn{width:100%;text-align:center}.mr-facts{grid-template-columns:1fr}.mr-facts dt{margin-top:.3rem}.header-account .account-name{display:none}}',
