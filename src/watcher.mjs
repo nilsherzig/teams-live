@@ -1207,6 +1207,7 @@ export class MergeRequestWatcher {
               isOnlyUrl: saved.isOnlyUrl ?? isMessageOnlyUrl(saved.content ?? ''),
               targetUrl: saved.targetUrl ?? null,
               editedOriginal: saved.editedOriginal ?? false,
+              multiMrMessageServerId: saved.multiMrMessageServerId ?? null,
               mrs: (saved.mrs ?? []).map((m) => ({
                 project: m.project,
                 iid: m.iid,

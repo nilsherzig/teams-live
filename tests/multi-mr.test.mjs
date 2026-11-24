@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { buildMultiMrCard } from '../src/card-multi-mr.mjs';
 import { ApproveServer } from '../src/approve.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
@@ -174,23 +177,35 @@ test('watcher sends one combined reply, updates it on a merge, and persists its 
     getMrStatus: async (project, iid) => ({ project, iid, state: states[iid] === 'merged' ? 'merged' : 'opened', status: states[iid], title: `Change ${iid}`, sha, approved: false, approvalKnown: true, approvedBy: [], author: 'Alice Example', pipeline: { status: 'success', id: 4 }, autoMerge: false }),
   };
   const watcher = new MergeRequestWatcher({ config: { conversations: [], teams: { rich_messages: true }, gitlab: { notify: { ci: { enable: true, on_success: true } } } }, gitlab, jira: null, opsgenie: null });
-  watcher.saveState = () => {};
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teams-live-restart-'));
+  watcher.stateFile = path.join(stateDir, 'watcher-state.json');
   watcher.prefetchAvatars = async () => {};
   watcher.setReactionStatus = async (entry, status) => { entry.status = status; };
   const entry = { conversationId: '19:example@thread.v2', messageId: '1700000000000', from: 'Alice Example', createdAt: Date.now(), mrs: items.map((mr) => ({ ...mr, status: null, ciMessageServerId: null })), jobs: [], pipelines: [] };
-  watcher.watched.set('key', entry);
+  watcher.watched.set('conversation/1700000000000', entry);
   try {
-    await watcher.checkWatchedKey('key');
+    await watcher.checkWatchedKey('conversation/1700000000000');
     assert.equal(sent.filter((call) => call.type === 'send').length, 1);
     assert.equal(entry.multiMrMessageServerId, '1700000000001');
+    const restarted = new MergeRequestWatcher({ config: watcher.config, gitlab, jira: null, opsgenie: null });
+    restarted.watched.clear();
+    restarted.stateFile = watcher.stateFile;
+    restarted.loadState();
+    restarted.prefetchAvatars = async () => {};
+    restarted.setReactionStatus = async (saved, status) => { saved.status = status; };
+    assert.equal(restarted.watched.get('conversation/1700000000000').multiMrMessageServerId, '1700000000001');
+    await restarted.checkWatchedKey('conversation/1700000000000');
+    assert.equal(sent.filter((call) => call.type === 'send').length, 1, 'restart updates the existing card rather than posting another');
+    assert.equal(sent.filter((call) => call.type === 'edit').length, 1);
+    sent.pop();
     const first = JSON.stringify(sent[0].args);
     assert.match(first, /Change 1/);
     assert.match(first, /Change 2/);
-    await watcher.checkWatchedKey('key');
+    await watcher.checkWatchedKey('conversation/1700000000000');
     assert.equal(sent.length, 1, 'unchanged polls do not edit the card');
     states[1] = 'merged';
-    await watcher.checkWatchedKey('key');
+    await watcher.checkWatchedKey('conversation/1700000000000');
     assert.equal(sent.filter((call) => call.type === 'edit').length, 1);
     assert.match(JSON.stringify(sent.at(-1).args), /1\/2/);
-  } finally { Object.assign(transport, original); setRichMessages(false); }
+  } finally { Object.assign(transport, original); setRichMessages(false); fs.rmSync(stateDir, { recursive: true, force: true }); }
 });
