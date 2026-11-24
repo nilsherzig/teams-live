@@ -571,7 +571,10 @@ reset); the layout is kept in the browser's local storage only. A click on an al
 chip on a merge request (a ticket named in its branch or title) opens its details in a side panel; the server reads
 only alerts and tickets the dashboard currently shows. Dragging a ticket to another column of the sprint board runs
 the Jira transition that leads there, with the bot's Jira account (Jira records that account; the service log names
-who moved it). On a phone the sidebar becomes a bottom tab bar.
+who moved it). Ctrl+K (or Search in the top bar) opens a palette that jumps to a section, opens any listed
+merge request, ticket or alert, and runs the page's actions. The dashboard installs as an app (manifest, icons, a
+service worker scoped to the dashboard path); the worker keeps the last signed-in page and its data in the browser
+so it stays readable offline, with a notice, while approving and moving wait for the network. Signing out clears it. On a phone the sidebar becomes a bottom tab bar.
 
 The dashboard uses the same OAuth application and callback; the proxy must forward the dashboard path and its sub-paths (`/data`, `/approve`, `/signin`, `/signout`). With `dashboard.path = "/dashboard"` the proxy can also send `/` there, so the host itself opens the dashboard.
 

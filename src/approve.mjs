@@ -68,7 +68,8 @@ import { FAVICON } from './favicon.mjs';
 
 /** The page footer: just the project on GitHub. */
 const FOOTER = `<footer class="foot"><a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">${GITHUB_MARK}teams-live on GitHub</a></footer>`;
-import { CUSTOMIZE_BUTTON, DASHBOARD_CSS, alertDetail, approveButton, fetchMrDetail, mrDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, renderSections } from './dashboard.mjs';
+import { ICON_192, ICON_512 } from './pwa-icons.mjs';
+import { CUSTOMIZE_BUTTON, DASHBOARD_CSS, alertDetail, serviceWorkerScript, webManifest, approveButton, fetchMrDetail, mrDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, renderSections } from './dashboard.mjs';
 
 const FULL_WARN_INTERVAL_MS = 10 * 60 * 1000;
 const log = createLogger('approve');
@@ -708,6 +709,7 @@ export class ApproveServer {
     this.dashData = new Map();
     this.dashSourceCache = new Map();
     this.dashboardScript = dashboardScript(this.dashPath);
+    this.dashboardWorker = serviceWorkerScript(this.dashPath);
     this.dashboardHash = `sha256-${crypto.createHash('sha256').update(this.dashboardScript).digest('base64')}`;
   }
 
@@ -811,7 +813,7 @@ export class ApproveServer {
       'Referrer-Policy': 'same-origin',
       'Cross-Origin-Opener-Policy': 'same-origin',
       // img-src data: only: the pictures are embedded (card icons, profile pictures), never fetched.
-      'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'unsafe-inline'; ${script ? `script-src '${script === 'live' ? this.liveHash : script === 'batch' ? this.batchApprovalHash : script === 'open-all' ? this.openAllHash : script === 'open-bootstrap' ? this.openBootstrapHash : script === 'dashboard' ? this.dashboardHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
+      'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'unsafe-inline'; ${script === 'dashboard' ? "manifest-src 'self'; worker-src 'self'; " : ''}${script ? `script-src '${script === 'live' ? this.liveHash : script === 'batch' ? this.batchApprovalHash : script === 'open-all' ? this.openAllHash : script === 'open-bootstrap' ? this.openBootstrapHash : script === 'dashboard' ? this.dashboardHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
       ...extra,
     };
   }
@@ -839,13 +841,13 @@ export class ApproveServer {
   }
 
   /** The HTML document every page shares: head, top bar with the signed-in account, the shell and the footer. */
-  documentHtml({ title, kicker, live = false, shell = 'shell', main, css = '', dashLink = true, menu = '', actions = '', footer = true }) {
+  documentHtml({ title, kicker, live = false, shell = 'shell', main, css = '', dashLink = true, menu = '', actions = '', footer = true, head = '' }) {
     const user = this.requestContext.getStore()?.user;
     let avatar = '';
     try { if (user) avatar = this.avatarOf?.(user.name || user.username) || ''; } catch { /* Fall back to initials. */ }
     const items = `${this.dashboard && dashLink ? `<a class="menu-item" href="${escapeHtml(this.dashPath)}">Dashboard</a>` : ''}${menu}`;
     const account = user ? headerAccount(user, this.gitlabHost, avatar, items) : '';
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><link rel="icon" type="image/png" href="${FAVICON}"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}${css}</style></head><body><header class="${shell.replace(/\bshell\b/, 'brand')}"><div class="in">${this.dashboard ? `<a class="home" href="${escapeHtml(`${this.dashPath}#overview`)}" data-home aria-label="teams-live dashboard">${TANUKI}<span class="word">teams-live</span></a>` : `${TANUKI}<span class="word">teams-live</span>`}<span class="sep" aria-hidden="true">/</span><span class="kicker">${kicker}</span>${live ? '<span class="live-dot" title="This page keeps itself up to date"><i></i>Live</span>' : ''}${actions}${account}</div></header><div class="${shell}">${main}${footer ? FOOTER : ''}</div></body></html>`;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><link rel="icon" type="image/png" href="${FAVICON}">${head}<title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}${css}</style></head><body><header class="${shell.replace(/\bshell\b/, 'brand')}"><div class="in">${this.dashboard ? `<a class="home" href="${escapeHtml(`${this.dashPath}#overview`)}" data-home aria-label="teams-live dashboard">${TANUKI}<span class="word">teams-live</span></a>` : `${TANUKI}<span class="word">teams-live</span>`}<span class="sep" aria-hidden="true">/</span><span class="kicker">${kicker}</span>${live ? '<span class="live-dot" title="This page keeps itself up to date"><i></i>Live</span>' : ''}${actions}${account}</div></header><div class="${shell}">${main}${footer ? FOOTER : ''}</div></body></html>`;
   }
 
   /** The static script that exchanges the fragment token for a session. */
@@ -867,12 +869,12 @@ export class ApproveServer {
     if (this.dashboard && this.dashPath !== legacy && (pathname === legacy || pathname.startsWith(`${legacy}/`))) return '/dashboard-moved';
     if (this.dashboard && (pathname === this.dashPath || pathname.startsWith(`${this.dashPath}/`))) {
       const sub = pathname.slice(this.dashPath.length);
-      return ['', '/data', '/approve', '/signin', '/signout', '/issue', '/alert', '/mr', '/move'].includes(sub) ? `/dashboard${sub}` : null;
+      return ['', '/data', '/approve', '/signin', '/signout', '/issue', '/alert', '/mr', '/move', '/sw.js', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'].includes(sub) ? `/dashboard${sub}` : null;
     }
     if (this.basePath && (pathname === this.basePath || pathname.startsWith(`${this.basePath}/`))) {
       pathname = pathname.slice(this.basePath.length) || '/';
     }
-    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/issue', '/dashboard/alert', '/dashboard/mr', '/dashboard/move', '/dashboard/approve', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
+    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/issue', '/dashboard/alert', '/dashboard/mr', '/dashboard/move', '/dashboard/sw.js', '/dashboard/manifest.webmanifest', '/dashboard/icon-192.png', '/dashboard/icon-512.png', '/dashboard/approve', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
   }
 
   readForm(req) {
@@ -1530,6 +1532,19 @@ export class ApproveServer {
       if (method !== 'GET') return notAllowed('GET');
       return this.dashboardSignIn(res);
     }
+    // The installable app's files: no data in them, so no session needed (the browser fetches them on its own).
+    if (route === '/dashboard/sw.js' || route === '/dashboard/manifest.webmanifest' || route === '/dashboard/icon-192.png' || route === '/dashboard/icon-512.png') {
+      if (method !== 'GET' && method !== 'HEAD') return notAllowed('GET, HEAD');
+      const file = route.slice('/dashboard/'.length);
+      const [type, body, extra] =
+        file === 'sw.js'
+          ? ['text/javascript; charset=utf-8', this.dashboardWorker, { 'Service-Worker-Allowed': this.dashPath, 'Cache-Control': 'no-cache' }]
+          : file === 'manifest.webmanifest'
+            ? ['application/manifest+json', JSON.stringify(webManifest(this.dashPath)), { 'Cache-Control': 'no-cache' }]
+            : ['image/png', Buffer.from(file === 'icon-192.png' ? ICON_192 : ICON_512, 'base64'), { 'Cache-Control': 'public, max-age=86400' }];
+      res.writeHead(200, { 'Content-Type': type, 'Content-Length': Buffer.byteLength(body), 'X-Content-Type-Options': 'nosniff', ...extra });
+      return res.end(method === 'HEAD' ? undefined : body);
+    }
     const session = await this.freshDashSession(this.dashSessionOf(req));
     if (session) this.requestContext.getStore().user = session.user;
     if (route === '/dashboard') {
@@ -1542,7 +1557,7 @@ export class ApproveServer {
       if (method !== 'GET') return notAllowed('GET');
       if (!session) return this.json(res, 401, {});
       try {
-        return this.json(res, 200, await this.dashboardPayload(session));
+        return this.json(res, 200, await this.dashboardPayload(session), { 'X-TL-Offline': '1' });
       } catch {
         return this.json(res, 502, {});
       }
@@ -1856,8 +1871,8 @@ export class ApproveServer {
     const ctx = await this.dashboardCtx(session, data);
     const csrf = this.csrf.issue(session.sid, 'dashboard', `who=${session.user.username}`);
     const body = dashboardBody({ data, ctx, csrf, filter: defaultFilter(data.mrs.items || [], session.user.username), updated: this.dashboardUpdated(data.at) });
-    const html = this.documentHtml({ title: 'Dashboard', kicker: 'Dashboard', shell: 'shell dashboard', main: `<main>${body}<script>${this.dashboardScript}</script></main>`, css: DASHBOARD_CSS, dashLink: false, actions: CUSTOMIZE_BUTTON, footer: false, menu: `<div class="menu-sep"></div><form method="post" action="${escapeHtml(`${this.origin}${this.dashPath}/signout`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}" data-csrf><button class="menu-item" type="submit">Sign out</button></form>` });
-    return this.send(res, 200, html, { script: 'dashboard' });
+    const html = this.documentHtml({ title: 'Dashboard', kicker: 'Dashboard', shell: 'shell dashboard', main: `<main>${body}<script>${this.dashboardScript}</script></main>`, css: DASHBOARD_CSS, dashLink: false, actions: CUSTOMIZE_BUTTON, footer: false, head: `<link rel="manifest" href="${escapeHtml(`${this.dashPath}/manifest.webmanifest`)}"><meta name="theme-color" content="#1f1e24"><link rel="apple-touch-icon" href="${escapeHtml(`${this.dashPath}/icon-192.png`)}">`, menu: `<div class="menu-sep"></div><form method="post" action="${escapeHtml(`${this.origin}${this.dashPath}/signout`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}" data-csrf><button class="menu-item" type="submit">Sign out</button></form>` });
+    return this.send(res, 200, html, { script: 'dashboard', extra: { 'X-TL-Offline': '1' } });
   }
 
   /**
@@ -1957,9 +1972,9 @@ export class ApproveServer {
   }
 
   /** A JSON answer with the same hardening headers as the pages. */
-  json(res, status, data) {
+  json(res, status, data, extra = {}) {
     const body = JSON.stringify(data);
-    res.writeHead(status, this.headers({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body) }));
+    res.writeHead(status, this.headers({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), ...extra }));
     res.end(body);
   }
 

@@ -389,3 +389,35 @@ test('on-duty responders show their picture (initials without one), and an empty
   assert.match(html, /Off-duty<\/span><small>Edge<\/small>/);
   assert.ok(!html.includes('carol.example@'), 'no addresses on the page');
 });
+
+test('installable app: manifest, icons and service worker without a session; only signed-in pages are kept offline', async () => {
+  const { serviceWorkerScript } = await import('../src/dashboard.mjs');
+  assert.doesNotThrow(() => new Function(serviceWorkerScript('/dashboard')));
+  await withDashboard({ path: '/dashboard' }, async ({ base }) => {
+    const manifest = await fetch(`${base}/dashboard/manifest.webmanifest`);
+    assert.equal(manifest.status, 200);
+    assert.match(manifest.headers.get('content-type'), /manifest\+json/);
+    const m = await manifest.json();
+    assert.equal(m.start_url, '/dashboard');
+    assert.equal(m.display, 'standalone');
+    const icon = await fetch(`${base}/dashboard/icon-512.png`);
+    assert.equal(icon.headers.get('content-type'), 'image/png');
+    assert.equal((await icon.arrayBuffer()).byteLength > 1000, true);
+    const sw = await fetch(`${base}/dashboard/sw.js`);
+    assert.equal(sw.headers.get('service-worker-allowed'), '/dashboard');
+    assert.match(await sw.text(), /X-TL-Offline/);
+
+    const gate = await fetch(`${base}/dashboard`);
+    assert.equal(gate.headers.get('x-tl-offline'), null, 'the sign-in page is never kept');
+    const { cookie } = await signIn(base, '/dashboard');
+    const page = await fetch(`${base}/dashboard`, { headers: { Cookie: cookie } });
+    assert.equal(page.headers.get('x-tl-offline'), '1');
+    assert.match(page.headers.get('content-security-policy'), /manifest-src 'self'; worker-src 'self'/);
+    const html = await page.text();
+    assert.match(html, /<link rel="manifest" href="\/dashboard\/manifest\.webmanifest">/);
+    assert.match(html, /data-palette/);
+    assert.match(html, /data-offline-bar hidden/);
+    const data = await fetch(`${base}/dashboard/data`, { headers: { Cookie: cookie } });
+    assert.equal(data.headers.get('x-tl-offline'), '1');
+  });
+});
