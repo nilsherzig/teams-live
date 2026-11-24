@@ -629,7 +629,7 @@ export function mrDetail({ mr, approvals, jobs }, ctx, approve = '') {
     : '<span class="note">No pipeline</span>';
   const branch = (b) => `<code>${escapeHtml(b)}</code>`;
   const html =
-    `<div class="dhead"><span class="pill pill-${tone === 'merged' ? 'merged' : tone}">${escapeHtml(stateText)}</span>${draft ? '<span class="pill pill-draft">Draft</span>' : ''}<span class="dref">${escapeHtml(project)}!${escapeHtml(mr.iid)}</span></div>` +
+    `<div class="dmeta"><div class="dhead"><span class="pill pill-${tone === 'merged' ? 'merged' : tone}">${escapeHtml(stateText)}</span>${draft ? '<span class="pill pill-draft">Draft</span>' : ''}<span class="dref">${escapeHtml(project)}!${escapeHtml(mr.iid)}</span></div>` +
     facts([
       ['Branches', `${branch(mr.source_branch)} → ${branch(mr.target_branch)}`],
       ['Author', person(mr.author)],
@@ -643,6 +643,7 @@ export function mrDetail({ mr, approvals, jobs }, ctx, approve = '') {
       ['Updated', escapeHtml(when(mr.updated_at, ctx))],
     ]) +
     (approve ? `<p class="dactions">${approve}</p>` : '') +
+    '</div>' +
     (mr.description && mr.description.trim() ? `<div class="dtext rich">${markdownToHtml(clip(mr.description, 20000))}</div>` : '<p class="note">No description.</p>');
   return { title: mr.title || `Merge request !${mr.iid}`, html, url, urlLabel: 'Open in GitLab' };
 }
@@ -651,6 +652,7 @@ export function mrDetail({ mr, approvals, jobs }, ctx, approve = '') {
 export function issueDetail(i, ctx) {
   const url = webLink(i.url);
   const html =
+    '<div class="dmeta">' +
     facts([
       ['Status', `<span class="pill pill-${i.statusCategory === 'done' ? 'ok' : i.statusCategory === 'indeterminate' ? 'run' : 'idle'}">${escapeHtml(i.status)}</span>`],
       ['Type', escapeHtml(i.issueType)],
@@ -661,6 +663,7 @@ export function issueDetail(i, ctx) {
       ['Created', escapeHtml(when(i.created, ctx))],
       ['Updated', escapeHtml(when(i.updated, ctx))],
     ]) +
+    '</div>' +
     (i.description ? `<div class="dtext rich">${jiraWikiToHtml(clip(i.description, 20000))}</div>` : '<p class="note">No description.</p>');
   return { title: `${i.key} · ${i.summary}`, html, url, urlLabel: 'Open in Jira' };
 }
@@ -671,6 +674,7 @@ export function alertDetail(a, ctx) {
   const prio = /^P[1-5]$/.test(a.priority) ? a.priority : 'P?';
   const details = a.details && typeof a.details === 'object' ? Object.entries(a.details).slice(0, 24) : [];
   const html =
+    '<div class="dmeta">' +
     facts([
       ['Priority', `<span class="prio prio-${prio.toLowerCase()}">${prio}</span>`],
       ['Status', escapeHtml(`${a.status || 'open'}${a.acknowledged ? ', acknowledged' : ''}${a.snoozed ? ', snoozed' : ''}`)],
@@ -682,6 +686,7 @@ export function alertDetail(a, ctx) {
       ['Last seen', escapeHtml(when(a.lastOccurredAt || a.updatedAt, ctx))],
       ['Tags', (a.tags || []).slice(0, 30).map((t) => `<span class="lbl">${escapeHtml(t)}</span>`).join(' ')],
     ]) +
+    '</div>' +
     (a.description ? `<div class="dtext">${escapeHtml(clip(a.description, 4000))}</div>` : '') +
     (details.length ? `<h3 class="dsub">Details</h3>${facts(details.map(([k, v]) => [k, escapeHtml(clip(typeof v === 'string' ? v : JSON.stringify(v), 400))]))}` : '');
   return { title: a.message || 'Alert', html, url, urlLabel: 'Open in OpsGenie' };
@@ -888,7 +893,7 @@ export const DASHBOARD_CSS = [
   '.drawer-panel{position:absolute;top:0;right:0;bottom:0;width:min(36rem,100vw);background:var(--panel);border-left:1px solid var(--line);box-shadow:var(--shadow-lg);display:flex;flex-direction:column;animation:tl-slide .28s var(--ease);padding-bottom:env(safe-area-inset-bottom,0px)}@keyframes tl-slide{from{transform:translateX(100%)}}',
   '.drawer-panel>header .tool{flex:none;width:30px;height:30px}.drawer-panel>header .tool .di{width:16px;height:16px}.drawer-panel>header .tool[hidden]{display:none}',
   '.drawer-panel>header{display:flex;gap:.35rem;align-items:flex-start;padding:1rem 1.1rem .85rem;border-bottom:1px solid var(--line)}.drawer-panel h2{margin:0;font-size:1.05rem;line-height:1.35;flex:1;overflow-wrap:anywhere}',
-  '.drawer-body{padding:1rem 1.1rem 1.5rem;overflow:auto;flex:1}.dfacts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.45rem 1rem;margin:0 0 1rem;font-size:.88rem}.dfacts dt{color:var(--muted)}.dfacts dd{margin:0;overflow-wrap:anywhere}.dfacts .av{width:18px;height:18px}',
+  '.drawer-body{padding:0 1.1rem 1.5rem;overflow:auto;flex:1}.dmeta{position:sticky;top:0;z-index:2;background:var(--panel);padding-top:1rem;margin:0 -1.1rem 1rem;padding-inline:1.1rem;border-bottom:1px solid var(--line);box-shadow:0 8px 12px -12px rgba(0,0,0,.45)}.dmeta .dfacts{margin-bottom:.9rem}.dmeta .dactions{margin:0 0 .9rem}@media (max-height:600px){.dmeta{position:static}}.dfacts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.45rem 1rem;margin:0 0 1rem;font-size:.88rem}.dfacts dt{color:var(--muted)}.dfacts dd{margin:0;overflow-wrap:anywhere}.dfacts .av{width:18px;height:18px}',
   '.dtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.88rem;line-height:1.55;background:var(--subtle);border:1px solid var(--line);border-radius:6px;padding:.75rem .85rem}.drawer-body{scrollbar-width:none}.drawer-body::-webkit-scrollbar{display:none}.dsub{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.1rem 0 .5rem}',
   '.dhead{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:0 0 .9rem}.dref{font:.82rem var(--mono);color:var(--muted)}.who{display:inline-flex;align-items:center;margin-right:.6rem}.who .av{width:18px;height:18px}',
   '.pipe{display:inline-flex;gap:.4rem;align-items:center}.stages{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem}.stage{display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;border:1px solid var(--line);border-radius:999px;padding:.05rem .5rem .05rem .25rem;background:var(--subtle)}.appr-line{display:inline-flex;flex-wrap:wrap;gap:.5rem;align-items:center}',
