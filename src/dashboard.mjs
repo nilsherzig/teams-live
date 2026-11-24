@@ -163,6 +163,8 @@ export const ICONS = {
   thumb: svg('<path d="M7 11v9H4v-9zM7 11l4-8a2 2 0 0 1 2 2v4h5.5a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.3 20H7"/>'),
   video: svg('<rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3"/>'),
   ext: svg('<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>'),
+  ticket: svg('<path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z"/>'),
+  close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
   hide: svg('<path d="M3 3l18 18M10.6 6.1A9.8 9.8 0 0 1 12 6c5 0 8.5 4.4 9.5 6-.5.8-1.4 2-2.7 3.2M6.6 6.6C4.6 7.9 3.2 9.8 2.5 12c1 1.6 4.5 6 9.5 6 1.6 0 3-.4 4.3-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/>'),
   grip: svg('<circle cx="9" cy="6" r="1.2"/><circle cx="15" cy="6" r="1.2"/><circle cx="9" cy="12" r="1.2"/><circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="18" r="1.2"/><circle cx="15" cy="18" r="1.2"/>'),
   refresh: svg('<path d="M20 11a8 8 0 0 0-14.6-4.5M4 4v4h4M4 13a8 8 0 0 0 14.6 4.5M20 20v-4h-4"/>'),
@@ -225,7 +227,7 @@ function mrRow(mr, { username, host, avatars, now }) {
   return (
     `<li class="mrrow" data-f="${filters.join(' ')}" data-key="${escapeHtml(`${mr.project}!${mr.iid}`)}">` +
     `${avatarImg(mr.author.name, avatars)}` +
-    `<div class="mrmain"><span class="t">${title}</span><span class="m"><span>${ref}</span><span>· ${escapeHtml(mr.author.name)}</span><span>· ${escapeHtml(ago(mr.updatedAt, now))}</span></span></div>` +
+    `<div class="mrmain"><span class="t">${title}</span><span class="m">${(mr.issues || []).map((k) => `<button type="button" class="tchip" data-issue="${escapeHtml(k)}" title="Preview ${escapeHtml(k)}">${ICONS.ticket}${escapeHtml(k)}</button>`).join('')}<span>${ref}</span><span>· ${escapeHtml(mr.author.name)}</span><span>· ${escapeHtml(ago(mr.updatedAt, now))}</span></span></div>` +
     `<div class="mrside">${pipelineIcon(mr.pipeline)}${badge}${action}</div>` +
     '</li>'
   );
@@ -261,10 +263,10 @@ export function sprintSection(state, ctx) {
     const tickets = (sprint[k] || []).map((t) => {
       const url = webLink(t.url);
       const mine = me && lower(t.assignee) === me;
-      const key = url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t.key)}</a>` : escapeHtml(t.key);
-      return `<li class="tk${mine ? ' mine' : ''}" data-key="${escapeHtml(t.key)}"><span class="key">${key}<span>${escapeHtml(t.status || '')}</span></span><span class="sum">${escapeHtml(t.summary)}</span><span class="who">${avatarImg(t.assignee || 'Unassigned', ctx.avatars)}${escapeHtml(t.assignee || 'Unassigned')}</span></li>`;
+      const key = escapeHtml(t.key);
+      return `<li class="tk${mine ? ' mine' : ''}" data-key="${escapeHtml(t.key)}" data-issue="${escapeHtml(t.key)}" draggable="true" role="button" tabindex="0" aria-label="${escapeHtml(`${t.key}: ${t.summary}`)}"><span class="key">${key}<span>${escapeHtml(t.status || '')}</span></span><span class="sum">${escapeHtml(t.summary)}</span><span class="who">${avatarImg(t.assignee || 'Unassigned', ctx.avatars)}${escapeHtml(t.assignee || 'Unassigned')}</span></li>`;
     });
-    return `<div class="col"><h4>${label}<span>${tickets.length}</span></h4><ul>${tickets.join('') || '<li class="none">Nothing here</li>'}</ul></div>`;
+    return `<div class="col" data-col="${k}"><h4>${label}<span data-col-count>${tickets.length}</span></h4><ul>${tickets.join('') || '<li class="none">Nothing here</li>'}</ul></div>`;
   }).join('');
   return `${bar}${legend}<div class="board">${cols}</div>`;
 }
@@ -278,9 +280,10 @@ export function alertsSection(state, ctx) {
   const rows = alerts.slice(0, 12).map((a) => {
     const url = webLink(a.url);
     const prio = /^P[1-5]$/.test(a.priority) ? a.priority : 'P?';
-    const msg = url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(a.message || 'Alert')}</a>` : escapeHtml(a.message || 'Alert');
+    const msg = escapeHtml(a.message || 'Alert');
     const acked = a.acknowledged ? ' · acknowledged' : '';
-    return `<li class="al${a.acknowledged ? ' acked' : ''}" data-key="${escapeHtml(a.tinyId || a.id || a.message || '')}"><span class="prio prio-${prio.toLowerCase()}">${prio}</span><div><b>${msg}</b><small>${escapeHtml(a.queue || '')}${a.count > 1 ? ` · ${escapeHtml(a.count)}×` : ''} · ${escapeHtml(ago(a.createdAt, ctx.now))}${acked}</small></div></li>`;
+    const open = /^[A-Za-z0-9-]{1,80}$/.test(String(a.id || '')) ? ` data-alert="${escapeHtml(a.id)}" role="button" tabindex="0" aria-label="${escapeHtml(`${prio} alert: ${a.message || ''}`)}"` : '';
+    return `<li class="al${a.acknowledged ? ' acked' : ''}" data-key="${escapeHtml(a.tinyId || a.id || a.message || '')}"${open}><span class="prio prio-${prio.toLowerCase()}">${prio}</span><div><b>${msg}</b><small>${escapeHtml(a.queue || '')}${a.count > 1 ? ` · ${escapeHtml(a.count)}×` : ''} · ${escapeHtml(ago(a.createdAt, ctx.now))}${acked}</small></div></li>`;
   });
   const more = alerts.length > 12 ? `<li class="none">${alerts.length - 12} more in OpsGenie</li>` : '';
   const list = rows.length ? `<ul class="alist">${rows.join('')}${more}</ul>` : `<p class="empty ok">${ICONS.check}No open alerts.</p>`;
@@ -309,6 +312,59 @@ export function meetingsSection(state, ctx) {
     return `${head}<li class="mt${now ? ' now' : ''}" data-key="${escapeHtml(`${m.subject}@${m.startTime}`)}"><time>${escapeHtml(time(m.startTime))}</time><div><b>${escapeHtml(m.subject || 'Meeting')}</b><small>${now ? 'Now · ' : ''}${escapeHtml(time(m.startTime))}–${escapeHtml(time(m.endTime))}${m.organizer ? ` · ${escapeHtml(m.organizer)}` : ''}</small></div>${button}</li>`;
   });
   return `<ul class="mlist">${rows.join('')}</ul>`;
+}
+
+const clip = (text, max) => {
+  const t = String(text ?? '').replace(/\r\n?/g, '\n').trim();
+  return t.length > max ? `${t.slice(0, max).trimEnd()}…` : t;
+};
+const when = (iso, ctx) => {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  return `${new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: ctx.timeZone })} (${ago(iso, ctx.now)})`;
+};
+const facts = (rows) => `<dl class="dfacts">${rows.filter(([, v]) => v).map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${v}</dd>`).join('')}</dl>`;
+
+/** A Jira ticket for the preview drawer: `{title, html}`, everything escaped, the link to Jira at the end. */
+export function issueDetail(i, ctx) {
+  const url = webLink(i.url);
+  const html =
+    facts([
+      ['Status', `<span class="pill pill-${i.statusCategory === 'done' ? 'ok' : i.statusCategory === 'indeterminate' ? 'run' : 'idle'}">${escapeHtml(i.status)}</span>`],
+      ['Type', escapeHtml(i.issueType)],
+      ['Priority', escapeHtml(i.priority)],
+      ['Assignee', `${avatarImg(i.assignee || 'Unassigned', ctx.avatars)}${escapeHtml(i.assignee || 'Unassigned')}`],
+      ['Reporter', i.reporter ? `${avatarImg(i.reporter, ctx.avatars)}${escapeHtml(i.reporter)}` : ''],
+      ['Labels', (i.labels || []).map((l) => `<span class="lbl">${escapeHtml(l)}</span>`).join(' ')],
+      ['Created', escapeHtml(when(i.created, ctx))],
+      ['Updated', escapeHtml(when(i.updated, ctx))],
+    ]) +
+    (i.description ? `<div class="dtext">${escapeHtml(clip(i.description, 4000))}</div>` : '<p class="note">No description.</p>') +
+    (url ? `<p class="links"><a class="btn btn-secondary" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open in Jira ${ICONS.ext}</a></p>` : '');
+  return { title: `${i.key} · ${i.summary}`, html };
+}
+
+/** An OpsGenie alert for the drawer: `{title, html}`. */
+export function alertDetail(a, ctx) {
+  const url = webLink(a.url);
+  const prio = /^P[1-5]$/.test(a.priority) ? a.priority : 'P?';
+  const details = a.details && typeof a.details === 'object' ? Object.entries(a.details).slice(0, 24) : [];
+  const html =
+    facts([
+      ['Priority', `<span class="prio prio-${prio.toLowerCase()}">${prio}</span>`],
+      ['Status', escapeHtml(`${a.status || 'open'}${a.acknowledged ? ', acknowledged' : ''}${a.snoozed ? ', snoozed' : ''}`)],
+      ['Owner', escapeHtml(a.owner || '')],
+      ['Count', a.count > 1 ? escapeHtml(`${a.count}×`) : ''],
+      ['Source', escapeHtml(a.source || '')],
+      ['Entity', escapeHtml(a.entity || '')],
+      ['Created', escapeHtml(when(a.createdAt, ctx))],
+      ['Last seen', escapeHtml(when(a.lastOccurredAt || a.updatedAt, ctx))],
+      ['Tags', (a.tags || []).slice(0, 30).map((t) => `<span class="lbl">${escapeHtml(t)}</span>`).join(' ')],
+    ]) +
+    (a.description ? `<div class="dtext">${escapeHtml(clip(a.description, 4000))}</div>` : '') +
+    (details.length ? `<h3 class="dsub">Details</h3>${facts(details.map(([k, v]) => [k, escapeHtml(clip(typeof v === 'string' ? v : JSON.stringify(v), 400))]))}` : '') +
+    (url ? `<p class="links"><a class="btn btn-secondary" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open in OpsGenie ${ICONS.ext}</a></p>` : '');
+  return { title: a.message || 'Alert', html };
 }
 
 /** The numbers at the top: what waits for the user, their own merge requests, their sprint tickets, open alerts. */
@@ -387,6 +443,7 @@ export function dashboardBody({ data, ctx, csrf, filter, updated }) {
     `<div class="stats" data-sec-body="stats">${s.stats}</div>` +
     `<div class="hidden-bar" data-hidden-bar hidden></div><div class="grid" data-grid>${cards}</div></div>` +
     `<nav class="tabbar" aria-label="Dashboard sections">${nav(true)}</nav>` +
+    `<div class="drawer" data-drawer hidden><div class="drawer-bg" data-drawer-close></div><aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title"><header><h2 id="drawer-title"></h2><button type="button" class="tool" data-drawer-close aria-label="Close">${ICONS.close}</button></header><div class="drawer-body" data-drawer-body></div></aside></div>` +
     `<input type="hidden" id="dash-csrf" value="${escapeHtml(csrf)}"><div class="toasts" id="toasts" role="status" aria-live="polite"></div></div>`
   );
 }
@@ -434,6 +491,15 @@ export const DASHBOARD_CSS = [
   '.muted-link{color:var(--muted)}.mrside{display:flex;gap:.6rem;align-items:center}',
   '.dot{width:20px;height:20px;border-radius:50%;display:grid;place-items:center}.dot .di{width:12px;height:12px;stroke-width:2.6}.dot-ok{background:var(--ok-bg);color:var(--ok)}.dot-bad{background:var(--closed-bg);color:var(--closed)}.dot-run{background:var(--run-bg);color:var(--run)}.dot-idle{background:var(--draft-bg);color:var(--draft)}',
   '.ci-ic{display:block;flex:none}.ci-none{width:16px;height:16px;border-radius:50%;border:1.5px dashed var(--line-strong);flex:none}.appr-badge{display:block;flex:none;height:18px;width:auto}.side [hidden]{display:none!important}',
+  '.col.drop-here{background:var(--run-bg);box-shadow:inset 0 0 0 2px var(--btn)}.tk.dragging{opacity:.4}.tk[draggable=true]{cursor:grab}.tk[draggable=true]:active{cursor:grabbing}.tk.moved{animation:tl-new 1.6s var(--ease)}',
+  '.tk[data-issue],.al[data-alert]{cursor:pointer}.tk[data-issue]:focus-visible,.al[data-alert]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}.al[data-alert]{transition:background .15s}.al[data-alert]:hover{background:var(--subtle)}',
+  '.tchip{display:inline-flex;align-items:center;gap:.25rem;font:600 .72rem var(--mono);color:var(--run);background:var(--run-bg);border:0;border-radius:4px;padding:.05rem .35rem;cursor:pointer;transition:filter .15s}.tchip:hover{filter:brightness(1.15)}.tchip .di{width:12px;height:12px}',
+  '.drawer{position:fixed;inset:0;z-index:40}.drawer[hidden]{display:none}.drawer-bg{position:absolute;inset:0;background:rgba(0,0,0,.35);animation:tl-fade .2s var(--ease)}@keyframes tl-fade{from{opacity:0}}',
+  '.drawer-panel{position:absolute;top:0;right:0;bottom:0;width:min(36rem,100vw);background:var(--panel);border-left:1px solid var(--line);box-shadow:var(--shadow-lg);display:flex;flex-direction:column;animation:tl-slide .28s var(--ease);padding-bottom:env(safe-area-inset-bottom,0px)}@keyframes tl-slide{from{transform:translateX(100%)}}',
+  '.drawer-panel>header{display:flex;gap:.75rem;align-items:flex-start;padding:1rem 1.1rem .85rem;border-bottom:1px solid var(--line)}.drawer-panel h2{margin:0;font-size:1.05rem;line-height:1.35;flex:1;overflow-wrap:anywhere}',
+  '.drawer-body{padding:1rem 1.1rem 1.5rem;overflow:auto;flex:1}.dfacts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.45rem 1rem;margin:0 0 1rem;font-size:.88rem}.dfacts dt{color:var(--muted)}.dfacts dd{margin:0;overflow-wrap:anywhere}.dfacts .av{width:18px;height:18px}',
+  '.dtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.88rem;line-height:1.55;background:var(--subtle);border:1px solid var(--line);border-radius:6px;padding:.75rem .85rem;max-height:50vh;overflow:auto}.dsub{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.1rem 0 .5rem}',
+  '.lbl{display:inline-block;font-size:.75rem;background:var(--subtle);border:1px solid var(--line);border-radius:999px;padding:0 .5rem;margin:0 .2rem .2rem 0}.drawer .sk{height:12px;border-radius:4px;background:var(--subtle);margin:.6rem 0}',
   '.tl-new{animation:tl-new 1.6s var(--ease)}@keyframes tl-new{0%,30%{background:var(--run-bg)}100%{background:transparent}}',
   '.btn-sm{padding:.2rem .6rem;font-size:.82rem;width:auto}.btn-sm .di{width:14px;height:14px}.btn-sm[data-busy]::before{content:"";width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:tl-spin .7s linear infinite}.btn-sm[data-busy] .di{display:none}',
   '.mrlist .empty{display:none}',
@@ -479,6 +545,18 @@ export function dashboardScript(dashPath) {
 function mark(){var v=d.getAttribute('data-view'),f=d.getAttribute('data-mrf');document.querySelectorAll('[data-view-to]').forEach(function(b){if(b.closest('.side,.tabbar'))b.setAttribute('aria-current',String(b.getAttribute('data-view-to')===v))});document.querySelectorAll('[data-mrf-to]').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-mrf-to')===f))})}
 function toast(t){var r=document.getElementById('toasts');if(!r||!t)return;var e=document.createElement('div');e.className='toast';e.textContent=t;r.appendChild(e);setTimeout(function(){e.classList.add('out');setTimeout(function(){e.remove()},320)},3600)}
 function view(v){d.setAttribute('data-view',v);mark();try{sessionStorage.setItem('tl-view',v)}catch(e){}window.scrollTo({top:0,behavior:'smooth'})}
+var tdrag=null,tfrom=null,tnext=null;
+function colCount(c){var n=c.querySelectorAll('.tk').length,s=c.querySelector('[data-col-count]');if(s)s.textContent=n;var ul=c.querySelector('ul'),none=ul&&ul.querySelector('.none');if(n&&none)none.remove()}
+d.addEventListener('dragstart',function(e){var t=e.target.closest&&e.target.closest('.tk[data-issue]');if(!t)return;tdrag=t;tfrom=t.parentNode;tnext=t.nextSibling;t.classList.add('dragging');try{e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',t.getAttribute('data-issue'))}catch(x){}});
+d.addEventListener('dragover',function(e){if(!tdrag)return;var c=e.target.closest&&e.target.closest('[data-col]');d.querySelectorAll('.col.drop-here').forEach(function(x){if(x!==c)x.classList.remove('drop-here')});if(!c||c.contains(tdrag))return;e.preventDefault();c.classList.add('drop-here')});
+d.addEventListener('drop',function(e){if(!tdrag)return;var c=e.target.closest&&e.target.closest('[data-col]');if(!c||c.contains(tdrag))return;e.preventDefault();var t=tdrag,from=tfrom,next=tnext,src=from.closest('[data-col]');c.querySelector('ul').prepend(t);colCount(c);colCount(src);busy++;var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('key',t.getAttribute('data-issue'));body.set('to',c.getAttribute('data-col'));
+fetch(B+'/move',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:body.toString()}).then(function(r){return r.json().catch(function(){return {status:'failed',text:'The answer could not be read. Reload the board.'}})}).then(function(r){if(r.status==='moved'){t.classList.add('moved')}else{from.insertBefore(t,next);colCount(c);colCount(src)}toast(r.text)}).catch(function(){from.insertBefore(t,next);colCount(c);colCount(src);toast('The connection was lost. Reload the board to see the ticket\'s current state.')}).then(function(){busy--;setTimeout(refresh,800)})});
+d.addEventListener('dragend',function(){if(tdrag)tdrag.classList.remove('dragging');tdrag=null;d.querySelectorAll('.col.drop-here').forEach(function(x){x.classList.remove('drop-here')})});
+var dr=d.querySelector('[data-drawer]'),dlast=null,dreq=0;
+function closeDetail(){if(!dr||dr.hidden)return;dr.hidden=true;document.body.style.overflow='';if(dlast&&dlast.focus)dlast.focus()}
+function openDetail(el){if(!dr)return;var issue=el.getAttribute('data-issue'),alertId=el.getAttribute('data-alert'),n=++dreq;dlast=el;var t=dr.querySelector('#drawer-title'),body=dr.querySelector('[data-drawer-body]');t.textContent=issue||'Alert';body.innerHTML='<div class="sk" style="width:60%"></div><div class="sk" style="width:85%"></div><div class="sk" style="width:40%"></div><div class="sk" style="height:120px"></div>';dr.hidden=false;document.body.style.overflow='hidden';var c=dr.querySelector('.drawer-panel [data-drawer-close]');if(c)c.focus();
+fetch(B+(issue?'/issue?key='+encodeURIComponent(issue):'/alert?id='+encodeURIComponent(alertId)),{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(x){if(n!==dreq)return;if(!x){body.innerHTML='';var p=document.createElement('p');p.className='note';p.textContent='Could not load the details right now.';body.appendChild(p);return}t.textContent=x.title||'';body.innerHTML=x.html||''}).catch(function(){if(n===dreq)body.textContent='Could not load the details right now.'})}
+d.addEventListener('keydown',function(e){if(e.key==='Escape'&&dr&&!dr.hidden){closeDetail();return}var el=e.target;if((e.key==='Enter'||e.key===' ')&&el&&el.matches&&el.matches('[role=button][data-issue],[role=button][data-alert]')){e.preventDefault();openDetail(el)}});
 function collapse(on){d.classList.toggle('collapsed',on);var c=document.querySelector('[data-collapse]');if(c){c.setAttribute('aria-expanded',String(!on));c.title=on?'Expand sidebar':'Collapse sidebar'}try{localStorage.setItem('tl-side',on?'1':'0')}catch(e){}}
 try{if(localStorage.getItem('tl-side')==='1'){d.style.transition='none';collapse(true);requestAnimationFrame(function(){requestAnimationFrame(function(){d.style.transition=''})})}}catch(e){}
 var G=d.querySelector('[data-grid]'),LK='tl-layout',DEF={};if(G)G.querySelectorAll('[data-sec]').forEach(function(b){DEF[b.getAttribute('data-sec')]=+b.getAttribute('data-span')});
@@ -504,7 +582,7 @@ d.addEventListener('pointerup',endRz);d.addEventListener('pointercancel',endRz);
 d.addEventListener('dblclick',function(e){var h=e.target.closest&&e.target.closest('[data-resize]');if(!h)return;var b=h.closest('[data-sec]');b.style.setProperty('--span',String(DEF[b.getAttribute('data-sec')]));b.style.height='';saveL()});
 try{var sv=sessionStorage.getItem('tl-view'),sf=sessionStorage.getItem('tl-mrf');if(sv)d.setAttribute('data-view',sv);if(sf)d.setAttribute('data-mrf',sf)}catch(e){}if(location.hash==='#overview'){d.setAttribute('data-view','overview');try{history.replaceState(null,'',location.pathname)}catch(e){}}mark();
 document.addEventListener('click',function(e){document.querySelectorAll('[data-account-menu][open]').forEach(function(m){if(!m.contains(e.target))m.removeAttribute('open')})});document.addEventListener('keydown',function(e){if(e.key==='Escape')document.querySelectorAll('[data-account-menu][open]').forEach(function(m){m.removeAttribute('open')})});
-document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the row above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
+document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var di=e.target.closest('[data-issue],[data-alert]');if(di&&!e.target.closest('a')){e.preventDefault();openDetail(di);return}if(e.target.closest('[data-drawer-close]')){closeDetail();return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the row above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
 function pill(cls,text,title){var s=document.createElement('span');s.className='pill '+cls;s.textContent=text;if(title)s.title=title;return s}
 function approve(b){if(b.disabled)return;b.disabled=true;b.setAttribute('data-busy','');busy++;var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('project',b.getAttribute('data-project'));body.set('iid',b.getAttribute('data-iid'));body.set('sha',b.getAttribute('data-sha'));
 fetch(B+'/approve',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:body.toString()}).then(function(r){return r.json().catch(function(){return {status:'unknown',text:'The answer could not be read. Check the merge request in GitLab.'}})}).then(function(r){var ok=r.status==='approved'||r.status==='already';b.replaceWith(ok?pill('pill-ok','Approved',r.text):r.status==='unknown'?pill('pill-idle','Check GitLab',r.text):pill('pill-bad','Not approved',r.text));toast(r.text)}).catch(function(){b.replaceWith(pill('pill-idle','Check GitLab'));toast('The connection was lost. Nothing is repeated automatically: check the merge request in GitLab.')}).then(function(){busy--;setTimeout(refresh,1500)})}

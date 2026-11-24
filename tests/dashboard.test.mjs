@@ -275,3 +275,53 @@ test('a session whose token cannot be renewed ends', async () => {
     assert.equal(server.dashSessions.size, 0);
   });
 });
+
+test('details: only tickets and alerts the dashboard shows, read by the bot, escaped', async () => {
+  const reads = [];
+  const sources = {
+    sprint: async () => ({ total: 1, todo: [{ key: 'ABC-1', summary: 'S', assignee: 'Alice Example', status: 'Open' }], inProgress: [], inReview: [] }),
+    alerts: async () => ({ alerts: [{ id: 'abc-123', message: 'Disk full', priority: 'P2', createdAt: new Date().toISOString() }], duty: [] }),
+    issueKeys: (mr) => (mr.title.includes('ABC-2') ? ['ABC-2'] : []),
+    issue: async (key) => { reads.push(key); return { key, summary: '<b>x</b>', status: 'Open', assignee: 'Alice Example', description: 'line <script>', url: 'https://jira.example.com/browse/' + key }; },
+    alert: async (id) => { reads.push(id); if (id !== 'abc-123') throw new Error('secret detail'); return { id, message: 'Disk full', priority: 'P2', details: { host: '<h>' }, url: 'https://opsgenie.example.com/a' }; },
+  };
+  await withDashboard({ nodes: [node({ title: 'ABC-2: fix it' })], sources }, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    const get = (q) => fetch(`${base}/approve/dashboard/${q}`, { headers: { Cookie: cookie } });
+    const html = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
+    assert.match(html, /class="tchip" data-issue="ABC-2"/, 'the linked ticket is a chip on the merge request');
+    const sprint = await (await get('issue?key=ABC-1')).json();
+    assert.ok(sprint.html.includes('line &lt;script&gt;') && sprint.title.includes('&lt;b&gt;') === false);
+    assert.equal((await get('issue?key=ABC-2')).status, 200, 'a ticket named by a listed merge request');
+    assert.equal((await get('issue?key=ABC-9')).status, 404, 'not on the dashboard');
+    assert.equal((await get('issue?key=../x')).status, 404);
+    const alert = await (await get('alert?id=abc-123')).json();
+    assert.ok(alert.html.includes('&lt;h&gt;'));
+    assert.equal((await get('alert?id=other')).status, 404);
+    assert.deepEqual(reads, ['ABC-1', 'ABC-2', 'abc-123'], 'nothing else is read');
+  });
+});
+
+test('moving a ticket: one transition for a ticket on the board, after Origin and CSRF checks', async () => {
+  const moves = [];
+  const sources = {
+    sprint: async () => ({ total: 1, todo: [{ key: 'ABC-1', summary: 'S', assignee: 'A', status: 'Open' }], inProgress: [], inReview: [] }),
+    move: async (key, to) => { moves.push([key, to]); return 'In Review'; },
+  };
+  await withDashboard({ sources }, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    const html = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
+    assert.match(html, /data-col="inReview"/);
+    assert.match(html, /data-issue="ABC-1" draggable="true"/);
+    const csrf = /id="dash-csrf" value="([^"]+)"/.exec(html)[1];
+    const post = (body, origin = ORIGIN) => fetch(`${base}/approve/dashboard/move`, { method: 'POST', headers: { ...FORM, Accept: 'application/json', Cookie: cookie, Origin: origin }, body: new URLSearchParams(body).toString() });
+    assert.equal((await post({ csrf, key: 'ABC-1', to: 'inReview' }, 'https://evil.example.com')).status, 403);
+    assert.equal((await post({ csrf: 'x', key: 'ABC-1', to: 'inReview' })).status, 403);
+    assert.equal((await post({ csrf, key: 'ABC-7', to: 'inReview' })).status, 404, 'not on the board');
+    assert.equal((await post({ csrf, key: 'ABC-1', to: 'done' })).status, 400);
+    assert.equal(moves.length, 0);
+    const ok = await (await post({ csrf, key: 'ABC-1', to: 'inReview' })).json();
+    assert.deepEqual(ok, { status: 'moved', text: 'ABC-1 moved to In Review.' });
+    assert.deepEqual(moves, [['ABC-1', 'inReview']]);
+  });
+});

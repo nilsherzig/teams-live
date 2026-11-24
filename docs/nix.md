@@ -567,7 +567,11 @@ again each time; a refused renewal or "Sign out" ends it. Sessions are kept acro
 `dashboard-sessions.json` in the state directory, encrypted with a key derived from the OAuth client secret (mode
 0600); a new client secret simply signs everyone out. The page refreshes its sections every minute while it is
 visible. Cards can be moved (drag the grip, or arrow keys on it) and resized (drag the corner, double-click to
-reset); the layout is kept in the browser's local storage only. On a phone the sidebar becomes a bottom tab bar.
+reset); the layout is kept in the browser's local storage only. A click on an alert, a sprint ticket or a ticket
+chip on a merge request (a ticket named in its branch or title) opens its details in a side panel; the server reads
+only alerts and tickets the dashboard currently shows. Dragging a ticket to another column of the sprint board runs
+the Jira transition that leads there, with the bot's Jira account (Jira records that account; the service log names
+who moved it). On a phone the sidebar becomes a bottom tab bar.
 
 The dashboard uses the same OAuth application and callback; the proxy must forward the dashboard path and its sub-paths (`/data`, `/approve`, `/signin`, `/signout`). With `dashboard.path = "/dashboard"` the proxy can also send `/` there, so the host itself opens the dashboard.
 

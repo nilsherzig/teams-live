@@ -30,6 +30,47 @@ const log = createLogger('main');
 function dashboardSources({ jira, opsgenie }) {
   return {
     sprint: jira.isConfigured() ? () => jira.getActiveSprintTasks() : null,
+    // A ticket for the preview drawer, with what the sprint list leaves out (description, reporter, labels, dates).
+    issue: jira.isConfigured()
+      ? async (key) => {
+          const fields = 'summary,status,assignee,reporter,priority,issuetype,description,labels,created,updated';
+          const res = await jira.request(`rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields}`, { resource: true });
+          const f = res.fields || {};
+          return {
+            key: res.key,
+            summary: f.summary || '(No summary)',
+            status: f.status?.name || 'Unknown',
+            statusCategory: f.status?.statusCategory?.key || '',
+            assignee: f.assignee?.displayName || 'Unassigned',
+            reporter: f.reporter?.displayName || '',
+            priority: f.priority?.name || '',
+            issueType: f.issuetype?.name || '',
+            description: typeof f.description === 'string' ? f.description : '',
+            labels: Array.isArray(f.labels) ? f.labels : [],
+            created: f.created || '',
+            updated: f.updated || '',
+            url: jira.issueUrl(res.key),
+          };
+        }
+      : null,
+    // The tickets a merge request names in its branch or title (the same rules as the cards).
+    issueKeys: jira.isConfigured() ? (mr) => jira.findAssociatedIssues({ title: mr.title, source_branch: mr.source, author: mr.author }).map((i) => i.key) : null,
+    alert: opsgenie.isConfigured() ? (id) => opsgenie.getAlert(id) : null,
+    // Moves a sprint ticket to a board column with the Jira transition that leads there: the target status's
+    // category (to do, in progress) or, for review, a target status named like it. Returns the new status name.
+    move: jira.isConfigured()
+      ? async (key, column) => {
+          const path = `rest/api/2/issue/${encodeURIComponent(key)}/transitions`;
+          const { transitions = [] } = (await jira.request(path, { resource: true })) || {};
+          const isReview = (t) => /review/i.test(t.to?.name || t.name || '');
+          const pick = transitions.find((t) =>
+            column === 'inReview' ? isReview(t) : column === 'inProgress' ? t.to?.statusCategory?.key === 'indeterminate' && !isReview(t) : t.to?.statusCategory?.key === 'new',
+          );
+          if (!pick) throw Object.assign(new Error('Jira offers no transition to that column for this ticket.'), { userFacing: true });
+          await jira.request(path, { method: 'POST', body: { transition: { id: pick.id } }, resource: true });
+          return pick.to?.name || pick.name;
+        }
+      : null,
     alerts: opsgenie.isConfigured()
       ? async () => {
           const r = await opsgenie.getAllOpenAlerts();

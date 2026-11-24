@@ -64,7 +64,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from './logger.mjs';
-import { DASHBOARD_CSS, dashboardBody, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, renderSections } from './dashboard.mjs';
+import { DASHBOARD_CSS, alertDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, renderSections } from './dashboard.mjs';
 
 const FULL_WARN_INTERVAL_MS = 10 * 60 * 1000;
 const log = createLogger('approve');
@@ -860,12 +860,12 @@ export class ApproveServer {
     if (this.dashboard && this.dashPath !== legacy && (pathname === legacy || pathname.startsWith(`${legacy}/`))) return '/dashboard-moved';
     if (this.dashboard && (pathname === this.dashPath || pathname.startsWith(`${this.dashPath}/`))) {
       const sub = pathname.slice(this.dashPath.length);
-      return ['', '/data', '/approve', '/signin', '/signout'].includes(sub) ? `/dashboard${sub}` : null;
+      return ['', '/data', '/approve', '/signin', '/signout', '/issue', '/alert', '/move'].includes(sub) ? `/dashboard${sub}` : null;
     }
     if (this.basePath && (pathname === this.basePath || pathname.startsWith(`${this.basePath}/`))) {
       pathname = pathname.slice(this.basePath.length) || '/';
     }
-    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/approve', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
+    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/issue', '/dashboard/alert', '/dashboard/move', '/dashboard/approve', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
   }
 
   readForm(req) {
@@ -1540,6 +1540,16 @@ export class ApproveServer {
         return this.json(res, 502, {});
       }
     }
+    if (route === '/dashboard/issue' || route === '/dashboard/alert') {
+      if (method !== 'GET') return notAllowed('GET');
+      if (!session) return this.json(res, 401, {});
+      return this.dashboardDetail(route === '/dashboard/issue' ? 'issue' : 'alert', req, res, session);
+    }
+    if (route === '/dashboard/move') {
+      if (method !== 'POST') return notAllowed('POST');
+      if (!session) return this.json(res, 401, { status: 'failed', text: 'Signed out. Reload the page and sign in again. Nothing was changed.' });
+      return this.dashboardMove(req, res, session);
+    }
     if (route === '/dashboard/approve') {
       if (method !== 'POST') return notAllowed('POST');
       if (!session) return this.json(res, 401, { status: 'failed', text: 'Signed out. Reload the page and sign in again. Nothing was approved.' });
@@ -1648,6 +1658,95 @@ export class ApproveServer {
     return promise;
   }
 
+  /**
+   * POST <dash>/move: moves one ticket of the active sprint to another board column (a Jira transition, made with
+   * the bot's Jira account; the server log names who asked). Same checks as an approval: Origin, CSRF, the ticket
+   * must be on this visitor's board. Answers `{status: moved|failed, text}`.
+   */
+  async dashboardMove(req, res, session) {
+    const answer = (status, text, code = 200) => this.json(res, code, { status, text });
+    if (!this.originAllowed(req)) return answer('failed', 'The request did not come from the dashboard. Nothing was changed.', 403);
+    const parsed = await this.postForm(req);
+    if (!parsed.form) return answer('failed', 'The request was rejected. Nothing was changed.', parsed.status);
+    if (!this.csrf.verify(parsed.form.get('csrf'), session.sid, 'dashboard', `who=${session.user.username}`)) return answer('failed', 'The page expired. Reload it and try again. Nothing was changed.', 403);
+    const key = String(parsed.form.get('key') || '').toUpperCase();
+    const column = String(parsed.form.get('to') || '');
+    const labels = { todo: 'To do', inProgress: 'In progress', inReview: 'In review' };
+    if (!/^[A-Z][A-Z0-9]{0,15}-[1-9]\d{0,8}$/.test(key) || !labels[column]) return answer('failed', 'The request was rejected. Nothing was changed.', 400);
+    const data = await this.dashboardData(session);
+    const onBoard = ['todo', 'inProgress', 'inReview'].some((k) => (data.sprint.data?.[k] || []).some((t) => String(t.key).toUpperCase() === key));
+    if (!onBoard) return answer('failed', `${key} is not on the sprint board. Nothing was changed.`, 404);
+    const fn = this.dashboard.sources?.move;
+    if (typeof fn !== 'function') return answer('failed', 'Moving tickets is not available. Nothing was changed.', 404);
+    try {
+      const status = await this.withLock(`jira:${key}`, () => fn(key, column));
+      log(`Dashboard: ${session.user.username} moved ${key} to ${status || labels[column]}`);
+      this.dashSourceCache.delete('sprint');
+      this.dashData.clear();
+      return answer('moved', `${key} moved to ${status || labels[column]}.`);
+    } catch (err) {
+      log(`Dashboard: moving ${key} for ${session.user.username} failed: ${err.message}`);
+      return answer('failed', err.userFacing ? `${key}: ${err.message} Nothing was changed.` : `Jira did not move ${key}. Reload the board to see its current state.`);
+    }
+  }
+
+  /** The Jira tickets a merge request names (branch, title), as keys; [] without Jira. */
+  mrIssueKeys(mr) {
+    const fn = this.dashboard.sources?.issueKeys;
+    if (typeof fn !== 'function') return [];
+    try {
+      return (fn(mr) || []).filter((k) => /^[A-Z][A-Z0-9]{0,15}-[1-9]\d{0,8}$/.test(k)).slice(0, 3);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * GET <dash>/issue?key=… and <dash>/alert?id=…: the details of a ticket or an alert for the preview drawer, read
+   * by the bot. Only what this visitor's dashboard shows right now (a sprint ticket, a ticket named by a listed merge
+   * request, an open alert), so the endpoint is no general Jira or OpsGenie reader. Answers `{title, html}`.
+   */
+  async dashboardDetail(kind, req, res, session) {
+    const params = new URL(req.url, 'http://localhost').searchParams;
+    const data = await this.dashboardData(session);
+    let id;
+    let allowed;
+    if (kind === 'issue') {
+      id = String(params.get('key') || '').toUpperCase();
+      const keys = new Set();
+      for (const k of ['todo', 'inProgress', 'inReview']) for (const t of data.sprint.data?.[k] || []) keys.add(String(t.key).toUpperCase());
+      for (const mr of data.mrs.items || []) for (const k of mr.issues || []) keys.add(k);
+      allowed = /^[A-Z][A-Z0-9]{0,15}-[1-9]\d{0,8}$/.test(id) && keys.has(id);
+    } else {
+      id = String(params.get('id') || '');
+      allowed = /^[A-Za-z0-9-]{1,80}$/.test(id) && (data.alerts.data?.alerts || []).some((a) => a.id === id);
+    }
+    if (!allowed) return this.json(res, 404, {});
+    const fn = this.dashboard.sources?.[kind];
+    if (typeof fn !== 'function') return this.json(res, 404, {});
+    const cacheKey = `${kind}:${id}`;
+    const now = this.now();
+    let hit = this.dashSourceCache.get(cacheKey);
+    if (!hit || now - hit.at > DASH_SOURCE_CACHE_MS) {
+      hit = { at: now, promise: Promise.resolve().then(() => fn(id)) };
+      this.dashSourceCache.set(cacheKey, hit);
+      hit.promise.catch(() => { if (this.dashSourceCache.get(cacheKey) === hit) this.dashSourceCache.delete(cacheKey); });
+      for (const [k, v] of this.dashSourceCache) if (k.includes(':') && now - v.at > DASH_SOURCE_CACHE_MS) this.dashSourceCache.delete(k);
+    }
+    try {
+      const item = await hit.promise;
+      const names = kind === 'issue' ? [item.assignee, item.reporter].filter(Boolean) : [];
+      if (names.length && this.avatarWarm) { try { await this.avatarWarm(names); } catch { /* initials */ } }
+      const avatars = {};
+      for (const n of names) { try { const u = this.avatarOf?.(n); if (u) avatars[n] = u; } catch { /* initials */ } }
+      const ctx = { now: this.now(), timeZone: this.dashboard.timeZone, avatars };
+      return this.json(res, 200, kind === 'issue' ? issueDetail(item, ctx) : alertDetail(item, ctx));
+    } catch (err) {
+      log(`Dashboard could not read ${kind} ${id}: ${err.message}`);
+      return this.json(res, 502, {});
+    }
+  }
+
   /** Everything the dashboard shows, for one visitor (their merge requests are read with their token). */
   dashboardData(session) {
     const key = sha256Hex(session.sid);
@@ -1657,7 +1756,7 @@ export class ApproveServer {
     const promise = (async () => {
       const [mrs, sprint, alerts, meetings] = await Promise.all([
         fetchGroupMrs(this.gitlabHost, session.accessToken, this.dashboard.group)
-          .then((items) => ({ items }))
+          .then((items) => ({ items: items.map((mr) => ({ ...mr, issues: this.mrIssueKeys(mr) })) }))
           .catch((err) => {
             log(`Dashboard could not list merge requests for ${session.user.username}: ${err.message}`);
             if (err.status === 401 && session.stored) session.stored.tokenExpiresAt = 0;

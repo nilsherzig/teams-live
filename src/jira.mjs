@@ -229,6 +229,8 @@ export class JiraClient {
       throw new JiraHttpError(errStr, res.status, { resource });
     }
     this.onSuccess?.('Jira');
+    // Writes such as a transition answer 204 without a body.
+    if (res.status === 204) return null;
     return await res.json();
   }
 
