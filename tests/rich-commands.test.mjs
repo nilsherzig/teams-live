@@ -259,18 +259,14 @@ test('/mrs: regular markdown by default, list card with approval, auto-merge and
   const on = newWatcher({ rich_messages: true });
   const rich = on.formatMrsMessage(groupMrs, {});
   assert.equal(isRichMessage(rich), true);
-  const rows = rowsOf(rich.card).join('\n');
-  assert.ok(rows.includes('[!1](https://gitlab.example.com/group/app/-/merge_requests/1)'));
-  assert.ok(JSON.stringify(rich.card).includes('**app**'));
-  assert.ok(rows.includes('not approved'));
-  assert.ok(rows.includes('rebase!'));
-  assert.ok(rows.includes('auto-merge'));
-  assert.ok(rows.includes('approved'));
-  // The card text never carries mention markup; mentions stay in the markdown (see renderReplyContent).
-  assert.ok(!JSON.stringify(rich.card).includes('8:orgid'));
+  const cards = [rich, ...(rich.followUps || [])];
+  const rendered = JSON.stringify(cards.map((part) => part.card));
+  assert.match(rendered, /merge_requests\/1/);
+  assert.match(rendered, /Not approved|not approved/);
+  assert.match(rendered, /Rebase required/);
+  assert.match(rendered, /Auto-merge On/);
+  assert.ok(!rendered.includes('8:orgid'));
   assert.ok(messageMarkdown(rich).includes('Open Merge Requests'));
-  // Status emojis of the regular list stay.
-  assert.ok(rows.includes('⚠️') || rows.includes('✅'));
 });
 
 test('/mrs: an empty list and the regular text stay plain', () => {

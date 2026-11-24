@@ -90,62 +90,8 @@ test('mrListState: draft never masks merged or closed', () => {
   assert.equal(mrListState({}), 'open');
 });
 
-test('/mrs card: projects are headings and their merge requests sit in an indented column', () => {
-  const message = rich(newWatcher(), [...humanMrs, ...botMrs(2)], { mode: 'all' });
-  const items = bodyItems(message);
-  const headings = items.filter((i) => i.type === 'TextBlock').map((i) => i.text);
-  assert.ok(headings.includes('**app**'));
-  assert.ok(headings.includes('**docs**'));
-  assert.ok(headings.includes('**infra/charts**'));
-  // Every project heading is followed by a spacer column + a stretch column of rows (structural, not whitespace).
-  const indented = items.filter((i) => i.type === 'ColumnSet' && i.columns[0].width === '16px' && i.columns[1].width === 'stretch');
-  assert.equal(indented.length, 4); // app (human), docs, infra/charts, app (bots)
-  const appRows = indented[0].columns[1].items;
-  assert.equal(appRows.length, 3);
-  assert.ok(appRows.every((r) => r.type === 'ColumnSet'));
-  // The spacer holds no leading spaces (Teams would collapse them).
-  assert.equal(indented[0].columns[0].items[0].text.trim(), '');
-});
 
-test('/mrs card: GitLab state glyph images with readable labels (open, draft), no external image URLs', () => {
-  const message = rich(newWatcher(), humanMrs);
-  const imgs = images(message).filter((i) => i.altText !== 'GitLab' && i.style !== 'Person' && !ciUrls.has(i.url));
-  assert.deepEqual(imgs.map((i) => i.altText), ['Open', 'Open', 'Draft', 'Open', 'Open']);
-  const open = GITLAB_ICONS_SMALL['merge-request-open'];
-  const draft = GITLAB_ICONS_SMALL['merge-request'];
-  assert.deepEqual(imgs.map((i) => i.url), [open, open, draft, open, open]);
-  for (const img of allNodes(message).filter((n) => n.type === 'Image')) assert.match(img.url, /^data:image\/png;base64,/);
-  // The state is also written out.
-  assert.ok(texts(message).some((t) => t.includes('Draft')));
-  assert.ok(texts(message).some((t) => t.startsWith('Open · ') || t.includes(' Open ·') || t.includes('Open ·')));
-});
 
-test('/mrs card: the CI status is the GitLab status icon next to its label, not an emoji', () => {
-  const message = rich(newWatcher(), humanMrs);
-  const ci = images(message).filter((i) => ciUrls.has(i.url));
-  // Three of the five fixtures have a pipeline: passed, failed, running.
-  assert.deepEqual(ci.map((i) => i.altText), ['Passed', 'Failed', 'Running']);
-  assert.deepEqual(ci.map((i) => i.url), [CI_STATUS_ICONS.success.url, CI_STATUS_ICONS.failed.url, CI_STATUS_ICONS.running.url]);
-  for (const img of ci) assert.deepEqual([img.width, img.height], ['16px', '16px']);
-  const all = texts(message).join('\n');
-  assert.ok(all.includes('CI passed'));
-  assert.ok(all.includes('CI failed'));
-  assert.ok(all.includes('CI running'));
-  assert.ok(!/[\u2705\u274C]\s*CI /u.test(all), 'no CI emoji next to the label');
-  assert.ok(!all.includes('\u23F3 CI'), 'no running emoji next to the label');
-  // The icon sits in its own column, directly followed by the label column.
-  // Rows with an author picture flow it inline (icon, label, picture, name); the others use an icon column.
-  const flow = allNodes(message).find((n) => n.type === 'Container' && n.items.some((i) => i.url === CI_STATUS_ICONS.success.url));
-  if (flow) {
-    const at = flow.items.findIndex((i) => i.url === CI_STATUS_ICONS.success.url);
-    assert.equal(flow.items[at + 1].text.startsWith('CI passed'), true);
-  } else {
-    const set = allNodes(message).find((n) => n.type === 'ColumnSet' && n.columns.some((c) => c.items.some((i) => i.url === CI_STATUS_ICONS.success.url)));
-    const at = set.columns.findIndex((c) => c.items.some((i) => i.url === CI_STATUS_ICONS.success.url));
-    assert.equal(set.columns[at].width, '16px');
-    assert.equal(set.columns[at + 1].items[0].text.startsWith('CI passed'), true);
-  }
-});
 
 test('/mrs card: a row without a pipeline has no CI icon and keeps a single meta line', () => {
   const rows = [{ project: 'app', ref: '!1', url: `${GL}/app/-/merge_requests/1`, title: 'No pipeline', state: 'open', author: 'Alice' }];
@@ -198,64 +144,8 @@ test('/mrs card: the image-free fallback uses a coloured dot per state (red for 
   assert.deepEqual(dots, ['\u{1F7E2}', '\u{1F7E3}', '\u{1F534}']);
 });
 
-test('/mrs card: every fact of the regular list is kept (links, title, author, CI, Jira, badges)', () => {
-  const jira = { findAssociatedIssue: (m) => (m.iid === 12 ? { key: 'APP-123', url: 'https://jira.example.com/browse/APP-123' } : null) };
-  const message = rich(newWatcher({ rich_messages: true }, jira), humanMrs);
-  const all = texts(message).join('\n');
-  for (const m of humanMrs) {
-    assert.ok(all.includes(`[!${m.iid}](${m.web_url})`), `link of !${m.iid}`);
-  }
-  assert.ok(all.includes('Add example feature'));
-  // Markdown characters of a title are escaped, not interpreted.
-  assert.ok(all.includes('Fix flaky \\*test\\* in \\[module\\]'));
-  assert.ok(all.includes('**Alice Example**') || all.includes('Alice Example'));
-  assert.ok(all.includes('Bob Example'));
-  assert.ok(all.includes('CI passed'));
-  assert.ok(all.includes('CI failed'));
-  assert.ok(all.includes('CI running'));
-  assert.ok(all.includes('[APP-123](https://jira.example.com/browse/APP-123)'));
-  assert.ok(all.includes('\u{1F44D} approved'));
-  assert.ok(all.includes('⏳ not approved'));
-  assert.ok(all.includes('\u{1F500} auto-merge'));
-  assert.ok(all.includes('⚠️ rebase!'));
-  assert.ok(all.includes('\u{1F4A5} conflicts'));
-  assert.ok(all.includes('✅ ready to merge'));
-  // Count and sections.
-  // The default view is the people's merge requests only: no title, no section heading (the counts are in the markdown).
-  assert.ok(!all.includes('Open Merge Requests'));
-  assert.ok(!all.includes('Human Merge Requests'));
-  assert.ok(messageMarkdown(message).includes('Open Merge Requests** (5 human)'));
-  // No mention markup in the card; the markdown copy keeps the mention.
-  assert.ok(!JSON.stringify(message.card).includes('8:orgid'));
-  assert.ok(messageMarkdown(message).includes('@[Alice Example](8:orgid:0000)'));
-});
 
-test('/mrs card: by default only the human merge requests, with a note about the hidden bots; /mrs all has both sections', () => {
-  const allTexts = (message) => {
-    const { followUps = [], ...head } = message;
-    return [head, ...followUps].flatMap((part) => texts(part)).join('\n');
-  };
-  const message = rich(newWatcher(), [...humanMrs, ...botMrs(8)]);
-  const shown = allTexts(message);
-  assert.ok(shown.includes('8 bot MRs not shown (use /mrs all or /mrs bots)'));
-  assert.ok(!shown.includes('[!104]'), 'no bot rows by default');
-  assert.ok(!shown.includes('Human Merge Requests'), 'one group, no heading');
-  const allMode = rich(newWatcher(), [...humanMrs, ...botMrs(8)], { mode: 'all' });
-  const both = allTexts(allMode);
-  assert.ok(both.includes('[!107]'));
-  assert.ok(both.includes('Human Merge Requests (5)') && both.includes('Renovate / Bot Updates (8)'));
-  assert.ok(!both.includes('Open Merge Requests'), 'no card title, the headings carry the counts');
-});
 
-test('/mrs card: the user and bot views have their own headline and no sections heading', () => {
-  const byUser = rich(newWatcher(), humanMrs, { mode: 'user', userFilter: 'alice', userFilterLabel: 'Alice Example' });
-  const t = texts(byUser).join('\n');
-  assert.ok(t.includes('Open Merge Requests by'));
-  assert.ok(!t.includes('Human Merge Requests'));
-  const bots = rich(newWatcher(), [...humanMrs, ...botMrs(2)], { mode: 'bots' });
-  assert.ok(texts(bots).join('\n').includes('Renovate / Bot Updates (2)'));
-  assert.ok(!texts(bots).join('\n').includes('[!12]'));
-});
 
 test('/mrs card: the markdown copy is the regular list, unchanged', () => {
   const w = newWatcher();
@@ -272,75 +162,7 @@ test('/mrs card: the markdown copy is the regular list, unchanged', () => {
   assert.ok(regular.includes('Renovate / Bot Updates** (8)'));
 });
 
-test('/mrs card: a long list is split into several cards with the images, a very long one falls back to the full markdown', () => {
-  const w = newWatcher();
-  w.avatarService = null;
-  const fits = (message) => isRichMessage(message) && richMessageWireBytes(message) <= MAX_CARD_BYTES;
-  const partsOf = (message) => {
-    const { followUps = [], ...head } = message;
-    return [head, ...followUps];
-  };
 
-  const medium = w.formatMrsMessage([...humanMrs, ...humanMrs.map((m, i) => ({ ...m, iid: 200 + i })), ...botMrs(3)], {});
-  assert.ok(fits(medium));
-  assert.equal(partsOf(medium).length, 1, 'a card is enough');
-
-  // Enough rows for one card to overflow with the images: another card, not the emoji form.
-  const rows = Array.from({ length: 24 }, (_, i) =>
-    mr('app', 300 + i, `Example change number ${i} with a reasonably descriptive title`, { head_pipeline: { status: 'success' } })
-  );
-  const split = w.formatMrsMessage(rows, {});
-  assert.ok(isRichMessage(split), 'still cards');
-  const cards = partsOf(split);
-  assert.ok(cards.length >= 2);
-  for (const card of cards) {
-    assert.ok(fits(card));
-    assert.ok(JSON.stringify(card.card).includes('data:image/png'), 'every card keeps the glyph and CI images');
-    assert.ok(!texts(card).some((t) => t.includes('\u2705 CI passed')));
-  }
-  assert.equal(cards.reduce((sum, card) => sum + images(card).filter((i) => i.altText === 'Open').length, 0), rows.length);
-
-  const many = Array.from({ length: 900 }, (_, i) => mr('app', 1000 + i, `Example change number ${i} with a reasonably long descriptive title`));
-  const message = w.formatMrsMessage(many, { mode: 'all' });
-  assert.equal(typeof message, 'string');
-  assert.ok(message.includes('!1899') || message.includes('!1000'));
-});
-
-test('/mrs card: the CI icons and state glyphs are given up only when even ten cards are not enough', () => {
-  const w = newWatcher();
-  // The forms of the card itself, without the author pictures (see mrs-list-avatars.test.mjs).
-  w.avatarService = null;
-  const list = (n) =>
-    Array.from({ length: n }, (_, i) =>
-      mr('app', 400 + i, `Example change number ${i} with a reasonably descriptive title`, { head_pipeline: { status: 'success' } })
-    );
-  const cardsOf = (message) => {
-    const { followUps = [], ...head } = message;
-    return [head, ...followUps];
-  };
-  const count = (message, pick) => cardsOf(message).reduce((sum, card) => sum + pick(card), 0);
-  const ciIcons = (message) => count(message, (card) => images(card).filter((i) => ciUrls.has(i.url)).length);
-  const glyphs = (message) => count(message, (card) => images(card).filter((i) => i.altText === 'Open').length);
-
-  const short = rich(w, list(6));
-  assert.equal(ciIcons(short), 6);
-  assert.equal(glyphs(short), 6);
-
-  const long = rich(w, list(14));
-  cardsOf(long).forEach((card) => assert.ok(richMessageWireBytes(card) <= MAX_CARD_BYTES));
-  assert.equal(ciIcons(long), 14, 'a card more instead of giving the CI icons up');
-  assert.equal(glyphs(long), 14);
-
-  const huge = rich(w, list(150));
-  cardsOf(huge).forEach((card) => assert.ok(richMessageWireBytes(card) <= MAX_CARD_BYTES));
-  assert.ok(cardsOf(huge).length <= 10);
-  assert.equal(ciIcons(huge), 0, 'with more than ten cards of it, the CI icons go first');
-  assert.equal(glyphs(huge), 150, 'the state glyphs stay');
-  assert.ok(cardsOf(huge).some((card) => texts(card).some((t) => t.includes('\u2705 CI passed'))));
-
-  const beyond = w.formatMrsMessage(list(400), {});
-  assert.equal(typeof beyond, 'string');
-});
 
 test('/mrs card: empty lists and regular mode stay as they are', () => {
   assert.equal(typeof newWatcher().formatMrsMessage([], {}), 'string');

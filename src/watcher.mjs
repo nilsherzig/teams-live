@@ -49,7 +49,6 @@ import {
   buildCodePreviewCard,
   formatCodePreviewMarkdown,
   buildMarkdownCard,
-  buildMrListCard,
   mrListState,
   MAX_CARD_BYTES,
   opsGeniePriorityBadge,
@@ -5673,7 +5672,7 @@ export class MergeRequestWatcher {
   /**
    * The /mrs list as data: the headline and the sections (heading, rows, note),
    * each row with its regular markdown line and the facts the list card shows
-   * (see buildMrListCard). `text` instead is a reply without a list.
+   * (see mrsListCards). `text` instead is a reply without a list.
    */
   collectMrsListing(mrs, opts = {}) {
     if (!mrs || mrs.length === 0) {
@@ -5730,6 +5729,20 @@ export class MergeRequestWatcher {
 
       const refMatch = /^(.*?)(!\d+)$/.exec(displayRef);
       return {
+        multiMr: {
+          iid: mr.iid, title: mr.title, url: mr.web_url,
+          fullProject: mr.references?.full?.replace(/!\d+$/, '') || '',
+          sha: mr.sha || mr.diff_refs?.head_sha || null,
+          project: refMatch ? refMatch[1].replace(/\/$/, '') : '',
+          state: !mr.state || mr.state === 'opened' ? 'open' : mr.state,
+          draft: mr.draft || mr.work_in_progress, author: mr.author?.name || '',
+          approved: mr.approval_summary?.known ? mr.approval_summary.approved : null,
+          approvedBy: mr.approval_summary?.approvedBy || [],
+          pipeline: { status: mr.head_pipeline?.status || mr.pipeline_status || mr.pipeline?.status },
+          autoMerge: Boolean(autoMerge), needsRebase,
+          hasConflicts: mr.has_conflicts || mr.detailed_merge_status === 'conflict',
+          rebaseInProgress: mr.rebase_in_progress, jira: jiraTicket,
+        },
         line: `- ${statusEmoji} [${displayRef}](${mr.web_url})${jiraBadge}: ${mr.title} (${mention})${approvalBadge}${rebaseBadge}${autoMergeBadge}`,
         project: refMatch ? refMatch[1].replace(/\/$/, '') : '',
         ref: refMatch ? refMatch[2] : displayRef,
@@ -5890,24 +5903,7 @@ export class MergeRequestWatcher {
     }
   }
 
-  /**
-   * The /mrs list as cards: one when it fits, otherwise several, each a proper
-   * list card (state glyphs, CI status icons, an author picture on every human
-   * row) with its part of the sections. Nothing is traded for room: a list too
-   * large for one card goes on in the next one (the heading is repeated as
-   * "continued", a project heading is repeated where its rows go on, the note
-   * stays with the last row of its section), and every card stays within
-   * MAX_CARD_BYTES on the wire. Rows are placed in the order the card shows
-   * them (grouped by project), each card takes as many as fit, measured on the
-   * real card.
-   *
-   * `avatars`: every human row (`avatarSlot`) shows its photo when one is
-   * cached, else the neutral placeholder (never name-only; a bot has none).
-   * Returns the message (a sequence of rich messages when there are several
-   * cards, see makeRichMessageSequence), or null when a single row does not fit
-   * a card or more than MRS_LIST_MAX_CARDS would be needed (the caller then
-   * tries a lighter form).
-   */
+  /** Pack the listing into size-limited multi-MR cards, keeping sections and fallback text. */
   mrsListCards(listing, { images, ciIcons, avatars }) {
     const rows = listing.sections.flatMap((section) => section.rows);
     for (const row of rows) delete row.avatar;
@@ -5929,7 +5925,7 @@ export class MergeRequestWatcher {
     });
     const continued = (heading) =>
       /\)\s*:?\s*$/.test(heading) ? heading.replace(/\)\s*:?\s*$/, ', continued):') : `${heading.replace(/:\s*$/, '')} (continued)`;
-    const build = (chunk, part) => {
+    const build = (chunk, part, withActions = false) => {
       const sections = [];
       for (const { index, row } of chunk) {
         if (sections.at(-1)?.index !== index) {
@@ -5943,7 +5939,18 @@ export class MergeRequestWatcher {
         if (section.rows.includes(edges[section.index].last)) section.note = listing.sections[section.index].note;
       }
       const markdown = this.renderMrsListing({ headline: listing.headline, sections });
-      const card = buildMrListCard({ title: listing.cardHeadline ?? listing.headline, sections, images, ciIcons, avatars, part });
+      const actionRows = chunk.map(({ row }) => ({ ...row.multiMr, project: row.multiMr.fullProject }));
+      const eligible = actionRows.filter((row) => row.state === 'open' && !row.draft && row.sha);
+      const approveUrl = withActions && eligible.length && this.approveFlow?.batchLinkFor
+        ? this.approveFlow.batchLinkFor(eligible, 'approve') : null;
+      const openUrl = withActions && this.approveFlow?.batchLinkFor
+        ? this.approveFlow.batchLinkFor(actionRows, 'open') : null;
+      const card = buildMultiMrCard(sections.flatMap((section) => section.rows.map((row, index) => ({
+        ...row.multiMr, showAuthorAvatar: Boolean(avatars && row.avatarSlot),
+        avatars: row.avatar && row.multiMr.author ? { [row.multiMr.author]: row.avatar } : {},
+        sectionHeading: index === 0 ? section.heading : null,
+        sectionNote: index === section.rows.length - 1 ? section.note : null,
+      }))), { fallbackText: markdown, images: images && ciIcons, listMode: true, headline: listing.headline, part, approveUrl, openUrl });
       return card ? makeRichMessage(markdown, card) : null;
     };
     // The card label ("2/3") is measured at its widest, so the final numbers cannot overflow.
@@ -5976,8 +5983,9 @@ export class MergeRequestWatcher {
       };
       let chunks = pack(false);
       if (chunks && chunks.length > 1) chunks = pack(true) || chunks;
+      if (!chunks) return null;
       const total = chunks.length;
-      const messages = chunks.map((chunk, i) => build(chunk, total > 1 ? [i + 1, total] : null));
+      const messages = chunks.map((chunk, i) => build(chunk, total > 1 ? [i + 1, total] : null, true));
       if (messages.some((message) => !message || richMessageWireBytes(message) > MAX_CARD_BYTES)) return null;
       return makeRichMessageSequence(messages);
     } catch (e) {
@@ -5986,15 +5994,7 @@ export class MergeRequestWatcher {
     }
   }
 
-  /**
-   * The /mrs reply: regular markdown, or with rich messages the list card (see
-   * buildMrListCard and mrsListCards): the GitLab state glyph images and CI
-   * status icons, and a picture on every human row. A list too large for one
-   * card is split into several list cards before anything is given up; only a
-   * list that cannot be split into at most MRS_LIST_MAX_CARDS cards is tried
-   * again without the CI icons, then with emojis only, and finally falls back
-   * to the full markdown (which the transport sends as generic cards).
-   */
+  /** Render /mrs as multi-MR cards when enabled, otherwise as markdown. */
   formatMrsMessage(mrs, parsed = {}) {
     const listing = this.collectMrsListing(mrs, { ...parsed, rich: this.richMessages });
     const markdown = this.renderMrsListing(listing);
