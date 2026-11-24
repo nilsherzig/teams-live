@@ -377,7 +377,7 @@ export function dashboardBody({ data, ctx, csrf, filter, updated }) {
   return (
     `<div class="dash" id="dash" data-view="overview" data-mrf="${escapeHtml(filter)}">` +
     `<nav class="side" aria-label="Dashboard">${nav(false)}<button type="button" class="updated" data-refresh title="Updated ${escapeHtml(updated)}, refreshes every minute. Click to refresh now.">${ICONS.refresh}<span id="dash-updated">${escapeHtml(updated)}</span></button><button type="button" class="collapse" data-collapse aria-expanded="true" title="Collapse sidebar">${ICONS.collapse}<span>Collapse</span></button></nav>` +
-    `<div class="dmain"><div class="hello"><h1>${escapeHtml(greeting(ctx))}</h1></div>` +
+    `<div class="dmain"><h1 class="sr">Dashboard</h1>` +
     `<div class="stats" data-sec-body="stats">${s.stats}</div>` +
     `<div class="grid"><div class="col-main">${main}</div><div class="col-side">${side}</div></div></div>` +
     `<nav class="tabbar" aria-label="Dashboard sections">${nav(true)}</nav>` +
@@ -385,12 +385,6 @@ export function dashboardBody({ data, ctx, csrf, filter, updated }) {
   );
 }
 
-function greeting(ctx) {
-  const hour = Number(new Date(ctx.now).toLocaleString('en-GB', { hour: '2-digit', hour12: false, timeZone: ctx.timeZone }));
-  const part = hour < 5 ? 'Good evening' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
-  const first = String(ctx.name || ctx.username || '').split(/\s+/)[0];
-  return first ? `${part}, ${first}` : part;
-}
 
 export const DASHBOARD_CSS = [
   '.shell.dashboard{max-width:none;padding:0}body:has(.dash) .brand{margin-bottom:0}',
@@ -406,8 +400,7 @@ export const DASHBOARD_CSS = [
   '.updated{margin-top:1rem;border-top:1px solid var(--line)!important;border-radius:0!important;padding-top:.6rem!important;color:var(--muted);font-size:.8rem;font-variant-numeric:tabular-nums}.updated.busy .di{animation:tl-spin .8s linear infinite}.updated+.collapse{margin-top:0;border-top:0!important;padding-top:.45rem!important}',
   '.collapse{margin-top:1rem;border-top:1px solid var(--line)!important;border-radius:0 0 6px 6px!important;padding-top:.6rem!important}',
   '.dmain{padding:1.25rem max(1.5rem,env(safe-area-inset-right,0px)) 2rem 1.5rem;display:grid;gap:1.1rem;align-content:start;min-width:0}',
-  '.hello{display:flex;flex-wrap:wrap;gap:.25rem 1rem;align-items:baseline}.hello h1{margin:0;flex:1;min-width:12rem}.hello small{color:var(--muted)}',
-  '.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.75rem}',
+    '.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.75rem}',
   '.stat{font:inherit;color:inherit;text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.8rem .95rem;display:grid;gap:.1rem;cursor:pointer;transition:transform .15s,box-shadow .15s,border-color .15s;animation:tl-rise .4s var(--ease) both}',
   '.stat:nth-child(2){animation-delay:.05s}.stat:nth-child(3){animation-delay:.1s}.stat:nth-child(4){animation-delay:.15s}',
   '.stat:hover{transform:translateY(-2px);box-shadow:var(--shadow);border-color:var(--line-strong)}.stat .k{font-size:.78rem;color:var(--muted);display:flex;gap:.4rem;align-items:center}',
