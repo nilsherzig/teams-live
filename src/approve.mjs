@@ -666,7 +666,7 @@ export class ApproveServer {
     // The script that keeps an open page current (the state endpoint is `<base>/state`).
     this.liveScript = liveScript(`${this.basePath}/state`);
     this.liveHash = `sha256-${crypto.createHash('sha256').update(this.liveScript).digest('base64')}`;
-    this.openAllScript = `(function(){var button=document.getElementById('open-all'),note=document.getElementById('open-note');function openPending(){var pending=document.querySelectorAll('[data-mr-link]:not([data-opened])');pending.forEach(function(a){var w=window.open('','_blank');if(!w)return;try{w.opener=null;w.location.replace(a.href);a.setAttribute('data-opened','true')}catch(e){try{w.close()}catch(ignore){}}});if(document.querySelectorAll('[data-mr-link]:not([data-opened])').length){note.textContent='Some tabs could not be opened. Allow pop-ups and retry, or open the remaining links below.'}else{note.textContent='All tabs opened. You can close this tab.';button.hidden=true;window.close()}}button.addEventListener('click',openPending);openPending()})();`;
+    this.openAllScript = `(function(){var button=document.getElementById('open-all'),note=document.getElementById('open-note');function openPending(){var pending=document.querySelectorAll('[data-mr-link]:not([data-opened])');pending.forEach(function(a){var w=window.open('','_blank');if(!w)return;try{w.opener=null;w.location.replace(a.href);a.setAttribute('data-opened','true')}catch(e){try{w.close()}catch(ignore){}}});if(document.querySelectorAll('[data-mr-link]:not([data-opened])').length){note.textContent='Some tabs could not be opened. Allow pop-ups and retry, or open the remaining links below.'}else{note.textContent='All tabs opened.';button.hidden=true}}button.addEventListener('click',openPending);openPending()})();`;
     this.openAllHash = `sha256-${crypto.createHash('sha256').update(this.openAllScript).digest('base64')}`;
     // Links on the pages point at the GitLab host only.
     this.gitlabHost = typeof gitlab.host === 'string' ? gitlab.host : '';
@@ -1481,7 +1481,10 @@ export class ApproveServer {
       const url = safeLink(this.gitlab.mrLink(item.project, item.iid), this.gitlabHost);
       return url ? `<li><a data-mr-link href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.project)} !${escapeHtml(item.iid)}</a></li>` : '';
     }).join('');
-    const body = `<p>Opening the merge requests in separate tabs.</p><button id="open-all" class="btn" type="button">Open remaining</button><p id="open-note" class="note"></p><ul>${links}</ul><noscript><p>Open the links above individually.</p></noscript>`;
+    const approvable = record.items.filter((item) => item.sha);
+    const approveUrl = this.oauth && approvable.length ? this.batchLinkFor(approvable, 'approve') : null;
+    const approve = approveUrl ? `<p><a class="btn" href="${escapeHtml(approveUrl)}">👍 Approve all</a></p>` : '';
+    const body = `<p>Opening the merge requests in separate tabs.</p><button id="open-all" class="btn" type="button">Open remaining</button><p id="open-note" class="note"></p><ul>${links}</ul><noscript><p>Open the links above individually.</p></noscript>${approve}`;
     return this.send(res, 200, this.page('Open merge requests', body, { kind: 'generic', script: `<script>${this.openAllScript}</script>` }), { script: 'open-all' });
   }
 

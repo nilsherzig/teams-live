@@ -81,7 +81,7 @@ test('bulk confirmation rechecks heads and approves only the still-valid item', 
 
 test('open-all has its own route and retries only links blocked on page load', async () => {
   const gitlab = { host: 'gitlab.example.com', mrLink: (project, iid) => `https://gitlab.example.com/${project}/-/merge_requests/${iid}` };
-  const server = new ApproveServer({ gitlab, baseUrl: `${origin}/approve`, port: 0 });
+  const server = new ApproveServer({ gitlab, baseUrl: `${origin}/approve`, port: 0, oauth: { clientId: 'cid', clientSecret: 'secret' } });
   await server.start();
   try {
     const link = server.batchLinkFor(items, 'open');
@@ -95,6 +95,11 @@ test('open-all has its own route and retries only links blocked on page load', a
     const response = await fetch(`${base}/open/view`, { headers: { Cookie: cookie } });
     const body = await response.text();
     assert.match(body, /id="open-all"/);
+    const approveLink = /href="([^"]+)"[^>]*>👍 Approve all<\/a>/.exec(body)?.[1];
+    assert.ok(approveLink, 'the page links to the approval confirmation');
+    const approveRecord = server.store.byToken(new URL(approveLink).hash.slice(1));
+    assert.equal(approveRecord.action, 'batch-approve');
+    assert.deepEqual(approveRecord.items, items);
     assert.equal((body.match(/data-mr-link href/g) || []).length, 2);
     assert.match(response.headers.get('content-security-policy'), /script-src 'sha256-/);
     const script = /<script>([\s\S]*?)<\/script>/.exec(body)[1];
@@ -113,7 +118,7 @@ test('open-all has its own route and retries only links blocked on page load', a
     allow = true;
     button.click();
     assert.deepEqual(opened, anchors.map((a) => a.href), 'retry does not reopen successful tabs');
-    assert.equal(closed, true);
+    assert.equal(closed, false, 'the page stays open for Approve all');
     assert.equal(button.hidden, true);
     assert.equal((await fetch(`${base}/confirm`, { headers: { Cookie: cookie } })).status, 200, 'old open-all links continue to work');
   } finally { await server.stop(); }
