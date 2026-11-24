@@ -28,6 +28,7 @@ test('bulk confirmation rechecks heads and approves only the still-valid item', 
   const writes = [];
   const heads = { 1: sha, 2: sha };
   const drafts = { 1: false, 2: false };
+  const approved = new Set();
   const gitlab = {
     host: 'gitlab.example.com',
     mrLink: (project, iid) => `https://gitlab.example.com/${project}/-/merge_requests/${iid}`,
@@ -46,14 +47,15 @@ test('bulk confirmation rechecks heads and approves only the still-valid item', 
     if (!target.startsWith('https://gitlab.example.com/')) return originalFetch(url, options);
     if (target.endsWith('/oauth/token')) return Response.json({ access_token: 'user-token' });
     if (target.endsWith('/api/v4/user')) return Response.json({ id: 9, username: 'alice' });
-    if (target.endsWith('/approvals')) return Response.json({ approved_by: [], user_can_approve: true });
     const iid = /merge_requests\/(\d+)/.exec(target)?.[1];
+    if (target.endsWith('/approvals')) return Response.json({ approved_by: approved.has(iid) ? [{ user: { id: 9, name: 'Alice Example' } }] : [], approvals_required: 1, approvals_left: approved.has(iid) ? 0 : 1, approved: approved.has(iid), user_can_approve: true });
     if (target.endsWith('/approve')) {
       assert.equal(options.headers.Authorization, 'Bearer user-token');
       writes.push({ project: 'group/app', iid, sha: JSON.parse(options.body).sha });
+      approved.add(iid);
       return Response.json({});
     }
-    return Response.json({ state: 'opened', sha: heads[iid], draft: drafts[iid], author: { username: 'author' } });
+    return Response.json({ state: 'opened', sha: heads[iid], draft: drafts[iid], title: `Change ${iid}`, author: { username: 'author' }, head_pipeline: { status: 'success', id: 7 }, detailed_merge_status: 'mergeable' });
   };
   try {
     const url = server.batchLinkFor(items, 'approve');
@@ -66,16 +68,27 @@ test('bulk confirmation rechecks heads and approves only the still-valid item', 
     drafts[1] = drafts[2] = true;
     const blocked = await (await fetch(`${base}/confirm`, { headers: { Cookie: cookie } })).text();
     assert.match(blocked, /❌ 2 of 2 merge request\(s\) cannot be approved/);
-    assert.equal((blocked.match(/❌ <strong>/g) || []).length, 2);
+    assert.equal((blocked.match(/❌ This merge request is a draft/g) || []).length, 2);
     assert.match(blocked, /No approvals were sent/);
     assert.doesNotMatch(blocked, /<button class="btn" type="submit">/);
     drafts[1] = drafts[2] = false;
-    const html = await (await fetch(`${base}/confirm`, { headers: { Cookie: cookie } })).text();
+    const confirmation = await fetch(`${base}/confirm`, { headers: { Cookie: cookie } });
+    const html = await confirmation.text();
     assert.match(html, /Approve 2 eligible/);
+    assert.match(html, /Change 1/);
+    assert.match(html, /Pipeline/);
+    assert.match(html, /Approvals/);
+    assert.match(html, /1 required/);
+    assert.equal((html.match(/data-approve-item>/g) || []).length, 2);
+    assert.match(html, /aria-label="GitLab account alice"/);
+    assert.match(confirmation.headers.get('content-security-policy'), /script-src 'sha256-[A-Za-z0-9+/=]+'; connect-src 'self'/);
     const fields = Object.fromEntries([...html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map((m) => [m[1], m[2]]));
     const tampered = await fetch(`${base}/confirm`, { method: 'POST', headers: { ...headers, Cookie: cookie }, body: new URLSearchParams({ ...fields, actors: 'W10' }) });
     assert.equal(tampered.status, 403);
     assert.deepEqual(writes, [], 'the account list is bound to the confirmation token');
+    const individual = await fetch(`${base}/confirm`, { method: 'POST', headers: { ...headers, Cookie: cookie, Accept: 'application/json' }, body: new URLSearchParams({ ...fields, item_index: '0' }) });
+    assert.deepEqual(await individual.json(), { status: 'approved', text: 'Approved' });
+    assert.deepEqual(writes, [{ project: 'group/app', iid: '1', sha }], 'individual action approves only the selected MR');
     heads[2] = 'b'.repeat(40);
     const newer = server.store.linkFor({ ...items[1], sha: heads[2], action: 'approve' });
     const response = await fetch(`${base}/confirm`, { method: 'POST', headers: { ...headers, Cookie: cookie }, body: new URLSearchParams(fields) });
@@ -84,7 +97,7 @@ test('bulk confirmation rechecks heads and approves only the still-valid item', 
     assert.deepEqual(writes, [{ project: 'group/app', iid: '1', sha }]);
     assert.match(result, /merge request changed/i);
     assert.match(result, /❌ 1 of 2 merge request\(s\) were not confirmed as approved/);
-    assert.match(result, /✅ <strong>group\/app !1<\/strong>: Approved/);
+    assert.match(result, /✅ <strong>group\/app !1<\/strong>: Already approved by you/);
     assert.match(result, /❌ <strong>group\/app !2<\/strong>:/);
     assert.equal(server.store.byId(newer.record.id).status, 'open', 'an old batch cannot stale the new card link');
   } finally { globalThis.fetch = originalFetch; await server.stop(); }
@@ -101,10 +114,13 @@ test('open-all has its own route and retries only links blocked on page load', a
     const base = `http://127.0.0.1:${server.port}/approve`;
     const entry = await fetch(`${base}/open`);
     assert.match(await entry.text(), /\/open\/view/);
-    const boot = await fetch(`${base}/session`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: origin }, body: new URLSearchParams({ token }) });
+    const remembered = server.whoCookie({ id: 9, username: 'alice', name: 'Alice Example' }).split(';')[0];
+    const boot = await fetch(`${base}/session`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: origin, Cookie: remembered }, body: new URLSearchParams({ token }) });
     const cookie = /tl_approve=[^;]+/.exec(boot.headers.get('set-cookie'))[0];
     const response = await fetch(`${base}/open/view`, { headers: { Cookie: cookie } });
     const body = await response.text();
+    assert.match(body, /aria-label="GitLab account alice"/);
+    assert.match(body, /class="account-avatar"/);
     assert.match(body, /id="open-all"/);
     const approveLink = /href="([^"]+)"[^>]*>👍 Approve all<\/a>/.exec(body)?.[1];
     assert.ok(approveLink, 'the page links to the approval confirmation');

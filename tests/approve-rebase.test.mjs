@@ -93,6 +93,7 @@ test('the page offers the rebase and one confirmed request rebases once, reading
   await withFlow({ reads: [{ rebase_in_progress: true }, { rebase_in_progress: false, detailed_merge_status: 'not_approved' }] }, async ({ gitlab, server, page, confirm, record }) => {
     const html = await (await page()).text();
     assert.match(html, /Rebase this merge request/);
+    assert.match(html, /aria-label="GitLab account owner"/);
     assert.match(html, /name="csrf"/);
     const res = await confirm();
     assert.equal(res.status, 200);

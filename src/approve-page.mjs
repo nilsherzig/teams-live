@@ -21,8 +21,9 @@ export const PAGE_CSS = [
   '*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans",Ubuntu,Cantarell,"Helvetica Neue",sans-serif}',
   'a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}',
   '.shell{max-width:46rem;margin:0 auto;padding:0 1rem 3rem}',
-  '.brand{margin:0 0 1.5rem;padding:.6rem 1rem;background:var(--bar);color:var(--bar-text);font-size:.9rem}.brand .in{display:flex;align-items:center;gap:.5rem;max-width:46rem;margin:0 auto}',
+  '.brand{margin:0 0 1.5rem;padding:.6rem 1rem;background:var(--bar);color:var(--bar-text);font-size:.9rem}.brand .in{display:flex;align-items:center;gap:.5rem;margin:0 auto}',
   '.brand svg{flex:none}.brand .word{font-weight:600}.brand .sep{opacity:.5}.brand .kicker{opacity:.75}',
+  '.header-account{margin-left:auto;display:inline-flex;align-items:center;gap:.5rem;color:var(--bar-text);font-weight:600}.header-account:hover{color:var(--bar-text)}.account-avatar{width:32px;height:32px;border-radius:50%;object-fit:cover;border:1px solid #777}',
   '.panel{background:var(--panel);border:1px solid var(--line);border-left-width:4px;border-radius:4px;padding:1rem 1.25rem 1.25rem}',
   '.tone-ok{border-left-color:var(--ok)}.tone-warn{border-left-color:#d99a00}.tone-error{border-left-color:var(--closed)}.tone-neutral{border-left-color:var(--accent)}',
   'h1{font-size:1.25rem;font-weight:600;line-height:1.3;margin:0 0 .9rem}p{margin:.6rem 0}',
@@ -34,6 +35,8 @@ export const PAGE_CSS = [
   '.mr-title{font-size:1.1rem;font-weight:600;line-height:1.35;margin:.35rem 0 .15rem}.mr-title a{color:var(--text)}',
   '.mr-branches{margin:.15rem 0 .5rem;color:var(--muted);font-size:.9rem;overflow-wrap:anywhere}',
   '.mr-facts{display:grid;grid-template-columns:max-content 1fr;gap:.3rem 1rem;margin:.5rem 0 0;font-size:.9rem}.mr-facts dt{color:var(--muted)}.mr-facts dd{margin:0;overflow-wrap:anywhere}',
+  '.batch-list{display:grid;gap:1rem;margin:1rem 0}.batch-item{border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--bg)}.batch-item .mr{border:0;margin:0;border-radius:0}.batch-status{display:flex;gap:.5rem;align-items:center;padding:.6rem 1rem;border-top:1px solid var(--line);font-weight:600}.batch-actions{padding:.65rem 1rem}.batch-actions .btn{font-size:.9rem}.btn:disabled{opacity:.55;cursor:default}.batch-status[data-status=ready],.batch-status[data-status=working]{color:var(--run);background:var(--run-bg)}.batch-status[data-status=approved],.batch-status[data-status=already]{color:var(--ok);background:var(--ok-bg)}.batch-status[data-status=failed],.batch-status[data-status=blocked],.batch-status[data-status=unavailable]{color:var(--closed);background:var(--closed-bg)}.batch-status[data-status=unknown]{color:var(--warn);background:var(--warn-bg)}.batch-progress{width:100%;accent-color:var(--accent)}.batch-progress[hidden]{display:none}',
+  '.batch-message:not(:empty){padding:.65rem .85rem;border-radius:4px;font-weight:600}.batch-message[data-state=working]{background:var(--run-bg);color:var(--run)}.batch-message[data-state=ok]{background:var(--ok-bg);color:var(--ok)}.batch-message[data-state=failed]{background:var(--closed-bg);color:var(--closed)}',
   '.pill{display:inline-flex;align-items:center;gap:.35rem;border-radius:999px;padding:.05rem .55rem;font-size:.8rem;font-weight:600;line-height:1.5;border:1px solid currentColor;white-space:nowrap}',
   '.pill i{width:.5rem;height:.5rem;border-radius:50%;background:currentColor;display:inline-block}',
   // the pictures of the Teams card: GitLab icons (16px) and people (20px, round)
@@ -47,7 +50,7 @@ export const PAGE_CSS = [
   '.btn:focus-visible{outline:3px solid var(--accent);outline-offset:2px}',
   '.links{display:flex;flex-wrap:wrap;gap:.5rem;margin:1rem 0 0}',
   '.foot{margin-top:1rem;color:var(--muted);font-size:.8rem}',
-  '@media (max-width:30rem){.panel{padding:.9rem}.btn{width:100%;text-align:center}.mr-facts{grid-template-columns:1fr}.mr-facts dt{margin-top:.3rem}}',
+  '@media (max-width:30rem){.panel{padding:.9rem}.btn{width:100%;text-align:center}.mr-facts{grid-template-columns:1fr}.mr-facts dt{margin-top:.3rem}.header-account .account-name{display:none}}',
 ].join('');
 
 /** The tanuki: a simple three-color fox head, drawn inline (the CSP allows no images). */
@@ -62,6 +65,16 @@ function picture(src, alt, cls = 'ic', px = 16) {
 /** A person's picture: their photo when the card service has it, else their initials (as on the cards). */
 export function avatarImg(name, avatars = {}) {
   return picture(avatars?.[name] || fallbackAvatar(name), name, 'av', 20);
+}
+
+/** A session-local account link for the common page header. */
+export function headerAccount(user, host, avatar = '') {
+  if (!user?.username) return '';
+  const name = user.name || user.username;
+  const photo = picture(avatar || fallbackAvatar(name), '', 'account-avatar', 32);
+  const url = safeLink(`https://${host}/${encodeURIComponent(user.username)}`, host);
+  const content = `<span class="account-name">${escapeHtml(user.username)}</span>${photo}`;
+  return url ? `<a class="header-account" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" aria-label="GitLab account ${escapeHtml(user.username)}">${content}</a>` : `<span class="header-account">${content}</span>`;
 }
 
 /** http(s) link on the GitLab host only: anything else (another host, a javascript: URL) yields ''. */
@@ -167,7 +180,7 @@ export function liveSlots({ kind, mr, approvals, host, avatars = {} }) {
  * The merge request as GitLab shows its header: state, reference, title, branches, author, pipeline,
  * approvals and head commit, each linked to GitLab where a link is known.
  */
-export function renderSummary({ record, mr, approvals = null, host = '', kind = 'approve', avatars = {} }) {
+export function renderSummary({ record, mr, approvals = null, host = '', kind = 'approve', avatars = {}, live = true }) {
   const ref = `!${escapeHtml(record.iid)}`;
   const mrUrl = safeLink(mr?.web_url, host);
   const projectUrl = mrUrl ? mrUrl.replace(/\/-\/merge_requests\/\d+.*$/, '') : '';
@@ -191,7 +204,7 @@ export function renderSummary({ record, mr, approvals = null, host = '', kind = 
   }
   const dl = facts.length ? `<dl class="mr-facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>` : '';
   return (
-    `<div class="mr" data-live-root>` +
+    `<div class="mr"${live ? ' data-live-root' : ''}>` +
     `<div class="mr-top"><span data-live="state">${slots.state}</span>${anchor(projectUrl, picture(GITLAB_ICONS_SMALL.repository, 'Repository'))}${anchor(mrUrl, `<span class="ref">${escapeHtml(record.project)}${ref}</span>`)}</div>` +
     `<h2 class="mr-title">${anchor(mrUrl, title)}</h2>${branches}${dl}` +
     `<div class="notice" data-live="notice">${slots.notice}</div></div>`

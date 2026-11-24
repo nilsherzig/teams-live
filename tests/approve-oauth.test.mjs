@@ -120,7 +120,8 @@ test('sign-in runs the authorization code flow with PKCE and then offers the app
     assert.equal(challenge, location.searchParams.get('code_challenge'));
 
     const page = await (await fetch(`${ctx.base}/approve/confirm`, { headers: { Cookie: ctx.cookie } })).text();
-    assert.match(page, /Signed in with GitLab as <code>alice<\/code>/);
+    assert.match(page, /aria-label="GitLab account alice"/);
+    assert.match(page, /class="account-avatar"/);
     assert.doesNotMatch(page, /Anyone with this link/);
     const csrf = /name="csrf" value="([^"]+)"/.exec(page)[1];
     const res = await fetch(`${ctx.base}/approve/confirm`, { method: 'POST', headers: { ...FORM, Origin: ORIGIN, Cookie: ctx.cookie }, body: new URLSearchParams({ csrf, user: '9', cred: 'oauth' }).toString() });

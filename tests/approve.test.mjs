@@ -327,7 +327,7 @@ test('the pages are styled self-contained: state pills, tones, dark mode, no ext
     assert.match(html, /<script>\(function\(\)\{var U="\/approve\/state"/);
     // Pictures are embedded data URIs only (the CSP allows img-src data: and nothing else).
     assert.doesNotMatch(html.replace(/<script>[\s\S]*?<\/script>/, '').replace(/<img [^>]*src="data:image\/[a-z]+;base64,[A-Za-z0-9+/=]+"[^>]*>/g, ''), /<script|<[a-z][^>]*\ssrc=|<link|@import|url\(/);
-    assert.deepEqual(html.match(/https?:\/\/[^\s"'<>)]+/g), ['https://approve.example.com/approve/confirm']);
+    assert.deepEqual(html.match(/https?:\/\/[^\s"'<>)]+/g), ['https://gitlab.example.com/owner', 'https://approve.example.com/approve/confirm', 'https://github.com/pschmitt/teams-live']);
     const csp = res.headers.get('content-security-policy');
     assert.match(csp, /default-src 'none'; img-src data:;/);
     assert.match(csp, /script-src 'sha256-[A-Za-z0-9+/=]+'; connect-src 'self'/);

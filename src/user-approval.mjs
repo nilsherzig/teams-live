@@ -1,3 +1,5 @@
+import { approvalCountsOf } from './gitlab.mjs';
+
 // Approval requests made with the visitor's short-lived, server-side OAuth token.
 // Never retry a write or fall back to a service credential.
 async function request(host, token, path, options = {}) {
@@ -27,14 +29,17 @@ export async function userApprovalPreflight(host, record, session) {
       request(host, session.accessToken, `${path}/approvals`),
     ]);
     if (String(user.id) !== String(session.user.id)) return { status: 'blocked', reason: 'The signed-in GitLab account changed. Sign in again.' };
-    if (mr.state !== 'opened') return { status: 'blocked', mr, user, reason: 'This merge request is no longer open.' };
-    if (mr.draft || mr.work_in_progress || mr.detailed_merge_status === 'draft_status') return { status: 'blocked', mr, user, reason: 'This merge request is a draft.' };
-    if ((mr.sha || mr.diff_refs?.head_sha) !== record.sha) return { status: 'blocked', mr, user, reason: 'The merge request changed. Review the updated card.' };
-    if (!Array.isArray(approvals.approved_by)) return { status: 'blocked', mr, user, reason: 'GitLab could not verify the approval state.' };
+    const approvedBy = Array.isArray(approvals.approved_by) ? approvals.approved_by.map((a) => a.user?.name || a.user?.username || a.name || a.username).filter(Boolean) : [];
+    const summary = { known: Array.isArray(approvals.approved_by), approved: approvals.approvals_required > 0 ? approvals.approved === true : approvedBy.length > 0, approvedBy, ...approvalCountsOf(approvals, approvedBy.length) };
+    const context = { mr, user, approvals: summary };
+    if (mr.state !== 'opened') return { status: 'blocked', ...context, reason: 'This merge request is no longer open.' };
+    if (mr.draft || mr.work_in_progress || mr.detailed_merge_status === 'draft_status') return { status: 'blocked', ...context, reason: 'This merge request is a draft.' };
+    if ((mr.sha || mr.diff_refs?.head_sha) !== record.sha) return { status: 'blocked', ...context, reason: 'The merge request changed. Review the updated card.' };
+    if (!Array.isArray(approvals.approved_by)) return { status: 'blocked', ...context, reason: 'GitLab could not verify the approval state.' };
     const hasApproved = approvals.user_has_approved === true || approvals.approved_by.some((a) => String(a.user?.id ?? a.id) === String(user.id));
-    if (hasApproved) return { status: 'already', mr, user, tokenIndex: 'oauth' };
-    if (approvals.user_can_approve === false) return { status: 'blocked', mr, user, reason: 'GitLab does not allow you to approve this merge request.' };
-    return { status: 'ready', mr, user, tokenIndex: 'oauth' };
+    if (hasApproved) return { status: 'already', ...context, tokenIndex: 'oauth' };
+    if (approvals.user_can_approve === false) return { status: 'blocked', ...context, reason: 'GitLab does not allow you to approve this merge request.' };
+    return { status: 'ready', ...context, tokenIndex: 'oauth' };
   } catch {
     return { status: 'blocked', reason: 'GitLab could not verify your identity and approval permissions. Sign in again or try later.' };
   }

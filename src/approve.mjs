@@ -53,10 +53,12 @@
 
 import { buildApprovalNote } from './approval-note.mjs';
 import { userApprovalPreflight, userApprovalWrite } from './user-approval.mjs';
+import { BATCH_APPROVAL_SCRIPT } from './batch-approval-page.mjs';
 import { teamsMessageLink } from './message-links.mjs';
 import { formatPlace } from './geoip.mjs';
-import { PAGE_CSS, TANUKI, escapeHtml, liveScript, liveSlots, liveState, renderSummary, safeLink } from './approve-page.mjs';
+import { PAGE_CSS, TANUKI, escapeHtml, headerAccount, liveScript, liveSlots, liveState, renderSummary, safeLink } from './approve-page.mjs';
 import http from 'node:http';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { isIP } from 'node:net';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -653,6 +655,7 @@ export class ApproveServer {
     this.store.load();
     this.csrf = new CsrfTokens({ now });
     this.sessions = new Map();
+    this.requestContext = new AsyncLocalStorage();
     this.failures = { windowStart: 0, count: 0 };
     this.locks = new Map();
     this.bootstraps = new Map();
@@ -668,6 +671,7 @@ export class ApproveServer {
     this.liveHash = `sha256-${crypto.createHash('sha256').update(this.liveScript).digest('base64')}`;
     this.openAllScript = `(function(){var button=document.getElementById('open-all'),note=document.getElementById('open-note');function openPending(){var pending=document.querySelectorAll('[data-mr-link]:not([data-opened])');pending.forEach(function(a){var w=window.open('','_blank');if(!w)return;try{w.opener=null;w.location.replace(a.href);a.setAttribute('data-opened','true')}catch(e){try{w.close()}catch(ignore){}}});if(document.querySelectorAll('[data-mr-link]:not([data-opened])').length){note.textContent='Some tabs could not be opened. Allow pop-ups and retry, or open the remaining links below.'}else{note.textContent='All tabs opened.';button.hidden=true}}button.addEventListener('click',openPending);openPending()})();`;
     this.openAllHash = `sha256-${crypto.createHash('sha256').update(this.openAllScript).digest('base64')}`;
+    this.batchApprovalHash = `sha256-${crypto.createHash('sha256').update(BATCH_APPROVAL_SCRIPT).digest('base64')}`;
     // Links on the pages point at the GitLab host only.
     this.gitlabHost = typeof gitlab.host === 'string' ? gitlab.host : '';
     this.lastApprovals = new Map();
@@ -731,10 +735,12 @@ export class ApproveServer {
     if (this.server) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const srv = http.createServer((req, res) => {
-        this.handle(req, res).catch((err) => {
-          log(`Unhandled error: ${err.message}`);
-          if (!res.headersSent) this.send(res, 500, this.page('Error', '<p>Something went wrong. Nothing was approved.</p>', { tone: 'error' }));
-          else res.end();
+        this.requestContext.run({ user: this.rememberedUser(req) }, () => {
+          this.handle(req, res).catch((err) => {
+            log(`Unhandled error: ${err.message}`);
+            if (!res.headersSent) this.send(res, 500, this.page('Error', '<p>Something went wrong. Nothing was approved.</p>', { tone: 'error' }));
+            else res.end();
+          });
         });
       });
       srv.once('error', reject);
@@ -772,7 +778,7 @@ export class ApproveServer {
       'Referrer-Policy': 'same-origin',
       'Cross-Origin-Opener-Policy': 'same-origin',
       // img-src data: only: the pictures are embedded (card icons, profile pictures), never fetched.
-      'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'unsafe-inline'; ${script ? `script-src '${script === 'live' ? this.liveHash : script === 'open-all' ? this.openAllHash : script === 'open-bootstrap' ? this.openBootstrapHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
+      'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'unsafe-inline'; ${script ? `script-src '${script === 'live' ? this.liveHash : script === 'batch' ? this.batchApprovalHash : script === 'open-all' ? this.openAllHash : script === 'open-bootstrap' ? this.openBootstrapHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
       ...extra,
     };
   }
@@ -794,7 +800,11 @@ export class ApproveServer {
     const safeTone = ['neutral', 'ok', 'warn', 'error'].includes(tone) ? tone : 'neutral';
     const copy = COPY[kind] || COPY.approve;
     const tail = script || (body.includes('data-live-root') ? `<script>${this.liveScript}</script>` : '');
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}</style></head><body><header class="brand"><div class="in">${TANUKI}<span class="word">teams-live</span><span class="sep" aria-hidden="true">·</span><span class="kicker">${copy.kicker}</span></div></header><div class="shell"><main class="panel tone-${safeTone}"><h1>${escapeHtml(title)}</h1>${body}${tail}</main><footer class="foot">Served by your <a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">teams-live</a> instance. Nothing here is GitLab itself; ${copy.footer}</footer></div></body></html>`;
+    const user = this.requestContext.getStore()?.user;
+    let avatar = '';
+    try { if (user) avatar = this.avatarOf?.(user.name || user.username) || ''; } catch { /* Fall back to initials. */ }
+    const account = user ? headerAccount(user, this.gitlabHost, avatar) : '';
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}</style></head><body><header class="brand"><div class="in">${TANUKI}<span class="word">teams-live</span><span class="sep" aria-hidden="true">·</span><span class="kicker">${copy.kicker}</span>${account}</div></header><div class="shell"><main class="panel tone-${safeTone}"><h1>${escapeHtml(title)}</h1>${body}${tail}</main><footer class="foot">Served by your <a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">teams-live</a> instance. Nothing here is GitLab itself; ${copy.footer}</footer></div></body></html>`;
   }
 
   /** The static script that exchanges the fragment token for a session. */
@@ -960,6 +970,7 @@ export class ApproveServer {
     if (!session) {
       return this.send(res, 401, this.page('Link not opened', '<p>Open the link from the Teams card again. Nothing was changed.</p>', { tone: 'warn' }));
     }
+    if (session.user) this.requestContext.getStore().user = session.user;
     if (route === '/open/view') {
       if (method !== 'GET') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: 'GET, HEAD' } });
       if (session.record.action !== 'batch-open') return this.send(res, 404, this.page('Not found', '<p>Nothing here.</p>', { tone: 'warn' }));
@@ -1223,10 +1234,6 @@ export class ApproveServer {
     return `${actorBind(actor)}${this.oauth ? `;who=${user?.username || ''}` : ''}`;
   }
 
-  whoHtml(user) {
-    return user ? `<p class="note">Signed in with GitLab as <code>${escapeHtml(user.username)}</code>.</p>` : '';
-  }
-
   /** Why the signed-in user may not act on this merge request, or '' (also when sign-in is off). */
   signInDenied(user, mr, kind = 'approve') {
     if (!this.oauth) return '';
@@ -1325,6 +1332,8 @@ export class ApproveServer {
     }
     session.user = user;
     session.accessToken = accessToken;
+    this.requestContext.getStore().user = user;
+    try { await this.avatarWarm?.([user.name || user.username]); } catch { /* Use initials when the photo is unavailable. */ }
     const next = `${this.basePath}/confirm`;
     return this.send(res, 200, this.page('Signed in', `<meta http-equiv="refresh" content="0;url=${escapeHtml(next)}"><p>Signed in as <code>${escapeHtml(user.username)}</code>.</p><p class="links"><a class="btn" href="${escapeHtml(next)}">Continue</a></p>`, { tone: 'ok' }), { extra: { 'Set-Cookie': this.whoCookie(user) } });
   }
@@ -1497,9 +1506,13 @@ export class ApproveServer {
         items.push({ item, result: initial, status: 'blocked', reason: initial.reason });
         continue;
       }
+      if (initial.status === 'already') {
+        items.push({ item, result: initial, status: 'already' });
+        continue;
+      }
       this.store.forgetApproved(item.project, item.iid, item.sha);
       const link = this.store.linkFor({ ...item, action: 'approve' });
-      if (!link) { items.push({ item, status: 'unavailable', reason: 'Already approved or unavailable.' }); continue; }
+      if (!link) { items.push({ item, status: 'unavailable', reason: 'Approval link unavailable.' }); continue; }
       const result = initial;
       const actor = actorOf(result);
       const denied = result.status === 'ready' && this.signInDenied(session.user, result.mr, 'approve');
@@ -1518,10 +1531,18 @@ export class ApproveServer {
     const encoded = Buffer.from(JSON.stringify(actors)).toString('base64url');
     const bind = this.bindOf({ user: 'batch', cred: encoded }, session.user);
     const csrf = this.csrf.issue(session.sid, session.record.id, bind);
-    const rows = items.map(({ item, result, status, reason }) => `<li>${status === 'ready' ? '⏳' : status === 'already' ? '✅' : '❌'} <strong>${escapeHtml(item.project)} !${escapeHtml(item.iid)}</strong>: ${escapeHtml(status === 'ready' ? `Ready · @${result.user?.username || result.user?.name || 'GitLab user'}` : status === 'already' ? 'Already approved by you' : reason || status)}</li>`).join('');
-    const warning = blocked.length ? `<p class="callout">❌ ${blocked.length} of ${items.length} merge request(s) cannot be approved. No approval has been sent yet.</p>` : '';
-    const form = ready.length ? `<form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="actors" value="${escapeHtml(encoded)}"><p>Approve ${ready.length} eligible merge request(s) with the accounts shown above?</p><button class="btn" type="submit">👍 Approve ${ready.length === items.length ? 'all' : 'eligible'}</button></form>` : '<p>No approvals were sent. There are no eligible merge requests to approve.</p>';
-    return this.send(res, 200, this.page('Approve merge requests', `${warning}<ul>${rows}</ul>${this.whoHtml(session.user)}${form}`, { kind: 'approve', tone: blocked.length ? 'warn' : 'neutral' }));
+    const rows = items.map(({ item, result, status, reason }, index) => {
+      const label = status === 'ready' ? 'Ready to approve' : status === 'already' ? 'Already approved by you' : reason || status;
+      const icon = status === 'ready' ? '⏳' : status === 'already' ? '✅' : '❌';
+      const mr = result?.mr;
+      const summary = mr ? renderSummary({ record: item, mr: { ...mr, web_url: mr.web_url || this.gitlab.mrLink?.(item.project, item.iid) }, approvals: result.approvals, host: this.gitlabHost, avatars: this.avatarsFor(mr, result.approvals), live: false }) : `<div class="mr"><strong>${escapeHtml(item.project)} !${escapeHtml(item.iid)}</strong></div>`;
+      const button = status === 'ready' ? `<button class="btn btn-secondary" type="submit" name="item_index" value="${index}" data-approve-item>👍 Approve</button>` : `<button class="btn btn-secondary" type="button" data-done="true" disabled>${status === 'already' ? 'Already approved' : 'Cannot approve'}</button>`;
+      return `<section class="batch-item" data-batch-item data-index="${index}" data-status="${escapeHtml(status)}">${summary}<div class="batch-status" data-batch-status data-status="${escapeHtml(status)}">${icon} ${escapeHtml(label)}</div><div class="batch-actions">${button}</div></section>`;
+    }).join('');
+    const warning = blocked.length ? `<p class="callout">❌ ${blocked.length} of ${items.length} merge request(s) cannot be approved.</p>` : '';
+    const action = ready.length ? `<p>Approve ${ready.length} eligible merge request(s) with the account shown above?</p><button id="batch-approve-all" class="btn" type="submit">👍 Approve ${ready.length === items.length ? 'all' : 'eligible'}</button>` : '<p>No approvals were sent. There are no eligible merge requests to approve.</p>';
+    const form = `<form id="batch-approval" method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="actors" value="${escapeHtml(encoded)}"><div class="batch-list">${rows}</div><p id="batch-message" class="batch-message" role="status" aria-live="polite"></p><progress id="batch-progress" class="batch-progress" hidden aria-label="Approval progress"></progress>${action}</form>`;
+    return this.send(res, 200, this.page('Approve merge requests', `${warning}${form}`, { kind: 'approve', tone: blocked.length ? 'warn' : 'neutral', script: `<script>${BATCH_APPROVAL_SCRIPT}</script>` }), { script: 'batch' });
   }
 
   async approveBatch(req, res, session) {
@@ -1535,8 +1556,14 @@ export class ApproveServer {
     let actors;
     try { actors = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')); } catch { actors = null; }
     if (!Array.isArray(actors) || actors.length > session.record.items.length) return this.send(res, 400, this.page('Request rejected', '<p>Nothing was approved.</p>', { tone: 'warn' }));
+    const rawIndex = parsed.form.get('item_index');
+    const wantsJson = String(req.headers.accept || '').includes('application/json');
+    if ((rawIndex !== null && (!/^(0|[1-9]\d*)$/.test(rawIndex) || Number(rawIndex) >= session.record.items.length)) || (wantsJson && rawIndex === null)) {
+      return this.send(res, 400, this.page('Request rejected', '<p>Nothing was approved.</p>', { tone: 'warn' }));
+    }
+    const selected = rawIndex === null ? session.record.items : [session.record.items[Number(rawIndex)]];
     const outcomes = [];
-    for (const item of session.record.items) {
+    for (const item of selected) {
       const key = keyOf(item.project, item.iid);
       let outcome;
       try { outcome = await this.withLock(key, async () => {
@@ -1552,13 +1579,14 @@ export class ApproveServer {
         if (!actor || actor.user !== shown.user || actor.cred !== shown.cred) return { status: 'failed', text: 'Account changed; review again' };
         const denied = this.signInDenied(session.user, result.mr, 'approve');
         if (denied) return { status: 'failed', text: denied };
-        const sent = await this.sendUserApproval(link.record, result, session);
+        const sent = await this.sendUserApproval(link.record, result, session, { deferRefresh: wantsJson });
         return { status: sent.code === 200 ? 'approved' : sent.title === 'Outcome unknown' ? 'unknown' : 'failed', text: sent.title === 'Outcome unknown' ? 'Outcome unknown; check this merge request in GitLab before retrying' : sent.title };
       }); } catch { outcome = { status: 'unknown', text: 'Outcome unknown; check this merge request in GitLab before retrying' }; }
       outcomes.push({ item, ...outcome });
     }
+    if (wantsJson) return this.json(res, 200, { status: outcomes[0].status, text: outcomes[0].text });
     const incomplete = outcomes.filter(({ status }) => status === 'failed' || status === 'unknown').length;
-    const heading = incomplete ? `❌ ${incomplete} of ${outcomes.length} merge request(s) were not confirmed as approved.` : '✅ All merge requests are approved.';
+    const heading = incomplete ? `❌ ${incomplete} of ${outcomes.length} merge request(s) were not confirmed as approved.` : rawIndex !== null ? '✅ This MR is approved.' : outcomes.every(({ status }) => status === 'approved') ? '✅ All MRs were approved successfully.' : '✅ All MRs are approved.';
     const rows = outcomes.map(({ item, status, text }) => `<li>${status === 'unknown' ? '⚠️' : status === 'failed' ? '❌' : '✅'} <strong>${escapeHtml(item.project)} !${escapeHtml(item.iid)}</strong>: ${escapeHtml(text)}</li>`).join('');
     return this.send(res, 200, this.page('Approval results', `<p class="callout">${heading}</p><ul>${rows}</ul>`, { kind: 'approve', tone: incomplete ? 'warn' : 'ok' }));
   }
@@ -1596,7 +1624,7 @@ export class ApproveServer {
     // The shown account and credential travel with the form and are bound into the CSRF token.
     const token = this.csrf.issue(sid, record.id, this.bindOf(actor, session.user));
     const form = `<div class="actions" data-live-action><form method="post" data-act action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(token)}"><input type="hidden" name="user" value="${escapeHtml(actor.user)}"><input type="hidden" name="cred" value="${escapeHtml(actor.cred)}"><p>${copy.question}</p>${kind === 'rebase' ? `<p class="note">GitLab rebases the source branch onto the target branch and rewrites its commits, without a merge commit. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}${kind === 'merge' ? `<p class="note">Merges exactly the head commit above. Source-branch removal and squash follow the merge request's own settings. This sends one request to GitLab; it is never repeated automatically.</p>` : ''}<button class="btn" type="submit" data-busy="${escapeHtml(copy.busy)}">${copy.button}</button></form></div>`;
-    return this.send(res, 200, this.page(copy.title, `${this.summary(record, result.mr, result.user)}${this.whoHtml(session.user)}${form}`, { tone: 'neutral', kind }));
+    return this.send(res, 200, this.page(copy.title, `${this.summary(record, result.mr, result.user)}${form}`, { tone: 'neutral', kind }));
   }
 
   /** `[title, body]` for a merge request that is already in the wanted state. */
@@ -1968,7 +1996,7 @@ export class ApproveServer {
   }
 
   /** Approve as the visitor; on an uncertain response, check the same account before reporting success. */
-  async sendUserApproval(record, result, session) {
+  async sendUserApproval(record, result, session, { deferRefresh = false } = {}) {
     const summary = this.summary(record, result.mr, result.user);
     try {
       await userApprovalWrite(this.gitlabHost, record, session);
@@ -1981,6 +2009,10 @@ export class ApproveServer {
       } else {
         return { code: 409, title: 'Approval failed', body: `${summary}<p>GitLab rejected the approval (HTTP ${err.status}). Review the merge request and try again.</p>` };
       }
+    }
+    if (deferRefresh) {
+      void this.refresh(record);
+      return { code: 200, title: 'Approved', body: '' };
     }
     const refresh = await this.refresh(record);
     return { code: 200, title: 'Approved', body: `${summary}<p>Approved in GitLab as your account.</p><p class="note">${escapeHtml(refresh)}</p>` };
