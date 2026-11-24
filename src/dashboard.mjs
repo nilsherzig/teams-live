@@ -397,8 +397,8 @@ export const DASHBOARD_CSS = [
   '.side button,.tabbar button{display:flex;align-items:center;gap:.6rem;border:0;background:none;font:inherit;color:var(--text);padding:.45rem .6rem;border-radius:6px;cursor:pointer;text-align:left;transition:background .15s}',
   '.side button:hover{background:var(--subtle)}.side button[aria-current=true]{background:var(--panel);box-shadow:inset 0 0 0 1px var(--line);font-weight:600}',
   '.badge{margin-left:auto;background:var(--run-bg);color:var(--run);border-radius:999px;font-size:.72rem;padding:0 .45rem;font-weight:700;font-variant-numeric:tabular-nums}.badge-bad{background:var(--closed-bg);color:var(--closed)}.badge[hidden]{display:none}',
-  '.updated{margin-top:1rem;border-top:1px solid var(--line)!important;border-radius:0!important;padding-top:.6rem!important;color:var(--muted);font-size:.8rem;font-variant-numeric:tabular-nums}.updated.busy .di{animation:tl-spin .8s linear infinite}.updated+.collapse{margin-top:0;border-top:0!important;padding-top:.45rem!important}',
-  '.collapse{margin-top:1rem;border-top:1px solid var(--line)!important;border-radius:0 0 6px 6px!important;padding-top:.6rem!important}',
+  '.side .updated{min-height:0;padding:.2rem .6rem;gap:.4rem;color:var(--muted);font-size:.72rem;opacity:.7;font-variant-numeric:tabular-nums;transition:opacity .15s}.side .updated:hover{opacity:1;background:none}.side .updated .di{width:12px;height:12px}.updated.busy .di{animation:tl-spin .8s linear infinite}',
+  
   '.dmain{padding:1.25rem max(1.5rem,env(safe-area-inset-right,0px)) 2rem 1.5rem;display:grid;gap:1.1rem;align-content:start;min-width:0}',
     '.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.75rem}',
   '.stat{font:inherit;color:inherit;text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.8rem .95rem;display:grid;gap:.1rem;cursor:pointer;transition:transform .15s,box-shadow .15s,border-color .15s;animation:tl-rise .4s var(--ease) both}',
