@@ -64,6 +64,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from './logger.mjs';
+import { FAVICON } from './favicon.mjs';
 import { DASHBOARD_CSS, alertDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, renderSections } from './dashboard.mjs';
 
 const FULL_WARN_INTERVAL_MS = 10 * 60 * 1000;
@@ -838,7 +839,7 @@ export class ApproveServer {
     try { if (user) avatar = this.avatarOf?.(user.name || user.username) || ''; } catch { /* Fall back to initials. */ }
     const items = `${this.dashboard && dashLink ? `<a class="menu-item" href="${escapeHtml(this.dashPath)}">Dashboard</a>` : ''}${menu}`;
     const account = user ? headerAccount(user, this.gitlabHost, avatar, items) : '';
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}${css}</style></head><body><header class="${shell.replace(/\bshell\b/, 'brand')}"><div class="in">${this.dashboard ? `<a class="home" href="${escapeHtml(`${this.dashPath}#overview`)}" data-home aria-label="teams-live dashboard">${TANUKI}<span class="word">teams-live</span></a>` : `${TANUKI}<span class="word">teams-live</span>`}<span class="sep" aria-hidden="true">/</span><span class="kicker">${kicker}</span>${live ? '<span class="live-dot" title="This page keeps itself up to date"><i></i>Live</span>' : ''}${account}</div></header><div class="${shell}">${main}<footer class="foot"><a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">${GITHUB_MARK}teams-live on GitHub</a></footer></div></body></html>`;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><link rel="icon" type="image/png" href="${FAVICON}"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}${css}</style></head><body><header class="${shell.replace(/\bshell\b/, 'brand')}"><div class="in">${this.dashboard ? `<a class="home" href="${escapeHtml(`${this.dashPath}#overview`)}" data-home aria-label="teams-live dashboard">${TANUKI}<span class="word">teams-live</span></a>` : `${TANUKI}<span class="word">teams-live</span>`}<span class="sep" aria-hidden="true">/</span><span class="kicker">${kicker}</span>${live ? '<span class="live-dot" title="This page keeps itself up to date"><i></i>Live</span>' : ''}${account}</div></header><div class="${shell}">${main}<footer class="foot"><a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">${GITHUB_MARK}teams-live on GitHub</a></footer></div></body></html>`;
   }
 
   /** The static script that exchanges the fragment token for a session. */
