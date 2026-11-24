@@ -44,6 +44,12 @@ async function withFlow({ oauth = { clientId: 'cid', clientSecret: 'sec', allowe
     seen.push({ url: String(url), options });
     if (String(url).endsWith('/oauth/token')) return new Response(JSON.stringify({ access_token: 'tok' }), { status: 200 });
     if (String(url).endsWith('/api/v4/user')) return new Response(JSON.stringify({ id: 9, username: signInAs, name: 'Alice Example' }), { status: 200 });
+    if (String(url).endsWith('/merge_requests/7') || String(url).endsWith('/merge_requests/8')) return Response.json(gitlab.mr);
+    if (String(url).endsWith('/approvals')) return Response.json({ approved_by: [], user_can_approve: true });
+    if (String(url).endsWith('/approve') && options.method === 'POST') {
+      approvals.push({ url: String(url), options });
+      return Response.json({});
+    }
     return new Response('{}', { status: 404 });
   };
   try {
@@ -72,7 +78,7 @@ test('without a sign-in the confirmation page sends the visitor straight to the 
   });
 });
 
-test('a signed-in visitor stays signed in for the next link, and a forged cookie does not count', async () => {
+test('a remembered identity cannot authorize another approval without a fresh OAuth session', async () => {
   await withFlow({}, async (ctx) => {
     const { back } = await signIn(ctx);
     const who = /tl_who=[^;]+/.exec(back.headers.get('set-cookie') || '')?.[0];
@@ -84,8 +90,8 @@ test('a signed-in visitor stays signed in for the next link, and a forged cookie
       return /tl_approve=[^;]+/.exec(boot.headers.get('set-cookie'))[0];
     };
     const next = await open(who);
-    const page = await (await fetch(`${ctx.base}/approve/confirm`, { headers: { Cookie: next } })).text();
-    assert.match(page, /Signed in with GitLab as <code>alice<\/code>/);
+    const page = await fetch(`${ctx.base}/approve/confirm`, { headers: { Cookie: next }, redirect: 'manual' });
+    assert.equal(page.status, 302);
     const forged = who.replace(/.$/, (c) => (c === 'A' ? 'B' : 'A'));
     const other = await open(forged);
     const res = await fetch(`${ctx.base}/approve/confirm`, { headers: { Cookie: other }, redirect: 'manual' });
@@ -99,7 +105,7 @@ test('sign-in runs the authorization code flow with PKCE and then offers the app
     assert.equal(start.status, 302);
     assert.equal(location.origin + location.pathname, `https://${GL}/oauth/authorize`);
     assert.equal(location.searchParams.get('client_id'), 'cid');
-    assert.equal(location.searchParams.get('scope'), 'read_user');
+    assert.equal(location.searchParams.get('scope'), 'api');
     assert.equal(location.searchParams.get('code_challenge_method'), 'S256');
     assert.equal(location.searchParams.get('redirect_uri'), `${ORIGIN}/approve/oauth/callback`);
     assert.equal(back.status, 200);
@@ -116,10 +122,13 @@ test('sign-in runs the authorization code flow with PKCE and then offers the app
     assert.match(page, /Signed in with GitLab as <code>alice<\/code>/);
     assert.doesNotMatch(page, /Anyone with this link/);
     const csrf = /name="csrf" value="([^"]+)"/.exec(page)[1];
-    const res = await fetch(`${ctx.base}/approve/confirm`, { method: 'POST', headers: { ...FORM, Origin: ORIGIN, Cookie: ctx.cookie }, body: new URLSearchParams({ csrf, user: '1', cred: '' }).toString() });
+    const res = await fetch(`${ctx.base}/approve/confirm`, { method: 'POST', headers: { ...FORM, Origin: ORIGIN, Cookie: ctx.cookie }, body: new URLSearchParams({ csrf, user: '9', cred: 'oauth' }).toString() });
     assert.equal(res.status, 200);
     assert.equal(ctx.approvals.length, 1);
-    assert.match(ctx.notes[0], /@alice \(signed in with GitLab\)/);
+    assert.equal(ctx.approvals[0].options.headers.Authorization, 'Bearer tok');
+    assert.deepEqual(JSON.parse(ctx.approvals[0].options.body), { sha: SHA });
+    assert.equal(ctx.notes.length, 0);
+    assert.ok(ctx.server.store.linkFor({ project: 'group/app', iid: 7, sha: SHA, action: 'approve' }), 'other users may approve the same head');
   });
 });
 

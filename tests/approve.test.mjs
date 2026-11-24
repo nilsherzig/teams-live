@@ -58,6 +58,32 @@ function makeGitlab(overrides = {}) {
 }
 
 async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, now, linkTtlSeconds, action = 'approve', serverOpts = {} } = {}) {
+  gitlab.host ||= 'gitlab.example.com';
+  const originalFetch = globalThis.fetch;
+  let approved = false;
+  globalThis.fetch = async (url, options = {}) => {
+    if (!String(url).startsWith(`https://${gitlab.host}/api/v4/`)) return originalFetch(url, options);
+    const route = new URL(url).pathname;
+    const response = (value, status = 200) => new Response(JSON.stringify(value), { status });
+    const state = async () => gitlab.getUserApprovalState();
+    if (route.endsWith('/user')) return response((await state()).user || {});
+    if (route.endsWith('/approvals')) {
+      const value = await state();
+      if (!value.known) return response({}, 503);
+      return response({ approved_by: value.hasApproved || approved ? [{ user: { id: 1 } }] : [], user_can_approve: value.canApprove });
+    }
+    if (route.endsWith('/approve') && options.method === 'POST') {
+      try {
+        await gitlab.approveMr(PROJECT, String(IID), JSON.parse(options.body));
+        approved = true;
+        return response({});
+      } catch (err) {
+        const status = Number(/\((\d{3})\)/.exec(err.message)?.[1]) || 502;
+        return response({}, status);
+      }
+    }
+    return response(await gitlab.getMr());
+  };
   const server = new ApproveServer({
     gitlab,
     baseUrl: `${ORIGIN}/approve`,
@@ -70,16 +96,24 @@ async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, no
     mergePollMs: 0,
     mergePollAttempts: 3,
     sleep: async () => {},
+    oauth: { clientId: 'example', clientSecret: 'example' },
     ...serverOpts,
   });
   await server.start();
+  const stop = server.stop.bind(server);
+  server.stop = async () => { try { await stop(); } finally { globalThis.fetch = originalFetch; } };
   const base = `http://127.0.0.1:${server.port}`;
   const { token, record } = server.store.linkFor({ project: PROJECT, iid: IID, sha: action === 'reopen' ? undefined : SHA, action });
   const form = (fields) => new URLSearchParams(fields).toString();
   const FORM = { 'Content-Type': 'application/x-www-form-urlencoded' };
   const entry = () => fetch(`${base}/approve/`);
-  const bootstrap = (t = token, headers = {}) =>
-    fetch(`${base}/approve/session`, { method: 'POST', headers: { ...FORM, Origin: ORIGIN, ...headers }, body: form({ token: t }) });
+  const bootstrap = async (t = token, headers = {}) => {
+    const response = await fetch(`${base}/approve/session`, { method: 'POST', headers: { ...FORM, Origin: ORIGIN, ...headers }, body: form({ token: t }) });
+    const sid = /tl_approve=([^;]+)/.exec(response.headers.get('set-cookie') || '')?.[1];
+    const session = sid && server.sessions.get(crypto.createHash('sha256').update(sid).digest('hex'));
+    if (session) { session.user = { id: 1, username: 'owner', name: 'Owner' }; session.accessToken = 'test-oauth-token'; }
+    return response;
+  };
   const cookieOf = (res) => /tl_approve=[^;]+/.exec(res.headers.get('set-cookie') || '')?.[0] || null;
   const open = async (t = token) => cookieOf(await bootstrap(t));
   const page = (cookie) => fetch(`${base}/approve/confirm`, { headers: cookie ? { Cookie: cookie } : {} });
@@ -89,7 +123,7 @@ async function setup({ gitlab = makeGitlab(), refreshCards, stateFile = null, no
     fetch(`${base}/approve/confirm`, {
       method: 'POST',
       headers: { ...FORM, Origin: ORIGIN, ...(cookie ? { Cookie: cookie } : {}), ...headers },
-      body: form({ user: '1', cred: '', ...fields }),
+      body: form({ user: '1', cred: action === 'approve' ? 'oauth' : '', ...fields }),
     });
   const confirm = async (headers = {}) => {
     const cookie = await open();
@@ -256,8 +290,7 @@ test('the confirmation page needs a session, shows the account honestly and neve
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.match(html, /<form method="post" data-act action="https:\/\/approve\.example\.com\/approve\/confirm"/);
-    assert.match(html, /configured GitLab account/);
-    assert.match(html, /not as you personally/);
+    assert.match(html, /signed-in GitLab user|your GitLab account/i);
     assert.equal(res.headers.get('cache-control'), 'no-store');
     // The only script is the live-status one, allowed by its hash alone (never 'unsafe-inline' for scripts).
     assert.match(res.headers.get('content-security-policy'), /script-src 'sha256-[A-Za-z0-9+/=]+'; connect-src 'self'/);
@@ -349,7 +382,7 @@ test('the button keeps WCAG AA contrast (normal and hover) in light and dark mod
   }
 });
 
-test('a confirmed POST approves once with the displayed head SHA, uses the link up and refreshes the card', async () => {
+test('a confirmed POST approves the displayed head as the user and refreshes the card', async () => {
   const refreshes = [];
   const ctx = await setup({
     refreshCards: async (project, iid) => {
@@ -365,14 +398,12 @@ test('a confirmed POST approves once with the displayed head SHA, uses the link 
     assert.match(html, /refresh was run/);
     assert.deepEqual(ctx.gitlab.calls.approve, [{ project: PROJECT, iid: String(IID), opts: { sha: SHA } }]);
     assert.deepEqual(refreshes, [[PROJECT, String(IID)]]);
-    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'approved');
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
 
-    // The link cannot be used again: a replay, a new session and a bootstrap all fail.
-    const cookie = await ctx.open().catch(() => null);
-    assert.equal(cookie, null);
-    assert.equal((await ctx.bootstrap()).status, 410);
-    const again = await ctx.confirm();
-    assert.equal(again.status, 401);
+    // Other people can still use the link. The same user sees their approval.
+    const again = await ctx.page(await ctx.open());
+    assert.equal(again.status, 200);
+    assert.match(await again.text(), /already approved/i);
     assert.equal(ctx.gitlab.calls.approve.length, 1);
   } finally {
     await ctx.server.stop();
@@ -386,8 +417,8 @@ test('a session that already holds the page cannot replay the confirmation', asy
     const csrf = await ctx.csrfFrom(await ctx.page(cookie));
     assert.equal((await ctx.post(cookie, { csrf })).status, 200);
     const replay = await ctx.post(cookie, { csrf });
-    assert.equal(replay.status, 410);
-    assert.match(await replay.text(), /already used/);
+    assert.equal(replay.status, 200);
+    assert.match(await replay.text(), /already approved/i);
     assert.equal(ctx.gitlab.calls.approve.length, 1);
   } finally {
     await ctx.server.stop();
@@ -414,7 +445,7 @@ test('concurrent POSTs approve exactly once', async () => {
     await new Promise((r) => setTimeout(r, 100));
     release();
     const statuses = (await Promise.all([first, second])).map((r) => r.status).sort();
-    assert.deepEqual(statuses, [200, 410]);
+    assert.deepEqual(statuses, [200, 200]);
     assert.equal(ctx.gitlab.calls.approve.length, 1);
   } finally {
     release();
@@ -493,7 +524,7 @@ for (const action of ['approve', 'reopen', 'merge']) {
       swap(gitlab, { id: 2, username: 'other' });
       const res = await ctx.post(cookie, { csrf });
       assert.equal(res.status, 409);
-      assert.match(await res.text(), /Account changed/);
+      assert.match(await res.text(), /account changed/i);
       assert.equal(writesOf(gitlab), 0);
       // The account cannot be told: neither the page nor the click acts.
       swap(gitlab, null);
@@ -531,7 +562,7 @@ test('wrong content type and oversized bodies are rejected', async () => {
   }
 });
 
-test('a changed head commit is rejected as stale and invalidates the link', async () => {
+test('a changed head commit is rejected and cannot be approved', async () => {
   const ctx = await setup();
   try {
     const cookie = await ctx.open();
@@ -539,20 +570,20 @@ test('a changed head commit is rejected as stale and invalidates the link', asyn
     ctx.gitlab.mr = { ...ctx.gitlab.mr, sha: 'c'.repeat(40) };
     const res = await ctx.post(cookie, { csrf });
     assert.equal(res.status, 409);
-    assert.match(await res.text(), /changed after this card was posted/);
+    assert.match(await res.text(), /merge request changed/i);
     assert.equal(ctx.gitlab.calls.approve.length, 0);
-    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'stale');
-    assert.equal((await ctx.bootstrap()).status, 410);
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
+    assert.equal((await ctx.bootstrap()).status, 200);
   } finally {
     await ctx.server.stop();
   }
 });
 
-test('closed, merged and draft merge requests are not offered or approved; closed and merged invalidate the link', async () => {
-  for (const [patch, pattern, invalidated] of [
-    [{ state: 'closed' }, /no longer open/, true],
-    [{ state: 'merged' }, /merged/, true],
-    [{ draft: true }, /draft/, false],
+test('closed, merged and draft merge requests are not offered or approved', async () => {
+  for (const [patch, pattern] of [
+    [{ state: 'closed' }, /no longer open/],
+    [{ state: 'merged' }, /no longer open/],
+    [{ draft: true }, /draft/],
   ]) {
     const ctx = await setup();
     try {
@@ -562,7 +593,7 @@ test('closed, merged and draft merge requests are not offered or approved; close
       assert.equal(page.status, 409);
       assert.match(await page.text(), pattern);
       assert.equal(ctx.gitlab.calls.approve.length, 0);
-      assert.equal(ctx.server.store.byId(ctx.record.id).status, invalidated ? 'stale' : 'open');
+      assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
     } finally {
       await ctx.server.stop();
     }
@@ -572,7 +603,7 @@ test('closed, merged and draft merge requests are not offered or approved; close
 test('identity decides: already approved, unknown and not-allowed are refused without a request', async () => {
   const cases = [
     [{ known: true, user: { id: 1 }, hasApproved: true, canApprove: true }, 200, /already approved/i],
-    [{ known: false, user: null, hasApproved: false, canApprove: null }, 409, /could not be verified/],
+    [{ known: false, user: null, hasApproved: false, canApprove: null }, 409, /could not verify|account changed/i],
     [{ known: true, user: { id: 1 }, hasApproved: false, canApprove: false }, 409, /does not allow/],
   ];
   for (const [userState, status, pattern] of cases) {
@@ -608,9 +639,9 @@ test('GitLab errors are reported honestly without rendering GitLab text and do n
   const ctx = await setup({ gitlab });
   try {
     const res = await ctx.confirm();
-    assert.equal(res.status, 403);
+    assert.equal(res.status, 502);
     const html = await res.text();
-    assert.match(html, /Nothing was approved/);
+    assert.match(html, /did not confirm|outcome unknown/i);
     assert.doesNotMatch(html, /secret-detail/);
     assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
   } finally {
@@ -628,7 +659,7 @@ test('an uncertain outcome checks the own approval and only a confirmed approval
     const res = await ctx.confirm();
     assert.equal(res.status, 200);
     assert.match(await res.text(), /Approved in GitLab/);
-    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'approved');
+    assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
   } finally {
     await ctx.server.stop();
   }
@@ -640,7 +671,7 @@ test('an uncertain outcome checks the own approval and only a confirmed approval
   try {
     const res = await ctx.confirm();
     assert.equal(res.status, 502);
-    assert.match(await res.text(), /no approval is recorded/);
+    assert.match(await res.text(), /did not confirm|outcome unknown/i);
     assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
   } finally {
     await ctx.server.stop();
@@ -655,7 +686,7 @@ test('an uncertain outcome checks the own approval and only a confirmed approval
   try {
     const res = await ctx.confirm();
     assert.equal(res.status, 502);
-    assert.match(await res.text(), /may or may not be approved/);
+    assert.match(await res.text(), /did not confirm|outcome unknown/i);
     assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
   } finally {
     await ctx.server.stop();
@@ -787,7 +818,7 @@ function watcherWith(teams, flow) {
   return watcher;
 }
 
-test('the watcher offers the button only for live, undrafted, unapproved merge requests with a known head', () => {
+test('the watcher offers the button for live, undrafted merge requests with a known head', () => {
   const flow = new ApproveServer({ gitlab: makeGitlab(), baseUrl: `${ORIGIN}/approve` });
   const mr = { project: PROJECT, iid: IID, title: 'Example' };
   const details = { sha: SHA, draft: false, approved: false, title: 'Example' };
@@ -798,7 +829,7 @@ test('the watcher offers the button only for live, undrafted, unapproved merge r
   assert.equal(hasButton(rich, details, { state: 'open' }), true);
   assert.equal(hasButton(rich, { ...details, sha: undefined }, { state: 'open' }), false, 'unknown head');
   assert.equal(hasButton(rich, { ...details, draft: true }, { state: 'open' }), false, 'draft');
-  assert.equal(hasButton(rich, { ...details, approved: true }, { state: 'open' }), false, 'already approved');
+  assert.equal(hasButton(rich, { ...details, approved: true }, { state: 'open' }), true, 'another user can approve');
   assert.equal(hasButton(rich, details, { state: 'merged' }), false, 'merged');
   assert.equal(hasButton(rich, details, { state: 'closed' }), false, 'closed');
 
@@ -846,7 +877,7 @@ test('a first approve attempt that landed followed by a 401/403 is recognised as
       const res = await ctx.confirm();
       assert.equal(res.status, 200, String(status));
       assert.match(await res.text(), /Approved in GitLab/);
-      assert.equal(ctx.server.store.byId(ctx.record.id).status, 'approved');
+      assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
     } finally {
       await ctx.server.stop();
     }
@@ -860,7 +891,7 @@ test('a first approve attempt that landed followed by a 401/403 is recognised as
   try {
     const res = await ctx.confirm();
     assert.equal(res.status, 502);
-    assert.match(await res.text(), /may or may not be approved/);
+    assert.match(await res.text(), /did not confirm|outcome unknown/i);
     assert.equal(ctx.server.store.byId(ctx.record.id).status, 'open');
   } finally {
     await ctx.server.stop();
@@ -969,7 +1000,7 @@ test('confirmation reads are coalesced for a few seconds; the approving POST alw
   try {
     const cookie = await ctx.open();
     for (let i = 0; i < 4; i++) assert.equal((await ctx.page(cookie)).status, 200);
-    assert.equal(ctx.gitlab.calls.getMr, 1, 'one GitLab read for repeated GETs');
+    assert.ok(ctx.gitlab.calls.getMr >= 4, 'each GET checks the signed-in user against GitLab');
     const csrf = await ctx.csrfFrom(await ctx.page(cookie));
     const before = ctx.gitlab.calls.getMr;
     const res = await ctx.post(cookie, { csrf });
@@ -981,37 +1012,13 @@ test('confirmation reads are coalesced for a few seconds; the approving POST alw
   }
 });
 
-test('a revoked approval of the same head is noticed: the memory is re-checked, forgotten and the cards refreshed', async () => {
-  let now = 9_000_000;
-  const refreshed = [];
-  const gitlab = makeGitlab();
-  const ctx = await setup({ gitlab, now: () => now, refreshCards: async (p, i) => refreshed.push([p, i]) });
+test('a prior bot approval does not hide the user approval link', async () => {
+  const ctx = await setup();
   try {
     ctx.server.store.markApproved(PROJECT, IID, SHA);
     const args = { project: PROJECT, iid: IID, sha: SHA };
-    // Still approved in GitLab: the hint stays and no link is minted.
-    gitlab.userState = { known: true, user: { id: 1 }, hasApproved: true, canApprove: true };
-    assert.equal(ctx.server.linkFor(args), null);
-    await new Promise((r) => setImmediate(r));
-    assert.equal(ctx.server.store.hasApprovedHead(PROJECT, IID, SHA), true);
-    assert.equal(refreshed.length, 0);
-
-    // Unknown answer: the hint stays.
-    now += 31_000;
-    gitlab.userState = { known: false };
-    assert.equal(ctx.server.linkFor(args), null);
-    await new Promise((r) => setImmediate(r));
-    assert.equal(ctx.server.store.hasApprovedHead(PROJECT, IID, SHA), true);
-
-    // Revoked: forgotten, cards refreshed, a link is minted again.
-    now += 31_000;
-    gitlab.userState = { known: true, user: { id: 1 }, hasApproved: false, canApprove: true };
-    assert.equal(ctx.server.linkFor(args), null, 'this render still has no link');
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
-    assert.equal(ctx.server.store.hasApprovedHead(PROJECT, IID, SHA), false);
-    assert.deepEqual(refreshed, [[PROJECT, IID]]);
     assert.match(ctx.server.linkFor(args) || '', /#[A-Za-z0-9_-]{43}$/);
+    assert.equal(ctx.server.store.hasApprovedHead(PROJECT, IID, SHA), false);
   } finally {
     await ctx.server.stop();
   }
@@ -2360,7 +2367,7 @@ test('the live state endpoint needs the session, answers JSON and reads GitLab o
     const before = reads;
     await fetch(url, { headers: { Cookie: cookie } });
     await fetch(url, { headers: { Cookie: cookie } });
-    assert.equal(reads, before, 'served from the short cache');
+    assert.equal(reads, before + 2, 'each request rechecks the user while the display snapshot is cached');
     assert.equal((await fetch(url, { method: 'POST', headers: { Cookie: cookie } })).status, 405);
   } finally {
     await ctx.server.stop();

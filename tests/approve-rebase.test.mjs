@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 
@@ -13,6 +14,7 @@ const FORM = { 'Content-Type': 'application/x-www-form-urlencoded' };
 
 function makeGitlab({ mr = {}, reads = [], rebaseError = null, rebases = [], hasApproved = false } = {}) {
   const gitlab = {
+    host: 'gitlab.example.com',
     calls: { rebase: [], reads: 0, approve: [], notes: [] },
     mr: { state: 'opened', sha: SHA, title: 'Example', detailed_merge_status: 'need_rebase', author: { username: 'author' }, ...mr },
     queue: [...reads],
@@ -47,13 +49,28 @@ function makeGitlab({ mr = {}, reads = [], rebaseError = null, rebases = [], has
 
 async function withFlow(opts, fn) {
   const gitlab = makeGitlab(opts);
-  const server = new ApproveServer({ gitlab, baseUrl: `${ORIGIN}/approve`, port: 0, mergePollMs: 0, mergePollAttempts: 3, sleep: async () => {}, ...(opts.server || {}) });
+  const server = new ApproveServer({ gitlab, baseUrl: `${ORIGIN}/approve`, port: 0, oauth: { clientId: 'example', clientSecret: 'example' }, mergePollMs: 0, mergePollAttempts: 3, sleep: async () => {}, ...(opts.server || {}) });
   await server.start();
   const base = `http://127.0.0.1:${server.port}`;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    const target = String(url);
+    if (!target.startsWith('https://gitlab.example.com/api/v4/')) return originalFetch(url, options);
+    if (target.endsWith('/user')) return Response.json({ id: 1, username: 'owner' });
+    if (target.endsWith('/approvals')) return Response.json({ approved_by: opts.hasApproved ? [{ user: { id: 1 } }] : [], user_can_approve: true });
+    if (target.endsWith('/approve')) {
+      await gitlab.approveMr(PROJECT, IID, JSON.parse(options.body));
+      return Response.json({});
+    }
+    return Response.json(gitlab.mr);
+  };
   try {
     const link = server.store.linkFor({ project: PROJECT, iid: IID, action: 'rebase' });
     const boot = await fetch(`${base}/approve/session`, { method: 'POST', headers: { ...FORM, Origin: ORIGIN }, body: new URLSearchParams({ token: link.token }).toString() });
     const cookie = /tl_approve=[^;]+/.exec(boot.headers.get('set-cookie') || '')?.[0];
+    const stored = server.sessions.get(crypto.createHash('sha256').update(cookie.split('=')[1]).digest('hex'));
+    stored.user = { id: 1, username: 'owner' };
+    stored.accessToken = 'mock-token';
     const page = () => fetch(`${base}/approve/confirm`, { headers: { Cookie: cookie } });
     const confirm = async () => {
       const html = await (await page()).text();
@@ -67,6 +84,7 @@ async function withFlow(opts, fn) {
     };
     await fn({ gitlab, server, page, confirm, follow, record: link.record });
   } finally {
+    globalThis.fetch = originalFetch;
     await server.stop();
   }
 }
@@ -182,7 +200,7 @@ test('after a rebase the result page offers Approve for the new head, and one cl
     assert.match(await res.text(), /Approved in GitLab/);
     assert.equal(gitlab.calls.approve.length, 1);
     assert.equal(gitlab.calls.approve[0].opts.sha, NEW, 'guarded by the head the page showed');
-    assert.match(gitlab.calls.notes.at(-1), /Approved via Microsoft Teams/);
+    assert.equal(gitlab.calls.notes.length, 1, 'only the bot rebase needs an attribution comment');
   });
 });
 
@@ -195,7 +213,7 @@ test('no Approve is offered when the account already approved, and a head that m
     gitlab.mr = { ...gitlab.mr, sha: 'c'.repeat(40) };
     const res = await follow(html);
     assert.equal(res.status, 409);
-    assert.match(await res.text(), /changed after this card was posted/);
+    assert.match(await res.text(), /merge request changed/i);
     assert.equal(gitlab.calls.approve.length, 0);
   });
 });
@@ -276,13 +294,12 @@ test('every successful action leaves a comment; the address is only in it when n
   }
 });
 
-test('a confirmed rebase and its follow-up approval each comment on the merge request', async () => {
+test('a confirmed rebase comments, while the personal approval needs no bot attribution', async () => {
   await withFlow({ reads: [{ rebase_in_progress: false, sha: NEW }] }, async ({ gitlab, confirm, follow }) => {
     const html = await (await confirm()).text();
     assert.equal(gitlab.calls.notes.length, 1);
     assert.match(gitlab.calls.notes[0], /Rebase requested via Microsoft Teams/);
     await follow(html);
-    assert.equal(gitlab.calls.notes.length, 2);
-    assert.match(gitlab.calls.notes[1], /Approved via Microsoft Teams/);
+    assert.equal(gitlab.calls.notes.length, 1);
   });
 });

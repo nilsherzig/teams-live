@@ -3,8 +3,7 @@
 //
 // The card carries an "👍 Approve" button (Action.OpenUrl) whose URL holds a
 // random 256-bit capability token in the FRAGMENT (`https://host/approve/#<token>`).
-// There are no accounts: whoever holds the link can approve, as the configured
-// GitLab account, and nothing here identifies or authenticates the caller.
+// The visitor signs in to GitLab and approves as their own account.
 //
 // - Fragments are never sent to a server, so the token is not in the request
 //   URL, the proxy access log or a Referer. A static page (no token needed to
@@ -21,20 +20,17 @@
 //   the account cannot be told.
 // - The server stores only the SHA-256 of the token with the project, merge
 //   request, exact head commit, expiry (24 h by default, hard bounded) and
-//   status. A link is single-use once an approval is CONFIRMED, and is
-//   invalidated when the head commit changes or the merge request is closed
-//   or merged. An uncertain outcome consumes nothing.
+//   status. Approval links remain usable by other users until the head changes,
+//   the merge request closes, or the link expires.
 // - The listener binds to loopback only and sits behind the reverse proxy.
 //
 // A fourth action, "Rebase", is offered on OPEN merge requests that are behind their target branch (and have no
 // conflicts). It asks GitLab to rebase the source branch (one PUT, never repeated) and reads the result back.
 // Like Reopen it is not pinned to a head commit (a rebase changes it) and has its own records.
 //
-// Optional "Sign in with GitLab" (`oauth`): before any confirmation the page sends the visitor through
-// GitLab's OAuth authorization-code flow (PKCE, scope read_user) and learns the verified GitLab user. That
-// user is bound into the session and the CSRF token, may be restricted to an allow-list, cannot be the
-// author of the merge request, and is named in the comment. The action itself is still made by the
-// configured account. Without `oauth` the links stay pure capability links.
+// Approval requires GitLab OAuth (authorization code, PKCE, api scope). The
+// access token stays in the short-lived server-side session; the identity is
+// bound into the CSRF token. Other actions still use the configured account.
 //
 // The same flow serves a second action, "Reopen", for CLOSED (never merged)
 // merge requests: a "🔄 Reopen" button on the closed card opens a link of the
@@ -56,6 +52,7 @@
 // read back, and the link is used up only when that read confirms it.
 
 import { buildApprovalNote } from './approval-note.mjs';
+import { userApprovalPreflight, userApprovalWrite } from './user-approval.mjs';
 import { teamsMessageLink } from './message-links.mjs';
 import { formatPlace } from './geoip.mjs';
 import { PAGE_CSS, TANUKI, escapeHtml, liveScript, liveSlots, liveState, renderSummary, safeLink } from './approve-page.mjs';
@@ -109,7 +106,7 @@ const COPY = {
     title: 'Approve merge request',
     blocked: 'Cannot approve',
     kicker: 'GitLab approval',
-    footer: 'approvals are sent through the configured account.',
+    footer: 'approvals are sent as the signed-in GitLab user.',
     question: 'Approve this merge request?',
     button: 'Approve merge request',
     busy: 'Approving…',
@@ -214,6 +211,12 @@ export class ApprovalStore {
       // action does not read it, so a rollback cannot turn one into an approval.
       for (const r of Array.isArray(data?.mergeRecords) ? data.mergeRecords : []) this.adopt(r, 'merge');
       for (const r of Array.isArray(data?.rebaseRecords) ? data.rebaseRecords : []) this.adopt(r, 'rebase');
+      for (const r of Array.isArray(data?.batchRecords) ? data.batchRecords : []) {
+        if (typeof r?.id === 'string' && ID_PATTERN.test(r.id) && ['batch-approve', 'batch-open'].includes(r.action) &&
+            Array.isArray(r.items) && r.items.length > 0 && r.items.length <= 20 &&
+            r.items.every((item) => typeof item.project === 'string' && typeof item.iid === 'string' && typeof item.sha === 'string') &&
+            Number.isFinite(r.createdAt) && Number.isFinite(r.expiresAt) && r.status === 'open') this.records.set(r.id, r);
+      }
       for (const a of Array.isArray(data?.approvedHeads) ? data.approvedHeads : []) {
         if (typeof a?.key === 'string' && Number.isFinite(a.at)) this.approvedHeads.set(a.key, a.at);
       }
@@ -271,9 +274,10 @@ export class ApprovalStore {
       // key and would otherwise load a merge link as an approval link.
       const state = {
         version: 5,
-        records: all.filter((r) => r.action !== 'merge' && r.action !== 'rebase'),
+        records: all.filter((r) => !['merge', 'rebase', 'batch-approve', 'batch-open'].includes(r.action)),
         mergeRecords: all.filter((r) => r.action === 'merge'),
         rebaseRecords: all.filter((r) => r.action === 'rebase'),
+        batchRecords: all.filter((r) => r.action === 'batch-approve' || r.action === 'batch-open'),
         approvedHeads: [...this.approvedHeads].map(([key, at]) => ({ key, at })),
       };
       fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
@@ -341,6 +345,27 @@ export class ApprovalStore {
     this.minted.set(cacheKey, { token, id: record.id });
     this.persist();
     return { token, record };
+  }
+
+  /** A bounded capability for a fixed list. Tokens remain in memory, hashes are persisted. */
+  batchLinkFor(items, action) {
+    if (!['batch-approve', 'batch-open'].includes(action) || !Array.isArray(items) || !items.length || items.length > 20) return null;
+    const clean = items.map(({ project, iid, sha }) => ({ project: String(project || ''), iid: String(iid || ''), sha: String(sha || '') }));
+    if (clean.some((item) => !item.project || !item.iid || (action === 'batch-approve' && !item.sha))) return null;
+    const key = `${action}:${JSON.stringify(clean)}`;
+    this.prune();
+    const cached = this.minted.get(key);
+    const old = cached && this.byId(cached.id);
+    if (old?.status === 'open') return cached.token;
+    this.prune(1);
+    if (this.records.size >= this.max) return null;
+    const token = crypto.randomBytes(32).toString('base64url');
+    const now = this.now();
+    const record = { id: sha256Hex(token), action, items: clean, status: 'open', createdAt: now, expiresAt: now + this.ttlMs };
+    this.records.set(record.id, record);
+    this.minted.set(key, { id: record.id, token });
+    this.persist();
+    return token;
   }
 
   /** The record for a token, or null when it is unknown or expired. */
@@ -639,6 +664,8 @@ export class ApproveServer {
     // The script that keeps an open page current (the state endpoint is `<base>/state`).
     this.liveScript = liveScript(`${this.basePath}/state`);
     this.liveHash = `sha256-${crypto.createHash('sha256').update(this.liveScript).digest('base64')}`;
+    this.openAllScript = `document.getElementById('open-all').addEventListener('click',function(){document.querySelectorAll('[data-mr-link]').forEach(function(a){window.open(a.href,'_blank','noopener,noreferrer')});document.getElementById('open-note').textContent='If tabs did not open, allow pop-ups or use the links below.'})`;
+    this.openAllHash = `sha256-${crypto.createHash('sha256').update(this.openAllScript).digest('base64')}`;
     // Links on the pages point at the GitLab host only.
     this.gitlabHost = typeof gitlab.host === 'string' ? gitlab.host : '';
     this.lastApprovals = new Map();
@@ -655,13 +682,20 @@ export class ApproveServer {
     if (action === 'merge' && !this.mergeEnabled) return null;
     if (action === 'rebase' && !this.rebaseEnabled) return null;
     try {
-      if (action === 'approve' && this.store.hasApprovedHead(project, iid, sha)) this.revalidateApproved(project, iid, sha);
+      // A previous bot approval must not suppress another person's approval.
+      if (action === 'approve' && this.oauth) this.store.forgetApproved(project, iid, sha);
+      else if (action === 'approve' && this.store.hasApprovedHead(project, iid, sha)) this.revalidateApproved(project, iid, sha);
       const link = this.store.linkFor({ project, iid, sha, action });
       return link ? `${this.origin}${this.basePath}/#${link.token}` : null;
     } catch (err) {
       log(`Could not create an approval link: ${err.message}`);
       return null;
     }
+  }
+
+  batchLinkFor(items, action) {
+    const token = this.store.batchLinkFor(items, action === 'open' ? 'batch-open' : 'batch-approve');
+    return token ? `${this.origin}${this.basePath}/#${token}` : null;
   }
 
   /**
@@ -736,7 +770,7 @@ export class ApproveServer {
       'Referrer-Policy': 'same-origin',
       'Cross-Origin-Opener-Policy': 'same-origin',
       // img-src data: only: the pictures are embedded (card icons, profile pictures), never fetched.
-      'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'unsafe-inline'; ${script ? `script-src '${script === 'live' ? this.liveHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
+      'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'unsafe-inline'; ${script ? `script-src '${script === 'live' ? this.liveHash : script === 'open-all' ? this.openAllHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
       ...extra,
     };
   }
@@ -833,7 +867,14 @@ export class ApproveServer {
     while (this.sessions.size >= MAX_SESSIONS) this.sessions.delete(this.sessions.keys().next().value);
     const sid = crypto.randomBytes(32).toString('base64url');
     const expiresAt = Math.min(now + SESSION_TTL_MS, record.expiresAt);
-    this.sessions.set(sha256Hex(sid), { recordId: record.id, expiresAt, user: null });
+    const key = sha256Hex(sid);
+    const session = { recordId: record.id, expiresAt, user: null };
+    this.sessions.set(key, session);
+    // Discard any OAuth token even when no further requests arrive.
+    const timer = setTimeout(() => {
+      if (this.sessions.get(key) === session) this.sessions.delete(key);
+    }, Math.max(1, expiresAt - now));
+    timer.unref?.();
     return { sid, maxAge: Math.max(1, Math.floor((expiresAt - now) / 1000)) };
   }
 
@@ -856,7 +897,7 @@ export class ApproveServer {
     const s = this.sessions.get(sha256Hex(sid));
     if (!s || s.expiresAt <= this.now()) return null;
     const record = this.store.byId(s.recordId);
-    return record ? { sid, record, user: s.user || null } : null;
+    return record ? { sid, record, user: s.user || null, accessToken: s.accessToken || null } : null;
   }
 
   cookie(value, maxAge) {
@@ -917,6 +958,8 @@ export class ApproveServer {
     if (!session) {
       return this.send(res, 401, this.page('Link not opened', '<p>Open the link from the Teams card again. Nothing was changed.</p>', { tone: 'warn' }));
     }
+    if (session.record.action === 'batch-open') return this.showBatchOpen(res, session.record);
+    if (session.record.action === 'batch-approve') return method === 'GET' ? this.showBatchApproval(res, session) : this.approveBatch(req, res, session);
     if (method === 'GET') return this.showConfirmation(res, session);
     return this.approve(req, res, session);
   }
@@ -1158,7 +1201,7 @@ export class ApproveServer {
             ? `<p class="callout">The rebase is made with the configured GitLab account <code>${who}</code>, not as you personally.${this.anyone('rebase')}</p>`
           : record.action === 'merge'
             ? `<p class="callout">The merge is made with the configured GitLab account <code>${who}</code>, not as you personally.${this.anyone('merge')} GitLab's own rules (approvals, pipeline, protected branch) still apply and are not bypassed.</p>`
-            : `<p class="callout">The approval is made with the configured GitLab account <code>${who}</code>, not as you personally.${this.anyone('approve')}</p>`,
+            : `<p class="callout">The approval is made as GitLab user <code>${who}</code>.</p>`,
       );
     }
     return lines.join('');
@@ -1240,7 +1283,7 @@ export class ApproveServer {
       client_id: this.oauth.clientId,
       redirect_uri: this.oauthRedirectUri(),
       response_type: 'code',
-      scope: 'read_user',
+      scope: 'api',
       state: nonce,
       code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url'),
       code_challenge_method: 'S256',
@@ -1265,19 +1308,20 @@ export class ApproveServer {
     const session = this.sessions.get(state.sid);
     const code = params.get('code');
     if (!session || session.expiresAt <= this.now() || !code) return fail(params.get('error') ? 'GitLab did not sign you in.' : 'The sign-in could not be completed.');
-    let user;
+    let user, accessToken;
     try {
-      user = await this.oauthUser(code, state.verifier);
+      ({ user, accessToken } = await this.oauthUser(code, state.verifier));
     } catch (err) {
       log(`GitLab sign-in failed: ${err.message}`);
       return fail('GitLab could not confirm who you are.');
     }
     session.user = user;
+    session.accessToken = accessToken;
     const next = `${this.basePath}/confirm`;
     return this.send(res, 200, this.page('Signed in', `<meta http-equiv="refresh" content="0;url=${escapeHtml(next)}"><p>Signed in as <code>${escapeHtml(user.username)}</code>.</p><p class="links"><a class="btn" href="${escapeHtml(next)}">Continue</a></p>`, { tone: 'ok' }), { extra: { 'Set-Cookie': this.whoCookie(user) } });
   }
 
-  /** Trades the code for a token and reads the user it belongs to. The token is dropped right away. */
+  /** Trades the code for an API token and verifies its owner. The token stays in the server-side session. */
   async oauthUser(code, verifier) {
     const signal = () => AbortSignal.timeout(OAUTH_TIMEOUT_MS);
     const tokenRes = await fetch(`https://${this.gitlabHost}/oauth/token`, {
@@ -1293,7 +1337,7 @@ export class ApproveServer {
     if (!userRes.ok) throw new Error(`user endpoint answered HTTP ${userRes.status}`);
     const u = await userRes.json();
     if (!u?.id || typeof u.username !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(u.username)) throw new Error('unusable user');
-    return { id: u.id, username: u.username, name: typeof u.name === 'string' ? u.name : u.username };
+    return { user: { id: u.id, username: u.username, name: typeof u.name === 'string' ? u.name : u.username }, accessToken };
   }
 
   usedPage(record) {
@@ -1400,6 +1444,10 @@ export class ApproveServer {
   async state(req, res) {
     const session = this.sessionOf(req);
     if (!session) return this.json(res, 401, {});
+    if (kindOf(session.record) === 'approve') {
+      const result = await userApprovalPreflight(this.gitlabHost, session.record, session);
+      if (!result.mr) return this.json(res, 403, {});
+    }
     try {
       return this.json(res, 200, await this.liveSnapshot(session.record));
     } catch {
@@ -1419,11 +1467,94 @@ export class ApproveServer {
     return links.length ? `<p class="links">${links.join('')}</p>` : '';
   }
 
+  /** The page contains individual links as a fallback when a browser blocks pop-ups. */
+  showBatchOpen(res, record) {
+    const links = record.items.map((item) => {
+      const url = safeLink(this.gitlab.mrLink(item.project, item.iid), this.gitlabHost);
+      return url ? `<li><a data-mr-link href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.project)} !${escapeHtml(item.iid)}</a></li>` : '';
+    }).join('');
+    const body = `<p>Open the merge requests in separate tabs.</p><button id="open-all" class="btn" type="button">Open all</button><p id="open-note" class="note"></p><ul>${links}</ul><noscript><p>Open the links above individually.</p></noscript>`;
+    return this.send(res, 200, this.page('Open merge requests', body, { kind: 'generic', script: `<script>${this.openAllScript}</script>` }), { script: 'open-all' });
+  }
+
+  /** Reuse the existing per-head approval records and checks for every member. */
+  async batchPreflight(record, session) {
+    const items = [];
+    for (const item of record.items) {
+      const initial = await userApprovalPreflight(this.gitlabHost, { ...item, status: 'open' }, session);
+      if (initial.status === 'blocked') {
+        items.push({ item, result: initial, status: 'blocked', reason: initial.reason });
+        continue;
+      }
+      this.store.forgetApproved(item.project, item.iid, item.sha);
+      const link = this.store.linkFor({ ...item, action: 'approve' });
+      if (!link) { items.push({ item, status: 'unavailable', reason: 'Already approved or unavailable.' }); continue; }
+      const result = initial;
+      const actor = actorOf(result);
+      const denied = result.status === 'ready' && this.signInDenied(session.user, result.mr, 'approve');
+      items.push({ item, record: link.record, result, actor, status: denied || (result.status === 'ready' && !actor) ? 'blocked' : result.status, reason: denied || result.reason || '' });
+    }
+    return items;
+  }
+
+  async showBatchApproval(res, session) {
+    if (!this.oauth) return this.send(res, 503, this.page('Sign-in unavailable', '<p>GitLab sign-in is required to approve.</p>', { tone: 'warn' }));
+    if (!session.accessToken) return this.signInPage(res);
+    const items = await this.batchPreflight(session.record, session);
+    const ready = items.filter((item) => item.status === 'ready');
+    const actors = ready.map(({ record, actor }) => ({ id: record.id, user: actor.user, cred: actor.cred }));
+    const encoded = Buffer.from(JSON.stringify(actors)).toString('base64url');
+    const bind = this.bindOf({ user: 'batch', cred: encoded }, session.user);
+    const csrf = this.csrf.issue(session.sid, session.record.id, bind);
+    const rows = items.map(({ item, result, status, reason }) => `<li><strong>${escapeHtml(item.project)} !${escapeHtml(item.iid)}</strong>: ${escapeHtml(status === 'ready' ? `Ready · @${result.user?.username || result.user?.name || 'configured account'}` : reason || status)}</li>`).join('');
+    const form = ready.length ? `<form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="actors" value="${escapeHtml(encoded)}"><p>Approve ${ready.length} eligible merge request(s) with the accounts shown above?</p><button class="btn" type="submit">👍 Approve all</button></form>` : '<p>There are no eligible merge requests to approve.</p>';
+    return this.send(res, 200, this.page('Approve merge requests', `<ul>${rows}</ul>${this.whoHtml(session.user)}${form}`, { kind: 'approve' }));
+  }
+
+  async approveBatch(req, res, session) {
+    if (!this.originAllowed(req)) return this.send(res, 403, this.page('Not allowed', '<p>Nothing was approved.</p>', { tone: 'warn' }));
+    if (!this.oauth || !session.accessToken) return this.send(res, 401, this.page('Sign in required', '<p>Nothing was approved.</p>', { tone: 'warn' }));
+    const parsed = await this.postForm(req);
+    if (!parsed.form) return this.send(res, parsed.status, this.page('Request rejected', '<p>Nothing was approved.</p>', { tone: 'warn' }));
+    const encoded = parsed.form.get('actors') || '';
+    const bind = this.bindOf({ user: 'batch', cred: encoded }, session.user);
+    if (!this.csrf.verify(parsed.form.get('csrf'), session.sid, session.record.id, bind)) return this.send(res, 403, this.page('Page expired', '<p>Nothing was approved.</p>', { tone: 'warn' }));
+    let actors;
+    try { actors = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')); } catch { actors = null; }
+    if (!Array.isArray(actors) || actors.length > session.record.items.length) return this.send(res, 400, this.page('Request rejected', '<p>Nothing was approved.</p>', { tone: 'warn' }));
+    const outcomes = [];
+    for (const item of session.record.items) {
+      const key = keyOf(item.project, item.iid);
+      let outcome;
+      try { outcome = await this.withLock(key, async () => {
+        const checked = await userApprovalPreflight(this.gitlabHost, { ...item, status: 'open' }, session);
+        if (checked.status !== 'ready') return checked.reason || checked.status;
+        const link = this.store.linkFor({ ...item, action: 'approve' });
+        if (!link) return 'Already approved or unavailable';
+        const shown = actors.find((a) => a.id === link.record.id);
+        if (!shown) return 'Not included in the confirmation';
+        const result = checked;
+        const actor = actorOf(result);
+        if (result.status !== 'ready') return result.reason || result.status;
+        if (!actor || actor.user !== shown.user || actor.cred !== shown.cred) return 'Account changed; review again';
+        const denied = this.signInDenied(session.user, result.mr, 'approve');
+        if (denied) return denied;
+        const sent = await this.sendUserApproval(link.record, result, session);
+        return sent.title;
+      }); } catch { outcome = 'Outcome unknown; check this merge request in GitLab before retrying'; }
+      outcomes.push(`<li><strong>${escapeHtml(item.project)} !${escapeHtml(item.iid)}</strong>: ${escapeHtml(outcome)}</li>`);
+    }
+    return this.send(res, 200, this.page('Approval results', `<ul>${outcomes.join('')}</ul>`, { kind: 'approve' }));
+  }
+
   async showConfirmation(res, session) {
     const { sid, record } = session;
+    if (kindOf(record) === 'approve' && !this.oauth) return this.send(res, 503, this.page('Sign-in unavailable', '<p>GitLab sign-in is required to approve.</p>', { tone: 'warn' }));
+    if (kindOf(record) === 'approve' && !session.accessToken) return this.signInPage(res);
     if (this.oauth && !session.user) return this.signInPage(res);
-    const result = await this.evaluateCached(record);
-    await this.refreshApprovals(record);
+    const result = kindOf(record) === 'approve' ? await userApprovalPreflight(this.gitlabHost, record, session) : await this.evaluateCached(record);
+    // Do not read or reveal bot-visible MR details when the visitor cannot see it.
+    if (result.mr) await this.refreshApprovals(record);
     await this.warmAvatars(result.mr, this.lastApprovals.get(record.id));
     if (result.status === 'used') {
       const u = this.usedPage(record);
@@ -1464,7 +1595,7 @@ export class ApproveServer {
     if (record.action === 'reopen') {
       return ['Already open', `${summary}<p>This merge request is already open in GitLab. ${sent ? 'Nothing was sent.' : 'Nothing to do.'}</p>`];
     }
-    return ['Already approved', `${summary}<p>This merge request is already approved by the configured account in GitLab. ${sent ? 'Nothing was sent.' : 'Nothing to do.'}</p>`];
+    return ['Already approved', `${summary}<p>You have already approved this merge request in GitLab. ${sent ? 'Nothing was sent.' : 'Nothing to do.'}</p>`];
   }
 
   async withLock(key, fn) {
@@ -1496,7 +1627,7 @@ export class ApproveServer {
       this.send(res, 403, this.page('Not allowed', `<p>The request did not come from the confirmation page. ${nothing}</p>`, { tone: 'warn', kind }));
       return;
     }
-    if (this.oauth && !session.user) {
+    if ((kind === 'approve' && (!this.oauth || !session.accessToken)) || (this.oauth && !session.user)) {
       this.send(res, 401, this.page('Sign in required', `<p>Sign in with GitLab first. ${nothing}</p>`, { tone: 'warn', kind }));
       return;
     }
@@ -1514,6 +1645,7 @@ export class ApproveServer {
       return;
     }
     if (follow) {
+      if (!this.oauth || !session.accessToken) return this.send(res, 401, this.page('Sign in required', '<p>Nothing was approved.</p>', { tone: 'warn' }));
       // The approval of exactly the head commit the page showed: a head that changed since is refused by the
       // evaluation below (the record is pinned to it), and GitLab guards the approval with the same commit.
       const link = /^[0-9a-f]{40,64}$/i.test(follow) ? this.store.linkFor({ project: record.project, iid: record.iid, sha: follow, action: 'approve' }) : null;
@@ -1530,7 +1662,7 @@ export class ApproveServer {
       this.readCache.delete(record.id);
       const current = this.store.byId(record.id);
       if (!current) return { code: 410, title: 'Link expired', body: `<p>This link expired. ${nothing}</p>` };
-      const result = await this.evaluate(current);
+      const result = kind === 'approve' ? await userApprovalPreflight(this.gitlabHost, current, session) : await this.evaluate(current);
       if (result.status === 'used') return this.usedPage(current);
       if (result.status === 'blocked') {
         return { code: 409, title: COPY[kind].blocked, body: `${this.summary(current, result.mr, result.user)}<p>${escapeHtml(result.reason)}</p>` };
@@ -1539,7 +1671,6 @@ export class ApproveServer {
         if (kind === 'reopen') this.store.markReopened(current.project, current.iid);
         else if (kind === 'rebase') this.store.markRebased(current.project, current.iid);
         else if (kind === 'merge') this.store.markMerged(current.project, current.iid);
-        else this.store.markApproved(current.project, current.iid, current.sha);
         const [title, body] = this.alreadyPage(current, result, true);
         return { code: 200, title, body };
       }
@@ -1557,7 +1688,7 @@ export class ApproveServer {
       result.ctx = { ip: this.clientIp(req), signedIn: session.user };
       if (kind === 'reopen') return this.sendReopen(current, result);
       if (kind === 'rebase') return this.sendRebase(current, result);
-      return kind === 'merge' ? this.sendMerge(current, result) : this.sendApproval(current, result, result.ctx);
+      return kind === 'merge' ? this.sendMerge(current, result) : this.sendUserApproval(current, result, session);
     });
     // After a rebase: offer the approval of the new head right on the result page.
     const offer = kind === 'rebase' && outcome.code === 200 ? await this.approveFollowUp(session) : '';
@@ -1585,7 +1716,8 @@ export class ApproveServer {
     if (!/^[0-9a-f]{40,64}$/i.test(head)) return '';
     const link = this.store.linkFor({ project: record.project, iid: record.iid, sha: head, action: 'approve' });
     if (!link) return '';
-    const result = await this.evaluate(link.record);
+    if (!session.accessToken) return '';
+    const result = await userApprovalPreflight(this.gitlabHost, link.record, session);
     if (result.status !== 'ready') return '';
     const actor = actorOf(result);
     if (!actor || this.signInDenied(session.user, result.mr, 'approve')) return '';
@@ -1595,7 +1727,7 @@ export class ApproveServer {
     return (
       `<div class="actions" data-live-action><form method="post" data-act action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}">` +
       `${field('csrf', token)}${field('user', actor.user)}${field('cred', actor.cred)}${field('follow', 'approve')}${field('sha', head)}` +
-      `<p>Approve this merge request now (head <code>${escapeHtml(head.slice(0, 12))}</code>)? The approval is made with the configured GitLab account <code>${who}</code>.</p>` +
+      `<p>Approve this merge request now (head <code>${escapeHtml(head.slice(0, 12))}</code>) as <code>${who}</code>?</p>` +
       `<button class="btn" type="submit" data-busy="${escapeHtml(COPY.approve.busy)}">👍 Approve</button></form></div>`
     );
   }
@@ -1817,6 +1949,25 @@ export class ApproveServer {
     if (isIP(real)) return real;
     const forwarded = String(req.headers['x-forwarded-for'] || '').split(',').map((v) => v.trim()).filter(Boolean).at(-1) || '';
     return isIP(forwarded) ? forwarded : '';
+  }
+
+  /** Approve as the visitor; on an uncertain response, check the same account before reporting success. */
+  async sendUserApproval(record, result, session) {
+    const summary = this.summary(record, result.mr, result.user);
+    try {
+      await userApprovalWrite(this.gitlabHost, record, session);
+    } catch (err) {
+      if (!err.status || err.status >= 500 || err.status === 401 || err.status === 403) {
+        const state = await userApprovalPreflight(this.gitlabHost, record, session);
+        if (state.status !== 'already') {
+          return { code: 502, title: 'Outcome unknown', body: `${summary}<p>GitLab did not confirm the approval. Check the merge request in GitLab before retrying.</p>` };
+        }
+      } else {
+        return { code: 409, title: 'Approval failed', body: `${summary}<p>GitLab rejected the approval (HTTP ${err.status}). Review the merge request and try again.</p>` };
+      }
+    }
+    const refresh = await this.refresh(record);
+    return { code: 200, title: 'Approved', body: `${summary}<p>Approved in GitLab as your account.</p><p class="note">${escapeHtml(refresh)}</p>${this.followLinks(record)}` };
   }
 
   async sendApproval(record, result, { ip = '', signedIn = null } = {}) {

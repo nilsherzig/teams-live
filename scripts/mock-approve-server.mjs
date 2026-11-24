@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import { ApproveServer } from '../src/approve.mjs';
 
@@ -30,6 +31,7 @@ const SHA = 'a'.repeat(40);
 const approvals = [];
 const state = { approved: false };
 const gitlab = {
+  host: 'gitlab.example.com',
   mr: { state: 'opened', draft: false, sha: SHA, title: 'Example change' },
   async getMr() {
     return gitlab.mr;
@@ -49,8 +51,32 @@ const server = new ApproveServer({
   gitlab,
   baseUrl: `http://127.0.0.1:${port}/approve`,
   port,
+  oauth: { clientId: 'mock', clientSecret: 'mock' },
   refreshCards: async () => ({ matched: 0, failed: 0 }),
 });
+// This local-only mock replaces the GitLab redirect and API; no credential or
+// request is sent to a real GitLab server.
+server.oauthStart = (req, res) => {
+  const session = server.sessionOf(req);
+  if (!session) return server.send(res, 401, 'Open the link first.');
+  const stored = server.sessions.get(crypto.createHash('sha256').update(session.sid).digest('hex'));
+  stored.user = { id: 1, username: 'mock-user' };
+  stored.accessToken = 'mock-token';
+  res.writeHead(302, { Location: '/approve/confirm' });
+  res.end();
+};
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (url, options = {}) => {
+  const target = String(url);
+  if (!target.startsWith('https://gitlab.example.com/api/v4/')) return originalFetch(url, options);
+  if (target.endsWith('/user')) return Response.json({ id: 1, username: 'mock-user' });
+  if (target.endsWith('/approvals')) return Response.json({ approved_by: state.approved ? [{ user: { id: 1 } }] : [], user_can_approve: true });
+  if (target.endsWith('/approve')) {
+    await gitlab.approveMr(PROJECT, IID, JSON.parse(options.body));
+    return Response.json({});
+  }
+  return Response.json(gitlab.mr);
+};
 await server.start();
 
 const url = server.linkFor({ project: PROJECT, iid: IID, sha: SHA });

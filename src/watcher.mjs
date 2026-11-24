@@ -56,6 +56,7 @@ import {
   ciStatusEmoji as getCiStatusEmoji,
 } from './cards.mjs';
 import { buildHelpCard, helpEntries, splitHelpCategories } from './card-help.mjs';
+import { buildMultiMrCard } from './card-multi-mr.mjs';
 import { DICE_USAGE, buildDiceCard, formatDiceMarkdown, parseDiceArgs, pickOption, rollDice } from './card-dice.mjs';
 import { LEADERBOARD_MAX_ENTRIES, PODIUM_SIZE, buildLeaderboardCard, rankLeaderboard } from './card-leaderboard.mjs';
 import { buildLifecycleCard, chatList, gitlabHooksUrl, jiraProjectList, lifecycleMarkdown, linkedText } from './lifecycle-card.mjs';
@@ -1293,6 +1294,7 @@ export class MergeRequestWatcher {
           isOnlyUrl: v.isOnlyUrl ?? false,
           targetUrl: v.targetUrl ?? null,
           editedOriginal: v.editedOriginal ?? false,
+          multiMrMessageServerId: v.multiMrMessageServerId ?? null,
           mrs: (v.mrs || []).map((m) => ({
             project: m.project,
             iid: m.iid,
@@ -1926,12 +1928,12 @@ export class MergeRequestWatcher {
   /**
    * Link to the approval confirmation page, or null when the button must not
    * be shown: flow disabled, rich mode off, not a live open merge request,
-   * draft, head commit unknown, or already approved.
+   * draft or head commit unknown. The confirmation checks the signed-in user's approval.
    */
-  mrApproveUrl(mr, mrDetails, { state, approved }) {
+  mrApproveUrl(mr, mrDetails, { state }) {
     if (!this.approveFlow || !this.richMessages) return null;
     if (!['open', 'rebase', 'rebased'].includes(state)) return null;
-    if (mrDetails?.draft === true || approved === true) return null;
+    if (mrDetails?.draft === true) return null;
     const sha = typeof mrDetails?.sha === 'string' && mrDetails.sha ? mrDetails.sha : null;
     if (!sha || !mr?.project || mr.iid === undefined || mr.iid === null) return null;
     try {
@@ -2467,6 +2469,7 @@ export class MergeRequestWatcher {
       isOnlyUrl: saved?.isOnlyUrl ?? isOnlyUrl,
       targetUrl: saved?.targetUrl ?? targetUrl,
       editedOriginal: saved?.editedOriginal ?? false,
+      multiMrMessageServerId: saved?.multiMrMessageServerId ?? null,
       mrs: [...mrsMap.values()],
       jobs: [...jobsMap.values()],
       pipelines: [...pipelinesMap.values()],
@@ -2839,7 +2842,7 @@ export class MergeRequestWatcher {
     return buildMergeRequestCard({
       state,
       diffStats,
-      approveUrl: this.mrApproveUrl(mr, mrDetails, { state, approved }),
+      approveUrl: this.mrApproveUrl(mr, mrDetails, { state }),
       mergeUrl: this.mrMergeUrl(mr, mrDetails, { state }),
       rebaseUrl: this.mrRebaseUrl(mr, mrDetails, { state }),
       reopenUrl: this.mrReopenUrl(mr, { state }),
@@ -3776,6 +3779,10 @@ export class MergeRequestWatcher {
       const statuses = [];
       const updatedMrs = [];
       const seenProjects = new Set();
+      // Existing individual replies continue using their original lifecycle.
+      const multiMr = this.richMessages && this.config.gitlab.notify?.ci?.enable && (entry.mrs || []).length > 1 &&
+        (entry.multiMrMessageServerId || (!entry.isHistory && entry.mrs.every((mr) => !mr.ciMessageServerId)));
+      const multiRows = [];
 
       for (const mr of (entry.mrs || [])) {
         let mrState = null;
@@ -3821,6 +3828,26 @@ export class MergeRequestWatcher {
         }
         seenProjects.add(projectKey);
         updatedMrs.push(mr);
+
+        if (multiMr) {
+          await this.prefetchAvatars(this.mrCardPeopleData(mr, mrState));
+          const state = mrState.status === 'merged' ? 'merged' : mrState.status === 'closed' ? 'closed' : 'open';
+          const people = this.mrCardPeopleData(mr, mrState);
+          const approvers = mrState.approvalKnown === false
+            ? (mr.lastReportedApprovedBy ? mr.lastReportedApprovedBy.split(', ') : [])
+            : (mrState.approvedBy || []);
+          const resolved = this.resolveApprovers(mr.project, mr.iid, approvers);
+          multiRows.push({
+            iid: mr.iid, project: mr.project, title: mrState.title || mr.title,
+            url: mrState.web_url || this.gitlab.mrLink(mr.project, mr.iid), state,
+            author: people.author, avatars: this.cardAvatars(people), profiles: this.cardProfiles(people),
+            approved: this.mrCardApproval(mrState), approvedBy: resolved.approvedBy, approvedVia: resolved.approvedVia,
+            approvalsGiven: mrState.approvalsGiven, approvalsRequired: mrState.approvalsRequired,
+            draft: mrState.draft === true, pipeline: this.mrCardPipeline(mr, mrState.pipeline),
+            autoMerge: mrState.autoMerge, sha: mrState.sha, needsRebase: mrState.needsRebase,
+            hasConflicts: mrState.hasConflicts, jira: this.findMrJiraTicket(mrState, mrState.title || mr.title),
+          });
+        }
 
         const currentTitle = mrState.title || mr.title;
         const isDraft = Boolean(
@@ -3905,7 +3932,7 @@ export class MergeRequestWatcher {
             mr.lastReportedJiraKey !== null ||
             statusReopened
           ) {
-            await this.handleCiStatusComment(entry, mr, pipe, {
+            if (!multiMr) await this.handleCiStatusComment(entry, mr, pipe, {
               ...mrState,
               approvalChanged,
               approversChanged,
@@ -3937,7 +3964,7 @@ export class MergeRequestWatcher {
 
         // Merged status check (with in-place update)
         if (mrState.status === 'merged' && mr.status !== 'merged') {
-          if (!entry.isHistory || mr.status !== null) {
+          if (!multiMr && (!entry.isHistory || mr.status !== null)) {
             await this.handleMergedComment(entry, mr, {
               ...mrState,
               jiraTicket,
@@ -3947,7 +3974,7 @@ export class MergeRequestWatcher {
 
         // Closed status check (with in-place update)
         if (mrState.status === 'closed' && mr.status !== 'closed') {
-          if (!entry.isHistory || mr.status !== null) {
+          if (!multiMr && (!entry.isHistory || mr.status !== null)) {
             await this.handleClosedComment(entry, mr, {
               ...mrState,
               jiraTicket,
@@ -3961,6 +3988,40 @@ export class MergeRequestWatcher {
       if (updatedMrs.length !== (entry.mrs || []).length) {
         entry.mrs = updatedMrs;
         this.saveState();
+      }
+
+      if (multiMr && multiRows.length === updatedMrs.length && multiRows.length > 1) {
+        const markdown = multiRows.map((mr) => {
+          const facts = [mr.state, mr.author && `author: ${mr.author}`,
+            mr.approved === null ? 'approval unknown' : mr.approved ? 'approved' : 'not approved',
+            mr.approvedBy.length && `approvers: ${mr.approvedBy.join(', ')}`,
+            mr.pipeline?.status && `pipeline: ${mr.pipeline.status}`,
+            typeof mr.autoMerge === 'boolean' && `auto-merge: ${mr.autoMerge ? 'on' : 'off'}`,
+            mr.needsRebase && (mr.hasConflicts ? 'rebase required (conflicts)' : 'rebase required'),
+            mr.jira?.key && `ticket: ${mr.jira.key}`].filter(Boolean).join(' · ');
+          return `- [!${mr.iid} ${mr.title}](${mr.url}) · ${facts}`;
+        }).join('\n');
+        const eligible = multiRows.filter((mr) => mr.state === 'open' && !mr.draft && mr.sha);
+        const approveUrl = eligible.length && this.approveFlow?.batchLinkFor
+          ? this.approveFlow.batchLinkFor(eligible, 'approve') : null;
+        const openUrl = this.approveFlow?.batchLinkFor ? this.approveFlow.batchLinkFor(multiRows, 'open') : null;
+        const message = this.richMessage(markdown, () => buildMultiMrCard(multiRows.map((row) => ({
+          ...row, avatars: this.suppressAvatars ? {} : row.avatars,
+        })), { fallbackText: markdown, approveUrl, openUrl, images: !this.suppressAvatars }));
+        const fingerprint = JSON.stringify(message);
+        if (fingerprint !== entry.multiMrFingerprint) {
+          const result = entry.multiMrMessageServerId
+            ? await updateReply(entry.conversationId, entry.multiMrMessageServerId, entry, message, { preserveCard: true })
+            : await sendReply(entry.conversationId, entry, message);
+          if (!result.ok) throw new Error(`updating multi-MR card failed: ${result.error?.message || 'unknown error'}`);
+          if (!entry.multiMrMessageServerId) {
+            const id = result.value?.timestamp || result.value?.messageId;
+            if (!id) throw new Error('multi-MR card returned no message ID');
+            entry.multiMrMessageServerId = String(id);
+          }
+          entry.multiMrFingerprint = fingerprint;
+          this.saveState();
+        }
       }
 
       // Check watched jobs

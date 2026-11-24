@@ -342,6 +342,18 @@ Updating a card message with regular text clears the card.
 services.teams-live.settings.teams.rich_messages = true;
 ```
 
+When a new message contains multiple merge request links and CI notifications
+are enabled, rich messages group them into one card. Each row shows its author
+and approvers, pipeline and auto-merge state; the header shows the number
+merged. The card updates as the merge requests change. Its **Approve all**
+action opens a confirmation page
+which checks each eligible request separately and reports the result for each.
+**Open all** opens a page with the links and a button to open them in tabs;
+the browser may require pop-ups to be allowed. Both actions use the optional
+approval server; **Approve all** also requires GitLab OAuth. Each action accepts
+at most 20 requests. For large groups, the card falls back to a lighter
+representation or text to fit Teams' limit; the text fallback has no buttons.
+
 Cards use the wire format of the Teams client: the message HTML holds an
 `InputExtension` span with a `cardClientId` (a UUID without hyphens) and the
 `cards` message property holds `[{cardClientId, content, contentType}]` with the
@@ -406,11 +418,12 @@ With `teams.rich_messages` on and the approval flow enabled, an open merge
 request card gets an "👍 Approve" button. The button opens a confirmation page;
 it never approves by itself.
 
-The link is a capability: **anyone who has the link can approve that one merge
-request, using the service's configured GitLab account** (not as themselves;
-the page says so). There is no sign-in, no proxy authentication and no shared
-secret. Forwarding the card forwards the ability to approve, so treat the link
-like the approval it stands for.
+Approval requires GitLab OAuth. The person confirming signs in and approves
+with their own GitLab account; GitLab checks that account's permissions. Without
+OAuth, approval buttons fail closed. Merge, rebase and reopen still use the
+service's configured GitLab account, and a 👍 reaction uses that account too.
+The link is a capability, so do not forward it to someone who should not be
+able to open its confirmation page.
 
 How the link is built:
 
@@ -431,10 +444,9 @@ How the link is built:
   the approval is an explicit confirmation POST that needs the session cookie,
   a CSRF token bound to that session and link, and an `Origin` (or `Referer`)
   equal to the configured `base_url` origin (fail closed).
-- A link is used up only after GitLab confirms the approval; a replay or a
-  concurrent request never approves twice. After an unclear network or server
-  error the service looks at its own approval before saying what happened, and
-  does not use the link up unless the approval is confirmed. The approval
+- A replay or a concurrent request never approves twice for the same user.
+  After an unclear network or server error the service checks that user's
+  approval before saying what happened. The approval
   request is never retried blindly, and a 401/403 is treated like any other
   unclear answer (the own approval is looked at first).
 - Limits: an unknown token counts against a global throttle, but a valid token
@@ -449,13 +461,10 @@ How the link is built:
 - The link store is bounded (500). When it is full, used-up and superseded
   records are dropped first; a still-valid open link is never evicted, and no
   new link is minted until there is room (the warning is logged at most once
-  per 10 minutes; a restart with a full store behaves the same). Once the configured account approved
-  a head commit, no new link is minted for it (remembered for 7 days). This is
-  only a hint: it is re-checked against GitLab at most every 30 s while a card
-  is rendered, and a revoked approval makes the button return.
+  per 10 minutes; a restart with a full store behaves the same).
 - The approval is sent with the head SHA, and the page checks that the merge
-  request is open, not a draft, not yet approved by the service's account and
-  that GitLab lets it approve. A merge request that gained commits, was closed
+  request is open, not a draft, not yet approved by the signed-in user and
+  that GitLab lets that user approve. A merge request that gained commits, was closed
   or merged invalidates the link. A pending pipeline or merge status does not
   block it.
 - Links expire after `link_ttl_seconds` (default 24 hours, bounded to 60 s to
@@ -507,23 +516,27 @@ The buttons of an open merge request card are, in this order, **🔁 Rebase**, *
 - The page uses the same pictures as the cards: GitLab icons for the state, the pipeline and auto-merge, the
   repository icon, and pictures for the author and the approvers (the Teams photo when known, else initials). They
   are embedded; the page's CSP allows `img-src data:` and nothing else.
-- Every successful action (approve, merge, rebase, reopen) leaves a comment on the merge request. It names the
-  signed-in GitLab user; only when nobody signed in does it carry the address the request came from and where it is.
+- Merge, rebase and reopen leave a comment on the merge request. It names the
+  signed-in GitLab user; only when nobody signed in does it carry the address
+  the request came from and where it is. GitLab records an approval directly
+  under the approving user's account.
 
 #### Sign in with GitLab
 
-By default the link is a capability: whoever holds it can confirm. With
-`gitlab.approve.oauth` set, the page first sends the visitor through GitLab's
-OAuth sign-in and learns the verified GitLab user name (scope `read_user`,
-authorization code with PKCE; the page never sees a password). The user is
-bound into the session and the confirmation form, may be limited with
-`allowed_users`, cannot be the author of the merge request, and is named in the
-merge request comment (`@user (signed in with GitLab)`). After the first sign-in a signed, HttpOnly cookie (30 days) remembers the user, so later links skip the sign-in; without it the confirmation page redirects straight to GitLab. The action itself is
-still made by the configured account.
+With `gitlab.approve.oauth` set, the page sends the visitor through GitLab's
+OAuth sign-in (scope `api`, authorization code with PKCE; the page never sees
+a password). The access token stays in the short-lived server-side session and
+is used for that person's approvals. The signed-in user is bound to the form,
+may be limited with `allowed_users`, cannot approve their own merge request,
+and is recorded by GitLab as the approver. A remembered identity alone cannot
+approve: opening a new approval session may require GitLab authorization again.
+Without OAuth, approval buttons fail closed. Reactions continue to use the
+configured account.
 
 Set it up once: in GitLab, add an application (your profile, Applications; or a
 group or the admin area) with the redirect URI
-`<base_url>/oauth/callback`, scope `read_user`, "Confidential" on. Keep the
+`<base_url>/oauth/callback`, scope `api`, "Confidential" on. Existing OAuth
+applications need the `api` scope enabled and users must authorize it again. Keep the
 secret in SOPS and reference it with `_secret`. The proxy must forward
 `/oauth/start` and `/oauth/callback` like the other paths.
 
@@ -533,8 +546,10 @@ The environment fallbacks are `TEAMS_GITLAB_APPROVE_*` (`ENABLE`, `HOST`,
 `proxy_secret_header` keys are no longer used; a configuration that still sets
 them gets a warning and they are ignored.
 
-The button is hidden once the merge request is approved or when the head commit
-is unknown. After an approval the card of the merge request is re-checked; the
+The button stays available while the merge request is open and its head is
+known, even after it has enough approvals, so another user can approve it. The
+page checks whether the signed-in user has already approved. After an approval
+the card of the merge request is re-checked; the
 page says whether that refresh ran, failed or had no card to update.
 
 #### Reopening from a closed card
