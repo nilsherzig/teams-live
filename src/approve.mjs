@@ -689,10 +689,14 @@ export class ApproveServer {
     this.dashboard = dashboard?.enable && dashboard.group && this.oauth
       ? { group: String(dashboard.group), sources: dashboard.sources || {}, timeZone: dashboard.timeZone || 'Europe/Berlin' }
       : null;
+    // Where the dashboard is served: its own public path on the same host (e.g. `/dashboard`) or below the base path.
+    const ownPath = typeof dashboard?.path === 'string' ? dashboard.path.trim().replace(/\/+$/, '') : '';
+    if (ownPath && !/^\/[A-Za-z0-9._~-]+(\/[A-Za-z0-9._~-]+)*$/.test(ownPath)) throw new Error('approve: dashboard.path must be an absolute path like /dashboard');
+    this.dashPath = ownPath || `${this.basePath}/dashboard`;
     this.dashSessions = new Map();
     this.dashData = new Map();
     this.dashSourceCache = new Map();
-    this.dashboardScript = dashboardScript(this.basePath);
+    this.dashboardScript = dashboardScript(this.dashPath);
     this.dashboardHash = `sha256-${crypto.createHash('sha256').update(this.dashboardScript).digest('base64')}`;
   }
 
@@ -829,7 +833,7 @@ export class ApproveServer {
     let avatar = '';
     try { if (user) avatar = this.avatarOf?.(user.name || user.username) || ''; } catch { /* Fall back to initials. */ }
     const account = user ? headerAccount(user, this.gitlabHost, avatar) : '';
-    const dash = this.dashboard && user && dashLink ? `<a class="dash-link" href="${escapeHtml(`${this.basePath}/dashboard`)}">Dashboard</a>` : '';
+    const dash = this.dashboard && user && dashLink ? `<a class="dash-link" href="${escapeHtml(this.dashPath)}">Dashboard</a>` : '';
     return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}${css}</style></head><body><header class="brand"><div class="in">${TANUKI}<span class="word">teams-live</span><span class="sep" aria-hidden="true">/</span><span class="kicker">${kicker}</span>${live ? '<span class="live-dot" title="This page keeps itself up to date"><i></i>Live</span>' : ''}${dash}${account}</div></header><div class="${shell}">${main}<footer class="foot">Served by your <a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">teams-live</a> instance. Nothing here is GitLab itself; ${footer}</footer></div></body></html>`;
   }
 
@@ -846,6 +850,13 @@ export class ApproveServer {
       pathname = new URL(req.url, 'http://localhost').pathname;
     } catch {
       return null;
+    }
+    // The dashboard on its own path; its old address below the base path leads there.
+    const legacy = `${this.basePath}/dashboard`;
+    if (this.dashboard && this.dashPath !== legacy && (pathname === legacy || pathname.startsWith(`${legacy}/`))) return '/dashboard-moved';
+    if (this.dashboard && (pathname === this.dashPath || pathname.startsWith(`${this.dashPath}/`))) {
+      const sub = pathname.slice(this.dashPath.length);
+      return ['', '/data', '/approve', '/signin', '/signout'].includes(sub) ? `/dashboard${sub}` : null;
     }
     if (this.basePath && (pathname === this.basePath || pathname.startsWith(`${this.basePath}/`))) {
       pathname = pathname.slice(this.basePath.length) || '/';
@@ -989,6 +1000,10 @@ export class ApproveServer {
       if (method === 'POST') return this.send(res, 405, this.page('Not allowed', '<p>Method not allowed.</p>', { tone: 'warn' }), { extra: { Allow: 'GET, HEAD' } });
       if (method === 'HEAD') return this.send(res, 200, '', { head: true });
       return route === '/oauth/start' ? this.oauthStart(req, res) : this.oauthCallback(req, res);
+    }
+    if (route === '/dashboard-moved') {
+      res.writeHead(308, this.headers({ Location: this.dashPath }));
+      return res.end();
     }
     if (route.startsWith('/dashboard')) return this.handleDashboard(route, req, res);
     // /open/view and /confirm require a session created from the capability.
@@ -1390,7 +1405,7 @@ export class ApproveServer {
   // --- dashboard ---
 
   dashCookie(value, maxAge) {
-    return `${DASH_COOKIE}=${value}; Path=${this.basePath || '/'}; Max-Age=${maxAge}; HttpOnly; SameSite=Strict${this.secure ? '; Secure' : ''}`;
+    return `${DASH_COOKIE}=${value}; Path=${this.dashPath}; Max-Age=${maxAge}; HttpOnly; SameSite=Strict${this.secure ? '; Secure' : ''}`;
   }
 
   /** The dashboard session of a request: `{sid, user, accessToken}` or null. */
@@ -1450,7 +1465,7 @@ export class ApproveServer {
       }
       this.requestContext.getStore().user = null;
       const forget = `${WHO_COOKIE}=; Path=${this.basePath || '/'}; Max-Age=0; HttpOnly; SameSite=Strict${this.secure ? '; Secure' : ''}`;
-      res.writeHead(303, this.headers({ Location: `${this.basePath}/dashboard`, 'Set-Cookie': [this.dashCookie('', 0), forget] }));
+      res.writeHead(303, this.headers({ Location: this.dashPath, 'Set-Cookie': [this.dashCookie('', 0), forget] }));
       return res.end();
     }
     return this.send(res, 404, this.page('Not found', '<p>Nothing here.</p>', { tone: 'warn' }));
@@ -1461,7 +1476,7 @@ export class ApproveServer {
     const body =
       '<p>Your merge requests, the active sprint, open alerts with who is on call, and your next meetings in one place.</p>' +
       '<ul class="note"><li>Merge requests are read with your own GitLab account.</li><li>Sprint, alerts and meetings are read by the bot with its own accounts.</li><li>Approving needs a click on Approve; nothing is sent by just looking.</li></ul>' +
-      `<p class="links"><a class="btn" href="${escapeHtml(`${this.basePath}/dashboard/signin`)}">Sign in with GitLab</a></p>`;
+      `<p class="links"><a class="btn" href="${escapeHtml(`${this.dashPath}/signin`)}">Sign in with GitLab</a></p>`;
     return this.send(res, 200, this.page('Dashboard', body, { kind: 'generic' }));
   }
 
@@ -1489,7 +1504,7 @@ export class ApproveServer {
 
   /** The OAuth answer for a dashboard sign-in: check who it is and whether they may see it, then open a session. */
   async dashboardCallback(res, params, state) {
-    const fail = (status, text) => this.send(res, status, this.page('Sign-in failed', `<p>${escapeHtml(text)}</p><p class="links"><a class="btn btn-secondary" href="${escapeHtml(`${this.basePath}/dashboard`)}">Back to the dashboard</a></p>`, { tone: 'warn', kind: 'generic' }));
+    const fail = (status, text) => this.send(res, status, this.page('Sign-in failed', `<p>${escapeHtml(text)}</p><p class="links"><a class="btn btn-secondary" href="${escapeHtml(this.dashPath)}">Back to the dashboard</a></p>`, { tone: 'warn', kind: 'generic' }));
     if (!this.dashboard) return fail(404, 'The dashboard is switched off.');
     const code = params.get('code');
     if (!code) return fail(400, params.get('error') ? 'GitLab did not sign you in.' : 'The sign-in could not be completed.');
@@ -1521,7 +1536,7 @@ export class ApproveServer {
     timer.unref?.();
     this.requestContext.getStore().user = user;
     try { await this.avatarWarm?.([user.name || user.username]); } catch { /* Use initials when the photo is unavailable. */ }
-    const next = `${this.basePath}/dashboard`;
+    const next = this.dashPath;
     return this.send(res, 200, this.page('Signed in', `<meta http-equiv="refresh" content="0;url=${escapeHtml(next)}"><p>Signed in as <code>${escapeHtml(user.username)}</code>.</p><p class="links"><a class="btn" href="${escapeHtml(next)}">Open the dashboard</a></p>`, { tone: 'ok', kind: 'generic' }), {
       extra: { 'Set-Cookie': [this.dashCookie(sid, Math.floor(ttl / 1000)), this.whoCookie(user)] },
     });
@@ -1605,7 +1620,7 @@ export class ApproveServer {
     const data = await this.dashboardData(session);
     const ctx = this.dashboardCtx(session, data);
     const csrf = this.csrf.issue(session.sid, 'dashboard', `who=${session.user.username}`);
-    const body = dashboardBody({ data, ctx, csrf, filter: defaultFilter(data.mrs.items || [], session.user.username), updated: this.dashboardUpdated(data.at), signOutAction: `${this.origin}${this.basePath}/dashboard/signout` });
+    const body = dashboardBody({ data, ctx, csrf, filter: defaultFilter(data.mrs.items || [], session.user.username), updated: this.dashboardUpdated(data.at), signOutAction: `${this.origin}${this.dashPath}/signout` });
     const html = this.documentHtml({ title: 'Dashboard', kicker: 'Dashboard', footer: 'merge requests are read as you, everything else by the bot.', shell: 'shell dashboard', main: `<main>${body}<script>${this.dashboardScript}</script></main>`, css: DASHBOARD_CSS, dashLink: false });
     return this.send(res, 200, html, { script: 'dashboard' });
   }

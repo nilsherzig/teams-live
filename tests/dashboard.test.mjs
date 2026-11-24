@@ -35,14 +35,14 @@ const node = (over = {}) => ({
   ...over,
 });
 
-async function withDashboard({ member = true, nodes = [node()], sources = {}, enable = true } = {}, fn) {
+async function withDashboard({ member = true, nodes = [node()], sources = {}, enable = true, path = '' } = {}, fn) {
   const gitlab = { host: GL, mrLink: (p, i) => `https://${GL}/${p}/-/merge_requests/${i}`, async getMr() { return {}; } };
   const server = new ApproveServer({
     gitlab,
     baseUrl: `${ORIGIN}/approve`,
     port: 0,
     oauth: { clientId: 'cid', clientSecret: 'sec', allowedUsers: [] },
-    dashboard: { enable, group: 'group', sources, timeZone: 'UTC' },
+    dashboard: { enable, group: 'group', sources, timeZone: 'UTC', path },
   });
   await server.start();
   const base = `http://127.0.0.1:${server.port}`;
@@ -69,8 +69,8 @@ async function withDashboard({ member = true, nodes = [node()], sources = {}, en
   }
 }
 
-async function signIn(base) {
-  const start = await fetch(`${base}/approve/dashboard/signin`, { redirect: 'manual' });
+async function signIn(base, dash = '/approve/dashboard') {
+  const start = await fetch(`${base}${dash}/signin`, { redirect: 'manual' });
   const location = new URL(start.headers.get('location'));
   const back = await fetch(`${base}/approve/oauth/callback?code=thecode&state=${location.searchParams.get('state')}`);
   const cookie = /tl_dash=[^;]+/.exec(back.headers.get('set-cookie') || '')?.[0] || '';
@@ -101,7 +101,7 @@ test('sign-in uses PKCE without a card link and opens a session for a group memb
     assert.equal(location.searchParams.get('redirect_uri'), `${ORIGIN}/approve/oauth/callback`);
     assert.equal(back.status, 200);
     assert.ok(cookie, 'a dashboard session cookie');
-    assert.match(back.headers.get('set-cookie'), /tl_dash=[^;]+; Path=\/approve; Max-Age=\d+; HttpOnly; SameSite=Strict; Secure/);
+    assert.match(back.headers.get('set-cookie'), /tl_dash=[^;]+; Path=\/approve\/dashboard; Max-Age=\d+; HttpOnly; SameSite=Strict; Secure/);
     const member = seen.find((c) => c.url.includes('/members/all/9'));
     assert.equal(member.options.headers.Authorization, 'Bearer tok', 'membership is asked with the visitor’s own token');
   });
@@ -207,4 +207,21 @@ test('sections: links stay on their hosts, failures read plainly', () => {
   assert.ok(!offHost.includes('evil.example.com'), 'merge request links only on the GitLab host');
   assert.match(alertsSection({ data: { alerts: [], duty: [{ queue: 'On-call', who: 'Alice Example' }] } }, ctx), /No open alerts[\s\S]*Alice Example/);
   assert.match(meetingsSection({ data: [] }, ctx), /No more meetings/);
+});
+
+test('the dashboard can live on its own path; its old address leads there', async () => {
+  await withDashboard({ path: '/dashboard' }, async ({ base }) => {
+    const moved = await fetch(`${base}/approve/dashboard`, { redirect: 'manual' });
+    assert.equal(moved.status, 308);
+    assert.equal(moved.headers.get('location'), '/dashboard');
+    const { back, cookie } = await signIn(base, '/dashboard');
+    assert.match(await back.text(), /url=\/dashboard"/);
+    assert.match(back.headers.get('set-cookie'), /tl_dash=[^;]+; Path=\/dashboard;/);
+    const html = await (await fetch(`${base}/dashboard`, { headers: { Cookie: cookie } })).text();
+    assert.match(html, /action="https:\/\/approve\.example\.com\/dashboard\/signout"/);
+    assert.ok(html.includes('"/dashboard"'), 'the script talks to the dashboard path');
+    assert.equal((await fetch(`${base}/dashboard/data`, { headers: { Cookie: cookie } })).status, 200);
+    assert.equal((await fetch(`${base}/dashboard/nope`)).status, 404);
+  });
+  assert.throws(() => new ApproveServer({ gitlab: { host: GL }, baseUrl: `${ORIGIN}/approve`, oauth: { clientId: 'c', clientSecret: 's' }, dashboard: { enable: true, group: 'g', path: 'dashboard' } }), /dashboard\.path/);
 });

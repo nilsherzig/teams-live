@@ -365,6 +365,8 @@ export function loadConfig(configPath) {
     // of `oauth.allowed_users` when set) see the group's merge requests, the sprint, alerts and meetings. Off by default.
     dashboard: {
       enable: (rawApprove.dashboard?.enable ?? envBool(process.env.TEAMS_GITLAB_APPROVE_DASHBOARD_ENABLE)) === true,
+      // Its own path on the base_url host (e.g. "/dashboard"); empty: `<base_url>/dashboard`. The proxy must forward it.
+      path: (getString(rawApprove.dashboard?.path) || process.env.TEAMS_GITLAB_APPROVE_DASHBOARD_PATH || '').trim(),
       time_zone: (getString(rawApprove.dashboard?.time_zone) || process.env.TEAMS_GITLAB_APPROVE_DASHBOARD_TIME_ZONE || 'Europe/Berlin').trim(),
     },
   };

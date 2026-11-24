@@ -356,6 +356,7 @@ async function main() {
           ? {
               enable: true,
               group: config.gitlab.group,
+              path: apCfg.dashboard.path,
               timeZone: apCfg.dashboard.time_zone,
               sources: dashboardSources({ jira, opsgenie }),
             }

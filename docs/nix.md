@@ -496,6 +496,7 @@ authentication layer. The proxy may keep the path prefix or strip it.
 | `gitlab.approve.oauth.state_file` | Optional path for the managed application state; defaults to `gitlab-oauth.json` in the state directory. |
 | `gitlab.approve.oauth.allowed_users` | Optional list of GitLab user names allowed to confirm. Empty: any user that signs in. |
 | `gitlab.approve.dashboard.enable` | The signed-in [dashboard](#dashboard) at `<base_url>/dashboard` (false). Needs `oauth` and `gitlab.group`. |
+| `gitlab.approve.dashboard.path` | Serve the dashboard on its own path of the `base_url` host, for example `/dashboard` (default: `<base_url>/dashboard`). The old address then redirects there; the proxy must forward the path. |
 | `gitlab.approve.dashboard.time_zone` | Time zone of the meeting times on the dashboard (`Europe/Berlin`). |
 
 #### Rebase and Merge buttons
@@ -564,7 +565,7 @@ token), and on `oauth.allowed_users` when that list is set. The session cookie i
 lasts as long as GitLab's token (at most eight hours); "Sign out" ends it. The page refreshes its sections every
 minute while it is visible. On a phone the sidebar becomes a bottom tab bar.
 
-The dashboard uses the same OAuth application and callback; the proxy must forward `/dashboard` and its sub-paths.
+The dashboard uses the same OAuth application and callback; the proxy must forward the dashboard path and its sub-paths (`/data`, `/approve`, `/signin`, `/signout`). With `dashboard.path = "/dashboard"` the proxy can also send `/` there, so the host itself opens the dashboard.
 
 Alternatively set `gitlab.approve.oauth.auto_setup = true`. On startup,
 teams-live creates a confidential application owned by the primary GitLab
