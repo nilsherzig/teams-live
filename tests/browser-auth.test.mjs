@@ -78,7 +78,7 @@ test('does not close an existing Teams tab', async () => {
   assert.equal(calls.some((call) => call.url.pathname.startsWith('/json/close/')), false);
 });
 
-test('keeps the authentication tab if session usage cannot be checked', async () => {
+test('keeps the session alive and closes its tab if usage cannot be checked', async () => {
   const calls = [];
   globalThis.fetch = async (input, options = {}) => {
     const url = new URL(input);
@@ -91,7 +91,7 @@ test('keeps the authentication tab if session usage cannot be checked', async ()
       }) };
     }
     if (url.pathname === '/json/new') {
-      return { ok: true, json: async () => ({ id: 'owned-tab' }) };
+      return { ok: true, json: async () => ({ id: url.searchParams.get('url') === 'about:blank' ? 'blank-tab' : 'owned-tab' }) };
     }
     if (url.pathname === '/api/pages/owned-tab/auth') {
       return { ok: false, status: 403, text: async () => 'test error' };
@@ -99,6 +99,7 @@ test('keeps the authentication tab if session usage cannot be checked', async ()
     if (url.pathname === '/api/sessions/profile-session') {
       return { ok: false };
     }
+    if (url.pathname === '/json/close/owned-tab') return { ok: true };
     throw new Error(`Unexpected request path: ${url.pathname}`);
   };
 
@@ -106,7 +107,9 @@ test('keeps the authentication tab if session usage cannot be checked', async ()
     acquireFromBrowserDaemon({ url: 'https://browser.invalid', profile: 'work' }),
     /Auth export failed/,
   );
-  assert.equal(calls.some((call) => call.url.pathname.startsWith('/json/close/')), false);
+  const blank = calls.findIndex((call) => call.url.searchParams.get('url') === 'about:blank');
+  const close = calls.findIndex((call) => call.url.pathname === '/json/close/owned-tab');
+  assert.ok(blank >= 0 && close > blank);
 });
 
 test('retries with an owned tab when the advertised Teams tab has closed', async () => {

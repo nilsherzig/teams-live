@@ -272,14 +272,21 @@ export async function acquireFromBrowserDaemon(bdConfig) {
       }
     } else if (openedTabId) {
       try {
-        const sessionRes = await fetch(`${url}${api(`/sessions/${encodeURIComponent(sessionId)}`)}`, {
-          headers,
-          signal: AbortSignal.timeout(10000),
-        });
-        if (!sessionRes.ok) throw new Error('Could not inspect browser session');
-        const { session } = await sessionRes.json();
-        if (!Number.isInteger(session?.tabs_count)) throw new Error('Missing browser tab count');
-        if (session.tabs_count <= 1) {
+        let tabCount;
+        try {
+          const sessionRes = await fetch(`${url}${api(`/sessions/${encodeURIComponent(sessionId)}`)}`, {
+            headers,
+            signal: AbortSignal.timeout(10000),
+          });
+          if (!sessionRes.ok) throw new Error('Could not inspect browser session');
+          const { session } = await sessionRes.json();
+          if (!Number.isInteger(session?.tabs_count)) throw new Error('Missing browser tab count');
+          tabCount = session.tabs_count;
+        } catch {
+          // Keep the session alive even when its tab count cannot be read.
+          tabCount = 1;
+        }
+        if (tabCount <= 1) {
           // Chromium exits when its last tab closes, leaving a stale daemon session.
           const query = new URLSearchParams({ url: 'about:blank', session_id: sessionId });
           const blankRes = await fetch(`${url}${prefix}/json/new?${query}`, {
